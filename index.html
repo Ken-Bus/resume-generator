@@ -783,7 +783,14 @@ async function exportPDF() {
    await html2pdf().from(el).set({
   margin: 0,
   filename: `${state.data?.name?.replace(/\s+/g,'_')||'resume'}.pdf`,
-  html2canvas: { scale: 2, useCORS: true, scrollX: 0, scrollY: -window.scrollY },
+  html2canvas: {
+    scale: 2,
+    useCORS: true,
+    scrollX: 0,
+    scrollY: -window.scrollY,
+    windowWidth: el.scrollWidth,
+    windowHeight: el.scrollHeight
+  },
   jsPDF: { format: 'letter', unit: 'in', orientation: 'portrait' },
   pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
 }).save();
