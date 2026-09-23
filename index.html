@@ -182,6 +182,12 @@
       <div id="edit-fields">
         <p style="font-size:11px;color:#999;">Analyze a resume or load the sample to edit fields.</p>
       </div>
+            <div id="job-match-box" style="margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:6px;background:#FAFAFA;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:#555;margin-bottom:6px;">TAILOR TO A JOB (OPTIONAL)</div>
+        <textarea id="job-desc-input" class="resume-textarea" placeholder="Paste the job description here to tailor your resume's wording to it..." rows="4" style="width:100%;"></textarea>
+        <button class="btn-secondary" onclick="tailorToJob()" id="tailor-btn" style="margin-top:8px;">Tailor to This Job</button>
+        <div id="match-summary-box" style="display:none;margin-top:10px;font-size:12px;line-height:1.5;"></div>
+      </div>
     </div>
   </div>
 
@@ -859,7 +865,46 @@ async function exportWord() {
   }
 }
 
-init();
+// ── Tailor to Job Description ──────────────────────────────────────────────
+async function tailorToJob() {
+  const jobDesc = document.getElementById('job-desc-input').value.trim();
+  if (!jobDesc) { showError('Please paste a job description first.'); return; }
+  if (!state.data) { showError('Please analyze a resume first.'); return; }
+
+  const btn = document.getElementById('tailor-btn');
+  btn.disabled = true;
+  btn.textContent = 'Tailoring…';
+
+  try {
+    const res = await fetch('/.netlify/functions/tailor-resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc })
+    });
+    const json = await res.json();
+    if (json.error) { showError(json.error); return; }
+
+    const parsed = JSON.parse(json.result);
+    state.data = parsed.resume;
+    renderEditFields();
+    renderPreview();
+
+    const ms = parsed.matchSummary;
+    const box = document.getElementById('match-summary-box');
+    box.style.display = 'block';
+    box.innerHTML = `
+      <div style="margin-bottom:6px;"><strong>Match notes:</strong> ${esc(ms.notes || '')}</div>
+      ${ms.matchedKeywords?.length ? `<div style="margin-bottom:4px;"><strong style="color:#2a7;">Matched:</strong> ${ms.matchedKeywords.map(esc).join(', ')}</div>` : ''}
+      ${ms.missingKeywords?.length ? `<div><strong style="color:#a52;">Not covered:</strong> ${ms.missingKeywords.map(esc).join(', ')}</div>` : ''}
+    `;
+  } catch (e) {
+    showError("Couldn't tailor to this job — please try again.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Tailor to This Job';
+  }
+}
+  init();
 </script>
 </body>
 </html>
