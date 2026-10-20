@@ -131,7 +131,8 @@ select count(*) as rows, sum(uses_remaining) as sum_uses_remaining, sum(max_uses
        md5(string_agg(code||':'||max_uses||':'||uses_remaining||':'||assigned::text||':'||coalesce(buyer_email,''), ',' order by code)) as fingerprint
 from licenses;
 
--- Customers-only fingerprint: excludes YOUR personal code. This one must NEVER change during the release.
+-- Customers-only fingerprint: excludes YOUR personal code. It must not change during the release, except for a real order
+-- delivered by the Apps Script meanwhile (see the smoke-test check 4).
 select count(*) as rows, sum(uses_remaining) as sum_uses_remaining,
        md5(string_agg(code||':'||max_uses||':'||uses_remaining||':'||assigned::text||':'||coalesce(buyer_email,''), ',' order by code)) as fingerprint
 from licenses where code <> '<YOUR_PERSONAL_CODE>';
@@ -153,11 +154,11 @@ select count(*) from license_reservations where status = 'reserved' and expires_
 
 ### Sequence
 
-1. **Apply migration 01.** Verify: the privilege query shows every function server-only; `license_reservations` exists; **both fingerprints unchanged**; `select count(*) from license_reservations` is 0. If the API reports a new function as "not found", run `notify pgrst, 'reload schema';`.
+1. **Apply migration 01.** Verify: the privilege query shows every function server-only; `license_reservations` exists; **both fingerprints unchanged**; `select count(*) from license_reservations` is 0 (no real order in between, or explain it as in smoke-test check 4). If the API reports a new function as "not found", run `notify pgrst, 'reload schema';`.
 2. **Deploy Preview: non-mutating checks only** (below).
 3. **Merge** (you). Wait until Netlify shows the production deploy as **Published** for the merge commit.
 4. **Production smoke test** (below). If any abort condition occurs, roll back (§ Rollback) and stop.
-5. **Apply migration 02.** Verify: the privilege query now shows `consume_license_use` server-only; **customers-only fingerprint unchanged**.
+5. **Apply migration 02.** Verify: the privilege query now shows `consume_license_use` server-only; **customers-only fingerprint unchanged** (apart from a real order, as in smoke-test check 4).
 6. **Watch for 48–72 hours:** Netlify function logs for 401/403/429/503 spikes, the AI usage page against your sales, and confirm the next real order is delivered normally.
 7. **Cleanup of superseded deployments and the old AI key**, using your private inventory. Revoke the old AI key **last**, after the watch window (see Rollback for why).
 8. Follow-up change: delete `netlify/functions/consume-generation.js`; update the Founder OS notes.
@@ -174,12 +175,33 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 
 ### Production smoke test (minimal, personal code only)
 
-- **When:** a quiet period, right after the deploy is Published. First run the reservations-in-flight query: it should be 0.
-- **Input:** a **3-line fake resume** (no real personal data) for **one Analyze**, then a **1-line job description** for **one Tailor**. That is **2 AI calls** in total.
-- **Expect:** the counter on your code drops by **exactly 1** (analysis), and does **not** change on the Tailor step.
-- **Verify in SQL:** the **customers-only fingerprint is identical** to the baseline; the full fingerprint differs only by your one use; exactly **one** `license_reservations` row for your code with status `committed` and `tailor_count = 1`.
-- **Also check (zero AI calls):** a made-up code and a missing code are refused with friendly messages; the Netlify function log shows no `TAILOR_TOKEN_SECRET` warning.
-- **Abort and roll back if:** Analyze with your valid code fails or is slow beyond the timeout you recorded; the counter drops without a result, or drops by more than 1; the customers-only fingerprint changes; the function log shows `reserve_license_use is missing` (migration 01 was not applied) or repeated 5xx.
+**Exactly one paid generation is spent, on your personal code, and nothing else changes.**
+
+- **When:** a quiet period, right after the deploy is Published.
+- **Input:** a **3-line fake resume** (no real personal data) for **one Analyze**, then a **1-line job description** for **one Tailor**. That is **2 AI calls**. Only the Analyze spends a paid generation; the Tailor spends none.
+- **Capture BEFORE you start (read-only)**, and write the answers down:
+  ```sql
+  select now() as test_start_utc;                                                   -- the clock reference for every check below
+  select uses_remaining as before_uses from licenses where code = '<YOUR_PERSONAL_CODE>';
+  select count(*) as reservations_before from license_reservations where code = '<YOUR_PERSONAL_CODE>';   -- expect 0
+  ```
+  Plus the customers-only fingerprint from "Read-only queries". (If you would rather not type your code: it is the only row with `assigned = true and buyer_email is null`. Stop and ask if more than one row matches.)
+- **Checks AFTER the test (all must hold):**
+  1. **Your personal code:** `uses_remaining` = `before_uses − 1`. Exactly one, not two.
+  2. **Your reservations:** exactly **one** new `license_reservations` row for your code, with status `committed` and `tailor_count = 1`, and **none** in `reserved`, `released` or `expired` since the start.
+  ```sql
+  select status, tailor_count, count(*) from license_reservations
+   where code = '<YOUR_PERSONAL_CODE>' and created_at >= '<test_start_utc>' group by 1, 2;    -- expect exactly: committed | 1 | 1
+  ```
+  3. **No other code spent anything:**
+  ```sql
+  select count(*) from licenses where code <> '<YOUR_PERSONAL_CODE>' and last_used_at >= '<test_start_utc>';   -- expect 0
+  ```
+  4. **No customer record changed:** the customers-only fingerprint equals the one you captured. The one legitimate exception is a **real order delivered by the Apps Script during your test** (it assigns a code and sets a buyer email). Check it with `select count(*) from licenses where assigned_at >= '<test_start_utc>';`: **0** means nothing happened, so any fingerprint change is a failure; **1** means a real order was delivered, which is expected and not a failure (re-capture the baseline and continue). Any other change is a failure.
+  5. **No permission or schema change:** the privilege query gives the same answer as after migration 01 (migration 02 has **not** been applied yet).
+  6. **Other customers are fine to appear:** a real customer using the site during the test adds reservation rows **for their own codes**. Those are expected and are never part of this check.
+- **Also check (zero AI calls, no writes):** a made-up code and a missing code are refused with friendly messages; the Netlify function log shows no `TAILOR_TOKEN_SECRET` warning; the AI provider's usage page shows **2** new calls from your test (any extra calls are real customers).
+- **Abort and roll back if:** Analyze with your valid code fails or runs longer than the timeout you recorded; the counter drops without a result, or by more than 1; any of checks 1–5 fails; the function log shows `reserve_license_use is missing` (migration 01 was not applied) or repeated 5xx.
 
 ### Rollback
 
