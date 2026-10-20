@@ -1,5 +1,12 @@
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
+const license = require('./_lib/license');
 
+// DEPRECATED SHIM — scheduled for removal ~72 hours after the reservation-based release.
+//
+// Generations are now charged server-side inside parse-resume, only after a validated AI result.
+// This endpoint used to decrement a use up front. It stays only so a browser tab that was opened
+// BEFORE the deploy cannot be charged for a call that the new parse-resume then rejects. It reads
+// the license and reports the counts. It never writes.
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
@@ -18,26 +25,11 @@ exports.handler = async function(event) {
   }
 
   try {
-    const supabase = getSupabaseClient();
-    const { data, error } = await supabase
-      .rpc('consume_license_use', { p_code: code })
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (!data) {
-      return json(200, { success: false, error: 'We couldn’t find that code.' });
+    const data = await license.readLicense(getSupabaseClient(), code);
+    if (!data) return json(200, { success: false, error: 'We couldn’t find that code.' });
+    if (data.uses_remaining <= 0) {
+      return json(200, { success: false, error: 'You’ve used all generations on this code.', usesRemaining: 0, maxUses: data.max_uses });
     }
-
-    if (!data.success) {
-      return json(200, {
-        success: false,
-        error: 'You’ve used all generations on this code.',
-        usesRemaining: data.uses_remaining ?? 0,
-        maxUses: data.max_uses
-      });
-    }
-
     return json(200, { success: true, usesRemaining: data.uses_remaining, maxUses: data.max_uses });
   } catch (err) {
     return json(500, { success: false, error: 'Server error, please try again.' });

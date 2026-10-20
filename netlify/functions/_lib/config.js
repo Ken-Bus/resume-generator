@@ -1,0 +1,39 @@
+// Tunables for the paid AI endpoints. Read at call time so tests can override env vars.
+function int(v, fallback, min = 1) {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) && n >= min ? n : fallback;
+}
+
+function get() {
+  // Netlify documents 60 s for synchronous functions; 50 s leaves ~10 s for start-up, database calls and the response.
+  // Set AI_TIMEOUT_MS explicitly in Netlify as well (runbook §2.3); this fallback only protects against it being forgotten.
+  const aiTimeoutMs = int(process.env.AI_TIMEOUT_MS, 50000, 1000);
+  return {
+    MODEL: 'claude-sonnet-4-5-20250929',
+    // Input limits (characters). A 5-page resume is roughly 15k characters.
+    RESUME_MAX_CHARS: 30000,
+    JOB_DESC_MAX_CHARS: 10000,
+    RESUME_JSON_MAX_CHARS: 60000,
+    MAX_BODY_BYTES: 262144,
+    // Output caps. The old 2000/3000 caps truncated long resumes into unparseable JSON.
+    PARSE_MAX_TOKENS: 4000,
+    TAILOR_MAX_TOKENS: 6000,
+    AI_TIMEOUT_MS: aiTimeoutMs,
+    // A reservation must outlive the AI call, so a request that is still running is never double-booked.
+    // If the function dies mid-call the lease simply lapses and the use is never charged.
+    LEASE_SECONDS: Math.max(45, Math.ceil(aiTimeoutMs / 1000) + 20),
+    // Tailoring authorisation: bound to one paid generation.
+    TAILOR_TOKEN_TTL_SECONDS: 2 * 60 * 60,
+    TAILOR_MAX_PER_PAID_OP: 5,
+    // Bounded failure protection (enforced in the database, under the license row lock).
+    // Failures are free to the customer, so costly ones (the AI ran but gave nothing usable) are budgeted per code.
+    // Provider outages (HTTP errors, network failures) are never counted.
+    FAIL_WINDOW_SECONDS: 15 * 60,
+    FAIL_WINDOW_MAX: 6,
+    FAIL_DAY_MAX: 30,
+    // Costly tailoring failures given back per paid generation; further ones stay used.
+    TAILOR_FORGIVEN_FAILURES: 2
+  };
+}
+
+module.exports = { get };

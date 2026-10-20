@@ -1,4 +1,4 @@
-// Fires a webhook (e.g. a Zapier "Catch Hook" step) so Ken finds out
+// Fires a webhook (any HTTP webhook receiver) so Ken finds out
 // immediately if the code supply ever actually hits zero. Best-effort: a
 // failed alert should never take down the caller.
 async function sendLowSupplyAlert(payload) {

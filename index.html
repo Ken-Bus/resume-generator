@@ -260,6 +260,54 @@ AWARDS
 2023 Midwest Retail Executive of the Year – Retail Innovation Council
 2021 Nordstrom President's Award – Top Regional Leader`;
 
+// Pre-parsed copy of the sample above. "Try Sample" loads this directly, so the free sample never makes a paid AI call.
+const SAMPLE_DATA = {
+  name: 'Emma Larsen',
+  contact: { phone: '(312) 555-0187', email: 'emma.larsen@email.com', location: 'Chicago, IL', linkedin: 'linkedin.com/in/emmalarsen', website: 'emmalarsen.com' },
+  summary: {
+    tagline: 'Multi-faceted retail executive with expertise in:',
+    bullets: [
+      'Delivered $42M revenue growth over three years through omnichannel expansion and customer loyalty initiatives',
+      'Led cross-functional team of 120 across merchandising, operations, and digital commerce'
+    ],
+    skills: ['Project Management', 'Conflict Resolution', 'Strategic Planning', 'P&L Ownership', 'Vendor Relations']
+  },
+  experience: [
+    { title: 'Vice President, Retail Operations', company: 'Nordstrom', location: 'Chicago, IL', start: 'March 2020', end: 'Present',
+      summary: 'Oversaw full-cycle retail operations for 18 flagship stores across the Midwest region.',
+      bullets: [
+        'Drove 28% YoY revenue increase by implementing dynamic pricing and demand forecasting models',
+        'Negotiated $8M in vendor contracts, reducing COGS by 14% without compromising quality',
+        'Launched omnichannel loyalty program adopted by 340,000 members within first year',
+        'Reduced shrinkage by 22% through inventory audit overhaul and team accountability initiatives'
+      ] },
+    { title: 'Director, Merchandising & Buying', company: "Bloomingdale's", location: 'New York, NY', start: 'June 2015', end: 'February 2020', summary: '',
+      bullets: [
+        "Built and managed $65M open-to-buy budget across women's contemporary and accessories divisions",
+        'Introduced data-driven trend forecasting process, improving sell-through rate by 19%',
+        'Mentored team of 14 buyers and planners; promoted 6 to senior roles'
+      ] },
+    { title: "Senior Buyer, Women's Apparel", company: "Macy's", location: 'New York, NY', start: 'August 2011', end: 'May 2015', summary: '',
+      bullets: [
+        'Managed $22M annual buy for contemporary sportswear category',
+        'Increased category margin from 41% to 47% through strategic vendor consolidation'
+      ] }
+  ],
+  education: [
+    { degree: 'MBA, Retail Management & Marketing', school: 'Kellogg School of Management, Northwestern University', location: 'Evanston, IL', date: '2011', honors: 'Beta Gamma Sigma Honor Society' },
+    { degree: 'B.S., Fashion Merchandising', school: 'Fashion Institute of Technology', location: 'New York, NY', date: '2008', honors: 'Magna Cum Laude' }
+  ],
+  certifications: [
+    { name: 'Certified Retail Analytics Professional', org: 'Retail Industry Leaders Association', date: '2022' },
+    { name: 'Six Sigma Green Belt', org: 'ASQ', date: '2019' }
+  ],
+  projects: [],
+  awards: [
+    '2023 Midwest Retail Executive of the Year – Retail Innovation Council',
+    "2021 Nordstrom President's Award – Top Regional Leader"
+  ]
+};
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 const TEMPLATES = [
   { id:'boardroom', category:'Corporate', name:'The Boardroom', accent:'#1B2B47', accentLight:'#E8EDF3', font:"Georgia,'Times New Roman',serif", style:'centered' },
@@ -285,6 +333,7 @@ let state = {
   useAltColor: false,
   activePanel: 'paste',
   license: { code: null, verified: false, usesRemaining: null, maxUses: null },
+  tailorToken: null,   // signed authorisation issued with each paid generation; held in memory only
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -457,6 +506,7 @@ function skipGateForSample() {
 }
 
 // ── Parse Resume ──────────────────────────────────────────────────────────────
+let analyzing = false;
 async function parseResume() {
   const text = document.getElementById('resume-input').value.trim();
   if (!text) return;
@@ -466,61 +516,93 @@ async function parseResume() {
     showGate('Enter your access code to generate your resume.');
     return;
   }
+  if (text.length > 30000) {
+    showError('That resume is too long to analyze (limit 30,000 characters). Please trim older or less relevant sections and try again.');
+    return;
+  }
+  if (analyzing) return;
+  analyzing = true;
 
   document.getElementById('parse-btn').disabled = true;
   document.getElementById('loading').style.display = 'flex';
   document.getElementById('error-box').style.display = 'none';
 
   try {
-    const consumeRes = await fetch('/.netlify/functions/consume-generation', {
+    // The server checks the code, reserves a generation, runs the AI, and only charges for a validated result.
+    const res = await fetch('/.netlify/functions/parse-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: state.license.code })
+      body: JSON.stringify({ code: state.license.code, resumeText: text })
     });
-    const consumeJson = await consumeRes.json();
+    let json = null;
+    try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
 
-    if (!consumeJson.success) {
-      state.license.usesRemaining = consumeJson.usesRemaining ?? 0;
+    let parsed = null;
+    if (res.ok && json && json.result) {
+      try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; }
+    }
+    if (parsed) {
+      state.data = parsed;
+      state.tailorToken = json.tailorToken || null;
+      if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
+      if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
       renderLicenseBadge();
-      const maxUses = consumeJson.maxUses || state.license.maxUses || 5;
-      showError(`You've used all ${maxUses} generations on this code.${etsyLinkHTML()}`, true);
+      renderEditFields();
+      renderPreview();
+      switchPanel('edit');
+      document.getElementById('export-bar').style.display = 'flex';
       return;
     }
-
-    state.license.usesRemaining = consumeJson.usesRemaining;
-    state.license.maxUses = consumeJson.maxUses;
-    renderLicenseBadge();
-
-    await runParse(text);
+    await handleParseFailure(res.status, json);
   } catch (e) {
-    showError("Couldn't verify your access code — please try again.");
+    showError("We couldn't reach the server. Please check your connection and try again.");
+    refreshLicenseCounter();
   } finally {
+    analyzing = false;
     document.getElementById('parse-btn').disabled = false;
     document.getElementById('loading').style.display = 'none';
   }
 }
 
-async function runParse(text) {
+// Failed analyses are not charged; this only explains what happened and refreshes the counter.
+async function handleParseFailure(status, json) {
+  const message = (json && json.error) || 'Something went wrong while analyzing your resume. Please try again.';
+  if (status === 401) {
+    state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
+    sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+    renderLicenseBadge();
+    showGate(message);
+    return;
+  }
+  if (status === 403 && json && json.usesRemaining === 0) {
+    state.license.usesRemaining = 0;
+    if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+    renderLicenseBadge();
+    const maxUses = Number(json.maxUses) || state.license.maxUses || 5;
+    showError(`You've used all ${maxUses} generations on this code.${etsyLinkHTML()}`, true);
+    return;
+  }
+  if (status === 403) {
+    state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
+    sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+    renderLicenseBadge();
+    showGate(message);
+    return;
+  }
+  showError(message);
+  await refreshLicenseCounter();
+}
+
+// Re-reads the real balance from the server after any failure, so the badge never shows a stale number.
+async function refreshLicenseCounter() {
+  if (!state.license.code) return;
   try {
-    const res = await fetch('/.netlify/functions/parse-resume', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeText: text })
+    const res = await fetch('/.netlify/functions/verify-license', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: state.license.code })
     });
     const json = await res.json();
-    const parsed = JSON.parse(json.result);
-    state.data = parsed;
-    renderEditFields();
-    renderPreview();
-    switchPanel('edit');
-    document.getElementById('export-bar').style.display = 'flex';
-  } catch(e) {
-    showError("Couldn't parse this resume — please fill in the fields manually.");
-    state.data = emptyData();
-    renderEditFields();
-    switchPanel('edit');
-    document.getElementById('export-bar').style.display = 'flex';
-  }
+    if (typeof json.usesRemaining === 'number') { state.license.usesRemaining = json.usesRemaining; renderLicenseBadge(); }
+  } catch (e) { /* the counter will refresh on the next action */ }
 }
 
 function emptyData() {
@@ -539,13 +621,13 @@ function showError(msg, isHTML) {
 
 function loadSample() {
   document.getElementById('resume-input').value = SAMPLE_RESUME;
-  document.getElementById('parse-btn').disabled = true;
-  document.getElementById('loading').style.display = 'flex';
   document.getElementById('error-box').style.display = 'none';
-  runParse(SAMPLE_RESUME).finally(() => {
-    document.getElementById('parse-btn').disabled = false;
-    document.getElementById('loading').style.display = 'none';
-  });
+  state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
+  state.tailorToken = null;
+  renderEditFields();
+  renderPreview();
+  switchPanel('edit');
+  document.getElementById('export-bar').style.display = 'flex';
 }
 
 // ── Render Edit Fields ────────────────────────────────────────────────────────
@@ -626,7 +708,14 @@ function renderEditFields() {
   `;
 }
 
-function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// Resume text is applicant- or AI-supplied, so it is HTML-escaped before it is placed into the preview markup.
+function escapeDeep(v) {
+  if (typeof v === 'string') return esc(v);
+  if (Array.isArray(v)) return v.map(escapeDeep);
+  if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = escapeDeep(v[k]); return o; }
+  return v;
+}
 
 // ── Data Helpers ──────────────────────────────────────────────────────────────
 function updateField(path, value) {
@@ -673,7 +762,8 @@ function renderPreview() {
   area.innerHTML = `<div class="resume-page" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
 }
 
-function buildResumeHTML(d, t, useAlt) {
+function buildResumeHTML(rawData, t, useAlt) {
+  const d = escapeDeep(rawData);
   const accent = useAlt && t.accentAlt ? t.accentAlt : t.accent;
   const accentLight = useAlt && t.accentAltLight ? t.accentAltLight : t.accentLight;
   const accent2 = t.accent2 || accent;
@@ -866,10 +956,25 @@ async function exportWord() {
 }
 
 // ── Tailor to Job Description ──────────────────────────────────────────────
+// Tailoring runs from the Edit tab, where the Paste tab's error box is hidden, so its messages show in the tailoring box.
+function showTailorError(msg) {
+  const box = document.getElementById('match-summary-box');
+  box.style.display = 'block';
+  box.innerHTML = `<div style="color:#c0392b;">${esc(msg)}</div>`;
+}
+
 async function tailorToJob() {
   const jobDesc = document.getElementById('job-desc-input').value.trim();
-  if (!jobDesc) { showError('Please paste a job description first.'); return; }
-  if (!state.data) { showError('Please analyze a resume first.'); return; }
+  if (!jobDesc) { showTailorError('Please paste a job description first.'); return; }
+  if (!state.data) { showTailorError('Please analyze a resume first.'); return; }
+  if (!state.tailorToken) {
+    showTailorError('Tailoring is included with each analyzed resume. Analyze your resume with your access code first.');
+    return;
+  }
+  if (jobDesc.length > 10000) {
+    showTailorError('That job description is too long (limit 10,000 characters). Please paste the key sections only.');
+    return;
+  }
 
   const btn = document.getElementById('tailor-btn');
   btn.disabled = true;
@@ -879,10 +984,15 @@ async function tailorToJob() {
     const res = await fetch('/.netlify/functions/tailor-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc })
+      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken })
     });
-    const json = await res.json();
-    if (json.error) { showError(json.error); return; }
+    let json = null;
+    try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
+    if (!res.ok || !json || !json.result) {
+      if (res.status === 401) state.tailorToken = null;
+      showTailorError((json && json.error) || "Couldn't tailor to this job — please try again.");
+      return;
+    }
 
     const parsed = JSON.parse(json.result);
     state.data = parsed.resume;
@@ -898,7 +1008,7 @@ async function tailorToJob() {
       ${ms.missingKeywords?.length ? `<div><strong style="color:#a52;">Not covered:</strong> ${ms.missingKeywords.map(esc).join(', ')}</div>` : ''}
     `;
   } catch (e) {
-    showError("Couldn't tailor to this job — please try again.");
+    showTailorError("Couldn't tailor to this job — please try again.");
   } finally {
     btn.disabled = false;
     btn.textContent = 'Tailor to This Job';
