@@ -121,7 +121,8 @@ Nothing here changes a license row, a code, or a remaining-uses balance. **Use o
 | G5 | Your personal code has **at least 2 uses left** (check below) |
 | G6 | Baseline fingerprints taken (below) and saved |
 | G7 | The current production deploy is identified in Netlify as the **known-good rollback target**, and will not be deleted |
-| G8 | The superseded-deployments inventory is completed (kept privately, not in this repo) |
+| G8 | The superseded-deployments check is done (kept privately, not in this repo) |
+| G9 | Netlify **auto-publishing is locked** (Deploys → **Stop auto publishing**), so merging builds the new deploy but does **not** publish it. With auto-publishing on, merging to the production branch publishes immediately, before any smoke test |
 
 ### Read-only queries
 
@@ -156,12 +157,13 @@ select count(*) from license_reservations where status = 'reserved' and expires_
 
 1. **Apply migration 01.** Verify: the privilege query shows every function server-only; `license_reservations` exists; **both fingerprints unchanged**; `select count(*) from license_reservations` is 0 (no real order in between, or explain it as in smoke-test check 4). If the API reports a new function as "not found", run `notify pgrst, 'reload schema';`.
 2. **Deploy Preview: non-mutating checks only** (below).
-3. **Merge** (you). Wait until Netlify shows the production deploy as **Published** for the merge commit.
-4. **Production smoke test** (below). If any abort condition occurs, roll back (§ Rollback) and stop.
-5. **Apply migration 02.** Verify: the privilege query now shows `consume_license_use` server-only; **customers-only fingerprint unchanged** (apart from a real order, as in smoke-test check 4).
-6. **Watch for 48–72 hours:** Netlify function logs for 401/403/429/503 spikes, the AI usage page against your sales, and confirm the next real order is delivered normally.
-7. **Cleanup of superseded deployments and the old AI key**, using your private inventory. Revoke the old AI key **last**, after the watch window (see Rollback for why).
-8. Follow-up change: delete `netlify/functions/consume-generation.js`; update the Founder OS notes.
+3. **Merge** (you). Because auto-publishing is locked (G9), Netlify builds the production deploy but does **not** publish it: the live site keeps running the old code. Wait until the build shows **Ready**.
+4. **Production smoke test on the unpublished deploy** (below): open that deploy's own link from its summary page. It runs the new code with the Production environment and the real database. If any abort condition occurs, **do not publish**: the live site is untouched and there is nothing to roll back.
+5. **Publish deploy** (that deploy's summary page → **Publish deploy**). Re-check the live site with the zero-AI negative checks only (no paid generation). Then **Start auto publishing** so later changes deploy normally. Do not forget this step: while locked, no future merge goes live.
+6. **Apply migration 02.** Verify: the privilege query now shows `consume_license_use` server-only; **customers-only fingerprint unchanged** (apart from a real order, as in smoke-test check 4).
+7. **Watch for at least 24 hours (up to 72):** Netlify function logs for 401/403/429/503 spikes, the AI usage page against your sales, and confirm the next real order is delivered normally.
+8. **Cleanup of superseded deployments and the old AI key**, using your private checklist. Revoke the old AI key **last**, after the watch window (see Rollback for why).
+9. Follow-up change: delete `netlify/functions/consume-generation.js`; update the Founder OS notes.
 
 ### Deploy Preview: non-mutating checks only
 
@@ -177,7 +179,7 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 
 **Exactly one paid generation is spent, on your personal code, and nothing else changes.**
 
-- **When:** a quiet period, right after the deploy is Published.
+- **Where and when:** on the **unpublished** production deploy (its own link), before it is published, in a quiet period.
 - **Input:** a **3-line fake resume** (no real personal data) for **one Analyze**, then a **1-line job description** for **one Tailor**. That is **2 AI calls**. Only the Analyze spends a paid generation; the Tailor spends none.
 - **Capture BEFORE you start (read-only)**, and write the answers down:
   ```sql
@@ -207,7 +209,8 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 
 | Situation | Action | Notes |
 |---|---|---|
-| Problem with the new code (any time in the watch window) | Netlify → Deploys → the recorded known-good deploy → **Publish deploy** | The old code works with the database in all three states: before migration 01, after 01, after 01+02 (checked in the test suite). The old deploy carries the **old AI key**, so that key must stay valid until the window ends. |
+| Problem found **before** publishing | Do not publish. The live site never changed | The cheapest rollback there is. Leave auto-publishing locked until it is fixed |
+| Problem with the new code **after** publishing (any time in the watch window) | Netlify → Deploys → the recorded known-good deploy → **Publish deploy** | The old code works with the database in all three states: before migration 01, after 01, after 01+02 (checked in the test suite). The old deploy carries the **old AI key**, so that key must stay valid until the window ends. |
 | Problem after migration 02 | `grant execute on function public.consume_license_use(text) to public;` | Restores the original grants. |
 | Problem with migration 01 | Roll the **code** back first. Leave migration 01 in place: it is inert for the old code. Drop its objects only if you must, and never while the new code is live (it would fail closed with a 503 and no charge). | |
 | Secret problem | See §2.1 (rotate / emergency) | |
