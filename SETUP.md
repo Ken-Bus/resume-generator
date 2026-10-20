@@ -47,7 +47,7 @@ Set in Site configuration → Environment variables. `SUPABASE_*` and `ANTHROPIC
 | `SUPABASE_URL` | yes | Project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Server-only key. Never put it in the browser, the repo, or a chat |
 | `ANTHROPIC_API_KEY` | yes | AI provider key. A spend limit on it is **mandatory** (§2.2) |
-| `AI_TIMEOUT_MS` | **verify before release** (§2.3) | Abort an AI call after this long. Must sit below the Netlify function timeout |
+| `AI_TIMEOUT_MS` | **set to `50000`** (§2.3) | Abort an AI call after this long. Must sit below the Netlify function timeout (documented as 60 s) |
 | `TAILOR_TOKEN_SECRET` | yes, for tailoring | Random secret, at least 32 characters (§2.1). If missing or short, analysis still works but tailoring is disabled and a warning is logged |
 | `TAILOR_TOKEN_SECRET_PREVIOUS` | only during a rotation | The old secret, still **accepted** (never used to sign) so customers are not logged out (§2.1) |
 | `CODE_SUPPLY_THRESHOLD` | optional (default 20) | Replenish when fewer unassigned codes remain |
@@ -76,13 +76,14 @@ Secret values are never written in this repo, in a pull request, in a chat, in a
 - Record the limit, the alert thresholds and the key's name/date somewhere private. Do not proceed to §5 until this is done.
 - After release, check the usage page daily for a week. Expected volume is about one AI call per analysis plus one per tailoring run, which should track your Etsy sales. Anything much higher is a signal to stop and investigate.
 
-### 2.3 Netlify function timeout (mandatory to verify)
+### 2.3 AI timeout: `AI_TIMEOUT_MS` (recommended value: 50000)
 
-1. Find the effective synchronous function timeout: Site configuration → Functions (the exact location varies by plan). If you cannot find it, assume **10 seconds** and record that you assumed it.
-2. Measure real behavior: Logs → Functions → `parse-resume`, and note the longest of the last ~20 durations.
-3. Set `AI_TIMEOUT_MS` to the timeout **minus 1500 ms** (for example 26 s → `24500`; 10 s → `8500`).
-4. If real durations are close to that limit, **do not release**. Raise the platform timeout, or ask for the output-size cap to be lowered, because analyses longer than the limit fail (uncharged) and customers see errors.
-- If the platform kills the function before `AI_TIMEOUT_MS`, customers are still protected (the lease lapses and nothing is charged), but that analysis fails.
+- Netlify's current documentation lists **60 seconds** for synchronous functions and says it is **not configurable**. (Older posts mention 10 s, or 26 s on request, and one 2025 support guide says 30 s.) This project sets no function timeout of its own, so the platform default applies. The live app already runs analysis and tailoring, whose AI output takes well over 10 seconds, so the old 10-second figure is unlikely to apply.
+- **Set `AI_TIMEOUT_MS` to `50000`** (Production and Deploy Previews). That leaves about 10 seconds for start-up, the database calls and the response, and the reservation lease adjusts automatically (to 70 seconds).
+- **Do not leave it unset.** The built-in fallback is 24000, which would cut off longer resumes: a 2–3 page resume's analysis can take 25–45 seconds.
+- **Why set it high rather than low:** if it is set too low, long analyses fail cleanly but *every time*, which is a regression for paying customers. If the platform's real limit turns out lower than the value, a long analysis is killed by the platform instead. It is still not charged (the lease lapses) and behaves as it did before this release.
+- **If Netlify logs ever show "Task timed out after N seconds":** that N is the real limit. Set `AI_TIMEOUT_MS` to `N × 1000 − 4000` (for example 26 → `22000`) and redeploy.
+- **During the 24-hour watch**, search the function logs for "timed out" and for `reason: 'timeout'`. A few are normal (very long or slow outputs; uncharged). A pattern means adjusting the value.
 
 ## 3. Seeding license codes
 
@@ -115,7 +116,7 @@ Nothing here changes a license row, a code, or a remaining-uses balance. **Use o
 | Gate | Check |
 |---|---|
 | G1 | AI provider **spend limit and alerts** set and recorded (§2.2) |
-| G2 | Netlify **function timeout** recorded and `AI_TIMEOUT_MS` set (§2.3) |
+| G2 | `AI_TIMEOUT_MS` set to **50000** in Production and Deploy Previews (§2.3) |
 | G3 | `TAILOR_TOKEN_SECRET` set for Production and Deploy Previews, different values (§2.1) |
 | G4 | A **new** AI key created and set in all four contexts. The currently live site keeps its old key until redeployed, so nothing changes yet |
 | G5 | Your personal code has **at least 2 uses left** (check below) |
