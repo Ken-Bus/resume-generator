@@ -114,6 +114,16 @@ test('customer page (Chromium, mocked endpoints)', async (t) => {
     await s.page.waitForSelector('#license-gate', { state: 'visible' }); await s.close();
   });
 
+  await t.test('a throttled code shows the friendly wait message and the real counter; no crash, no charge', async () => {
+    const s = await open({ 'verify-license': verifyOk, 'parse-resume': () => ({ status: 429, json: { error: 'We’ve had several unsuccessful attempts on this code in a short time. To protect your account, please wait about 4 minutes and try again. You haven’t been charged.', retryAfterSeconds: 230, usesRemaining: 5, maxUses: 5 } }) });
+    await unlock(s.page); await paste(s.page); await s.page.click('#parse-btn');
+    await s.page.waitForSelector('#error-box', { state: 'visible' });
+    assert.match(await s.page.innerText('#error-box'), /wait about 4 minutes/);
+    assert.match(await s.page.innerText('#license-badge'), /5 of 5/);
+    assert.equal(await s.page.isDisabled('#parse-btn'), false);
+    await s.close();
+  });
+
   await t.test('over-long resume is stopped in the browser with a clear message (no silent truncation, no request)', async () => {
     const s = await open({ 'verify-license': verifyOk, 'parse-resume': okParse() });
     await unlock(s.page); await s.page.fill('#resume-input', 'x'.repeat(30001)); await s.page.click('#parse-btn');

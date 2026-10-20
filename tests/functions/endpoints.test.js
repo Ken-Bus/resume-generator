@@ -78,6 +78,8 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
       assert.equal(r.statusCode, 502);
       assert.match(parseBody(r).error, /haven’t been charged/);
       assert.equal(await uses(c), 5); assert.deepEqual((await rsv(c)).map(x => x.status), ['released']);
+      const counted = (await db.admin('select failure_counted f from license_reservations where code=$1', [c])).rows[0].f;
+      assert.equal(counted, !['http500', 'throw'].includes(mode));           // outages are never counted; anything that may have cost money is
       ai.mode = 'ok'; assert.equal((await callParse(c)).statusCode, 200);      // and the customer can simply retry
       assert.equal(await uses(c), 4);
     });
@@ -88,6 +90,7 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
     const started = Date.now(); const r = await callParse(c);
     assert.equal(r.statusCode, 502); assert.ok(Date.now() - started < 4000);
     assert.equal(await uses(c), 5); assert.deepEqual((await rsv(c)).map(x => x.status), ['released']);
+    assert.equal((await db.admin('select failure_counted f from license_reservations where code=$1', [c])).rows[0].f, true);   // a timeout may have been billed
   });
 
   await t.test('CONCURRENCY: 12 simultaneous valid requests on a 5-use code => exactly 5 succeed, 5 AI calls, never a 6th', async () => {
@@ -171,8 +174,8 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
     ai.mode = 'throw'; const r1 = await callParse(c);
     ai.mode = 'ok'; const realCommit = hs.license.commit; hs.license.commit = async () => { throw new Error('SECRET_INTERNAL_DETAIL'); };
     const r2 = await callParse(c); hs.license.commit = realCommit; logs.restore();
-    for (const r of [r1, r2]) for (const needle of [c, 'Jordan', 'Maple', 'SECRET_INTERNAL_DETAIL', 'socket hang up']) assert.ok(!r.body.includes(needle), `response leaked ${needle}`);
-    for (const l of logs.lines) for (const needle of [c, 'Jordan', 'Maple']) assert.ok(!l.includes(needle), `log leaked ${needle}: ${l}`);
+    for (const r of [r1, r2]) for (const needle of [c, 'Jordan', 'Maple', 'SECRET_INTERNAL_DETAIL', 'socket hang up', SECRET]) assert.ok(!r.body.includes(needle), `response leaked ${needle}`);
+    for (const l of logs.lines) for (const needle of [c, 'Jordan', 'Maple', SECRET]) assert.ok(!l.includes(needle), `log leaked ${needle}: ${l}`);
   });
 
   await t.test('existing customer mid-way keeps their balance, finishes it, then is cleanly blocked', async () => {
@@ -244,6 +247,94 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
     assert.equal((await hs.tailor({ httpMethod: 'GET' })).statusCode, 405);
     delete process.env.TAILOR_TOKEN_SECRET; assert.equal((await callTailor(token)).statusCode, 503);
     assert.equal(ai.calls, 0);
+  });
+
+
+  // ---------------- B2: bounded failure protection, end to end ----------------
+  await t.test('B2 parse: 100 deliberately failing calls on one code => exactly 6 reach the AI, then 429; nothing charged', async () => {
+    reset(); const c = await seed(), other = await seed(); ai.mode = 'notjson';
+    const out = []; for (let i = 0; i < 100; i++) out.push(await callParse(c));
+    assert.equal(ai.calls, 6);                                                     // the failure budget, not 100
+    assert.deepEqual(out.slice(0, 6).map(r => r.statusCode), [502, 502, 502, 502, 502, 502]);
+    assert.ok(out.slice(6).every(r => r.statusCode === 429));
+    const th = out[6]; const b = parseBody(th);
+    assert.match(b.error, /wait about \d+ minutes? and try again\. You haven’t been charged/);
+    assert.equal(th.headers['Retry-After'], String(b.retryAfterSeconds)); assert.ok(b.retryAfterSeconds >= 1 && b.retryAfterSeconds <= 900);
+    assert.equal(await uses(c), 5);
+    ai.mode = 'ok'; assert.equal((await callParse(other)).statusCode, 200);       // another customer is unaffected
+    assert.equal((await callParse(c)).statusCode, 429);                            // and the throttled code stays closed
+  });
+
+  await t.test('B2 parse: a provider outage never penalises customers — 60 failures in a row, then instant recovery', async () => {
+    reset(); const c = await seed(); const codes = [];
+    ai.mode = 'http500'; for (let i = 0; i < 30; i++) codes.push((await callParse(c)).statusCode);
+    ai.mode = 'throw'; for (let i = 0; i < 30; i++) codes.push((await callParse(c)).statusCode);
+    assert.ok(codes.every(x => x === 502)); assert.equal(ai.calls, 60);
+    ai.mode = 'ok'; const r = await callParse(c);
+    assert.equal(r.statusCode, 200); assert.equal(await uses(c), 4);              // never throttled, and the paid generation still works
+  });
+
+  await t.test('B2 parse: a flaky model (2 bad answers then a good one) never throttles a legitimate customer', async () => {
+    reset(); const c = await seed();
+    ai.mode = 'notjson'; assert.equal((await callParse(c)).statusCode, 502); assert.equal((await callParse(c)).statusCode, 502);
+    ai.mode = 'ok'; for (let i = 0; i < 5; i++) assert.equal((await callParse(c)).statusCode, 200);
+    assert.equal(await uses(c), 0);
+  });
+
+  await t.test('B2 parse: concurrent failing bursts cannot exceed budget + uses remaining in total AI calls', async () => {
+    reset(); const c = await seed(); ai.mode = 'truncated'; ai.delayMs = 40;
+    for (let burst = 0; burst < 6; burst++) await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
+    assert.ok(ai.calls <= 6 + 5, `AI calls ${ai.calls} must stay within budget (6) + uses remaining (5)`);
+    const before = ai.calls; await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
+    assert.equal(ai.calls, before);                                                // once throttled, no further AI calls at all
+    assert.equal(await uses(c), 5);
+  });
+
+  await t.test('B2 parse: a throttled code costs a customer nothing and does not block the page flow (counts reported)', async () => {
+    reset(); const c = await seed(); ai.mode = 'badshape';
+    for (let i = 0; i < 6; i++) await callParse(c);
+    const b = parseBody(await callParse(c)); assert.equal(b.usesRemaining, 5); assert.equal(b.maxUses, 5);
+    assert.equal((await hs.verify(post({ code: c }))).statusCode, 200);            // verify-license still works, so the counter stays honest
+  });
+
+  await t.test('B2 tailor: 100 failing calls on one token => at most 7 AI calls (5 runs + 2 forgiven), then 429', async () => {
+    reset(); const { token } = await paid(); ai.calls = 0; ai.mode = 'notjson';
+    const out = []; for (let i = 0; i < 100; i++) out.push((await callTailor(token)).statusCode);
+    assert.equal(ai.calls, 7);
+    assert.ok(out.slice(0, 7).every(x => x === 502)); assert.ok(out.slice(7).every(x => x === 429));
+  });
+
+  await t.test('B2 tailor: provider outages are always given back — 60 failures, then tailoring still works', async () => {
+    reset(); const { token, rid } = await paid(); ai.calls = 0; const codes = [];
+    ai.mode = 'http500'; for (let i = 0; i < 30; i++) codes.push((await callTailor(token)).statusCode);
+    ai.mode = 'throw'; for (let i = 0; i < 30; i++) codes.push((await callTailor(token)).statusCode);
+    assert.ok(codes.every(x => x === 502)); assert.equal(ai.calls, 60);
+    assert.equal((await db.admin('select tailor_count c from license_reservations where id=$1', [rid])).rows[0].c, 0);
+    ai.mode = 'ok'; assert.equal((await callTailor(token)).statusCode, 200);
+  });
+
+  await t.test('B2 tailor: concurrent failing replays are bounded too', async () => {
+    reset(); const { token } = await paid(); ai.calls = 0; ai.mode = 'truncated'; ai.delayMs = 40;
+    await Promise.all(Array.from({ length: 30 }, () => callTailor(token)));
+    assert.ok(ai.calls <= 7 + 5, `AI calls ${ai.calls}`);          // 5 runs + 2 forgiven, plus at most the in-flight window
+    const before = ai.calls; await Promise.all(Array.from({ length: 10 }, () => callTailor(token)));
+    assert.ok(ai.calls - before <= 2);
+  });
+
+  // ---------------- secret rotation without logging customers out ----------------
+  await t.test('rotation: tokens signed with the PREVIOUS secret keep working while it is configured, and stop when it is removed', async () => {
+    reset(); const { rid } = await paid();
+    const OLD = 'previous-secret-previous-secret-previous-secret-9';
+    const oldTok = hs.tokens.sign(OLD, rid, 600);
+    assert.equal((await callTailor(oldTok)).statusCode, 401);                      // unknown secret: rejected
+    process.env.TAILOR_TOKEN_SECRET_PREVIOUS = OLD;
+    assert.equal((await callTailor(oldTok)).statusCode, 200);                      // rotation window: accepted
+    const forged = hs.tokens.sign('attacker-secret-attacker-secret-attacker-secret', rid, 600);
+    assert.equal((await callTailor(forged)).statusCode, 401);                      // a third secret is never accepted
+    process.env.TAILOR_TOKEN_SECRET_PREVIOUS = 'short'; assert.equal((await callTailor(oldTok)).statusCode, 401);   // an unusable previous secret is ignored
+    delete process.env.TAILOR_TOKEN_SECRET_PREVIOUS; assert.equal((await callTailor(oldTok)).statusCode, 401);      // rotation finished: old tokens die
+    const fresh = parseBody(await callParse(await seed())).tailorToken;            // new tokens are always signed with the CURRENT secret only
+    assert.equal(hs.tokens.verify(SECRET, fresh).ok, true); assert.equal(hs.tokens.verify(OLD, fresh).ok, false);
   });
 
   // ---------------- compatibility, retirement, preservation ----------------

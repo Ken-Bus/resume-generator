@@ -20,18 +20,22 @@ function sign(secret, reservationId, ttlSeconds, nowMs = Date.now()) {
   return `${payload}.${b64u(mac(secret, payload))}`;
 }
 
-function verify(secret, token, nowMs = Date.now()) {
+// `secrets` is the current secret, or [current, previous]. Tokens are always SIGNED with the current secret;
+// during a rotation the previous secret is still ACCEPTED, so customers mid-session are not logged out.
+function verify(secrets, token, nowMs = Date.now()) {
   if (typeof token !== 'string' || token.length > 2048) return { ok: false, reason: 'missing' };
   const parts = token.split('.');
   if (parts.length !== 2 || !parts[0] || !parts[1]) return { ok: false, reason: 'malformed' };
   const [payload, sig] = parts;
 
-  const expected = mac(secret, payload);
   let given;
   try { given = Buffer.from(sig, 'base64url'); } catch (e) { return { ok: false, reason: 'malformed' }; }
-  if (given.length !== expected.length || !crypto.timingSafeEqual(given, expected)) {
-    return { ok: false, reason: 'bad_signature' };
+  let valid = false;
+  for (const secret of [].concat(secrets).filter(isUsable)) {      // every candidate is checked, in constant time each
+    const expected = mac(secret, payload);
+    if (given.length === expected.length && crypto.timingSafeEqual(given, expected)) valid = true;
   }
+  if (!valid) return { ok: false, reason: 'bad_signature' };
 
   let data;
   try { data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch (e) { return { ok: false, reason: 'malformed' }; }

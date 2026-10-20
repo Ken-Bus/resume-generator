@@ -3,9 +3,9 @@ const assert = require('node:assert/strict');
 const H = require('./helpers');
 
 const FN = {
-  reserve: 'public.reserve_license_use(text,integer)', commit: 'public.commit_license_use(uuid)',
-  release: 'public.release_license_use(uuid)', tailor: 'public.consume_tailor_use(uuid,integer)',
-  refund: 'public.refund_tailor_use(uuid)', legacy: 'public.consume_license_use(text)',
+  reserve: 'public.reserve_license_use(text,integer,integer,integer,integer)', commit: 'public.commit_license_use(uuid)',
+  release: 'public.release_license_use(uuid,boolean)', tailor: 'public.consume_tailor_use(uuid,integer)',
+  refund: 'public.refund_tailor_use(uuid,boolean,integer)', legacy: 'public.consume_license_use(text)',
 };
 const CODES = Array.from({ length: 12 }, (_, i) => `FG-TEST-${String(i).padStart(4, '0')}`);
 
@@ -152,7 +152,7 @@ test('DB-backed regression tests', async (t) => {
     const rs = await Promise.all(Array.from({ length: 20 }, () => tl(a.reservation_id)));
     assert.equal(rs.filter(r => r.outcome === 'ok').length, 5);
     assert.equal(rs.filter(r => r.outcome === 'limit').length, 15);
-    for (let i = 0; i < 8; i++) await q('select public.refund_tailor_use($1)', [a.reservation_id]);
+    for (let i = 0; i < 8; i++) await q('select public.refund_tailor_use($1, true)', [a.reservation_id]);
     assert.equal((await q('select tailor_count from license_reservations where id=$1', [a.reservation_id])).rows[0].tailor_count, 0);
     assert.equal((await tl('00000000-0000-0000-0000-000000000000')).outcome, 'not_found');
   });
@@ -190,6 +190,131 @@ test('DB-backed regression tests', async (t) => {
     const cnt = await q(`select count(code)::int n from licenses where assigned = false`);
     assert.ok(cnt.rows[0].n >= 0);
     await q(`insert into licenses(code,max_uses,uses_remaining,assigned) values ('FG-NEW0-0001',5,5,false),('FG-NEW0-0002',5,5,false)`);
+  });
+
+
+  // ---------------- B2: bounded failure protection ----------------
+  let n2 = 0;
+  const fresh2 = async (uses = 5) => { const c = `FG-B2${String(++n2).padStart(2, '0')}-0000`; await H.seed(live, [{ code: c, uses }]); return c; };
+  const rel = async (id, counted) => (counted === undefined ? (await q('select public.release_license_use($1) s', [id])) : (await q('select public.release_license_use($1,$2) s', [id, counted]))).rows[0].s;
+  const resv = async (c, ...a) => (await q(`select * from public.reserve_license_use($1${a.map((_, i) => `,$${i + 2}`).join('')})`, [c, ...a])).rows[0];
+  // Insert a historical failure, `mins` minutes ago. kind: released|expired. counted only matters for released.
+  const addFailure = (c, mins, kind = 'released', counted = true) => live.admin(
+    `insert into license_reservations(code,status,created_at,expires_at,released_at,failure_counted)
+     values ($1,$2, now() - make_interval(mins => $3) - interval '45 seconds', now() - make_interval(mins => $3),
+             case when $2 = 'released' then now() - make_interval(mins => $3) end, $4)`, [c, kind, mins, counted]);
+
+  await t.test('B2: 6 costly failures in 15 minutes throttle the code; uses untouched; retry time given', async () => {
+    const c = await fresh2();
+    for (let i = 0; i < 6; i++) { const r = await resv(c); assert.equal(r.outcome, 'reserved'); await rel(r.reservation_id); }
+    const t7 = await resv(c);
+    assert.equal(t7.outcome, 'throttled'); assert.equal(t7.remaining, 5);
+    assert.ok(t7.retry_after_seconds >= 1 && t7.retry_after_seconds <= 900, String(t7.retry_after_seconds));
+    assert.equal(await remaining(c), 5);
+  });
+
+  await t.test('B2: provider outages (released uncounted) never throttle, however many', async () => {
+    const c = await fresh2();
+    for (let i = 0; i < 40; i++) { const r = await resv(c); assert.equal(r.outcome, 'reserved'); await rel(r.reservation_id, false); }
+    assert.equal((await resv(c)).outcome, 'reserved');
+    assert.equal((await q(`select count(*)::int n from license_reservations where code=$1 and failure_counted`, [c])).rows[0].n, 0);
+  });
+
+  await t.test('B2: lapsed leases (worker died or timed out) count as costly failures', async () => {
+    const c = await fresh2();
+    for (let i = 0; i < 6; i++) { const r = await resv(c); await live.admin(`update license_reservations set expires_at = now() - interval '1 second' where id=$1`, [r.reservation_id]); }
+    assert.equal((await resv(c)).outcome, 'throttled');
+  });
+
+  await t.test('B2: failures age out of the window; the retry time is exact', async () => {
+    const c = await fresh2();
+    for (const m of [14, 13, 12, 11, 10, 9]) await addFailure(c, m);
+    const r = await resv(c);
+    assert.equal(r.outcome, 'throttled');
+    assert.ok(r.retry_after_seconds >= 50 && r.retry_after_seconds <= 70, `retry ${r.retry_after_seconds}s (the oldest failure leaves the window in ~60s)`);
+    await live.admin(`update license_reservations set released_at = now() - interval '16 minutes' where code=$1 and released_at < now() - interval '13 minutes'`, [c]);
+    assert.equal((await resv(c)).outcome, 'reserved');
+  });
+
+  await t.test('B2: daily cap — 30 failures spread over 20 hours throttle even though the 15-minute window is clear', async () => {
+    const c = await fresh2();
+    for (let i = 1; i <= 30; i++) await addFailure(c, i * 40);
+    const r = await resv(c);
+    assert.equal(r.outcome, 'throttled');
+    assert.ok(Math.abs(r.retry_after_seconds - 4 * 3600) <= 15, `retry ${r.retry_after_seconds}s (the oldest of 30 leaves the 24h window in ~4h)`);
+    await live.admin(`update license_reservations set released_at = now() - interval '25 hours' where id = (select id from license_reservations where code=$1 order by released_at asc limit 1)`, [c]);
+    assert.equal((await resv(c)).outcome, 'reserved');
+  });
+
+  await t.test('B2: budget is per code, successes do not count, and a throttle never blocks an in-flight paid result', async () => {
+    const a = await fresh2(), b = await fresh2();
+    const inflight = await resv(a);                                           // a legitimate request already running
+    for (const m of [1, 2, 3, 4, 5, 6]) await addFailure(a, m);               // ...then the code becomes throttled
+    assert.equal((await resv(a)).outcome, 'throttled');
+    assert.equal((await resv(b)).outcome, 'reserved');                        // another customer is unaffected
+    assert.equal((await commit(inflight.reservation_id)).outcome, 'committed'); // and the in-flight customer still gets their result
+    const c = await fresh2(); for (let i = 0; i < 10; i++) { const r = await resv(c); await commit(r.reservation_id); }   // successes never throttle
+    assert.equal((await resv(c)).outcome, 'exhausted');
+  });
+
+  await t.test('B2: parallel bursts are bounded by uses remaining, then the throttle closes the door', async () => {
+    const c = await fresh2(); for (const m of [1, 2, 3, 4, 5]) await addFailure(c, m);        // 5 of the 6-failure budget used
+    const rs = await Promise.all(Array.from({ length: 20 }, () => resv(c)));
+    assert.equal(rs.filter(r => r.outcome === 'reserved').length, 5);                          // never more than uses remaining
+    assert.equal(rs.filter(r => r.outcome === 'throttled').length, 0);
+    for (const r of rs.filter(x => x.outcome === 'reserved')) await rel(r.reservation_id);     // all five fail
+    assert.equal((await resv(c)).outcome, 'throttled');                                        // total costly failures bounded at budget + uses
+    const one = await fresh2(1); for (const m of [1, 2, 3, 4, 5]) await addFailure(one, m);
+    const rs1 = await Promise.all(Array.from({ length: 20 }, () => resv(one)));
+    assert.equal(rs1.filter(r => r.outcome === 'reserved').length, 1);
+  });
+
+  await t.test('B2: custom limits are honoured; the first release decides whether a failure counts', async () => {
+    const c = await fresh2();
+    for (let i = 0; i < 2; i++) { const r = await resv(c, 45, 900, 2, 30); await rel(r.reservation_id); }
+    assert.equal((await resv(c, 45, 900, 2, 30)).outcome, 'throttled');
+    const d = await fresh2(); const r = await resv(d);
+    assert.equal(await rel(r.reservation_id, false), 'released'); assert.equal(await rel(r.reservation_id, true), 'released');
+    assert.equal((await q('select failure_counted f from license_reservations where id=$1', [r.reservation_id])).rows[0].f, false);
+  });
+
+  await t.test('B2: tailoring — outages are always given back; other failures only twice per paid generation, then they stay used', async () => {
+    const c = await fresh2(); const a = await resv(c); await commit(a.reservation_id);
+    const use = async () => (await q('select * from public.consume_tailor_use($1,5)', [a.reservation_id])).rows[0];
+    const refund = async (fault) => (await q('select public.refund_tailor_use($1,$2,2) n', [a.reservation_id, fault])).rows[0].n;
+    for (let i = 0; i < 20; i++) { assert.equal((await use()).outcome, 'ok'); assert.equal(await refund(true), 0); }   // outages: unlimited, free
+    assert.equal((await q('select tailor_refunds r from license_reservations where id=$1', [a.reservation_id])).rows[0].r, 0);
+    for (let i = 0; i < 2; i++) { await use(); assert.equal(await refund(false), 0); }                          // two forgiven
+    await use(); assert.equal(await refund(false), 1);                                                          // third costly failure stays used
+    for (let i = 0; i < 4; i++) assert.equal((await use()).outcome, 'ok');
+    assert.equal((await use()).outcome, 'limit');                                                               // total AI calls this op: 20 free + 2 + 5
+  });
+
+  await t.test('rollback safety: the OLD code\'s database calls still work after both migrations and coexist with reservations; the rollback grant reopens exactly what the revoke closed', async () => {
+    const c = await fresh2(2);
+    const old = (await q('select * from public.consume_license_use($1)', [c])).rows[0];            // what the pre-release consume-generation does
+    assert.deepEqual([old.success, old.uses_remaining], [true, 1]);
+    assert.equal((await q('select uses_remaining u, max_uses m from licenses where code=$1', [c])).rows[0].u, 1);   // and verify-license's read
+    const r = await resv(c); assert.equal((await commit(r.reservation_id)).remaining, 0);          // new accounting continues from the same column
+    assert.equal((await resv(c)).outcome, 'exhausted');
+    const anon = live.pool('anon');
+    await assert.rejects(anon.query('select * from public.consume_license_use($1)', [c]), /permission denied/);   // migration 02 state
+    await live.admin('grant execute on function public.consume_license_use(text) to public');                    // documented rollback
+    assert.equal((await anon.query('select * from public.consume_license_use($1)', [await fresh2(1)])).rows[0].success, true);
+    await live.admin('revoke execute on function public.consume_license_use(text) from public, anon, authenticated');  // back to the hardened state
+    await assert.rejects(anon.query('select * from public.consume_license_use($1)', [c]), /permission denied/);
+  });
+
+  await t.test('B2: migration 01 cleans up the signatures of an earlier draft and leaves exactly one of each function', async () => {
+    const old = await H.freshDatabase('rg_old');
+    await H.liveState(old);
+    await old.admin(`create function reserve_license_use(p_code text, p_lease_seconds integer) returns integer language sql as 'select 1';
+                     create function release_license_use(p_reservation_id uuid) returns text language sql as $$select 'x'$$;
+                     create function refund_tailor_use(p_reservation_id uuid) returns integer language sql as 'select 1';`);
+    await H.applyMigration(old, H.MIG1);
+    const r = await old.admin(`select proname, count(*)::int n from pg_proc p join pg_namespace s on s.oid=p.pronamespace where s.nspname='public' and proname in ('reserve_license_use','release_license_use','refund_tailor_use') group by 1 order by 1`);
+    assert.deepEqual(r.rows, [{ proname: 'refund_tailor_use', n: 1 }, { proname: 'release_license_use', n: 1 }, { proname: 'reserve_license_use', n: 1 }]);
+    await old.close();
   });
 
   // ---- fresh install from schema.sql must equal the migrated production shape ----

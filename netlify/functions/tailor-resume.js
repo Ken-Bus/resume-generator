@@ -1,7 +1,7 @@
 const { getSupabaseClient, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
-const { callClaude, extractJson, assertTailorShape, isObject } = require('./_lib/ai');
+const { callClaude, extractJson, assertTailorShape, isObject, isProviderFault } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 
@@ -37,7 +37,8 @@ exports.handler = async function(event) {
   const { resumeData, jobDescription, tailorToken } = parsed.body;
 
   // Authorisation and input checks all run BEFORE any billable AI call.
-  const auth = tokens.verify(secret, tailorToken);
+  // During a secret rotation, TAILOR_TOKEN_SECRET_PREVIOUS is still accepted (never used to sign).
+  const auth = tokens.verify([secret, process.env.TAILOR_TOKEN_SECRET_PREVIOUS], tailorToken);
   if (!auth.ok) {
     return json(401, { error: auth.reason === 'missing' ? MSG.needAnalyze : MSG.expired });
   }
@@ -86,8 +87,11 @@ ${jobDescription}`;
     const text = await callClaude({ prompt, maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
     resultText = JSON.stringify(assertTailorShape(extractJson(text)));
   } catch (err) {
-    await license.safeTailorRefund(supabase, auth.reservationId);
-    console.error('tailor-resume: generation failed', { reservation: auth.reservationId, reason: (err && err.reason) || 'unexpected' });
+    // A provider outage is always given back. Other failures are given back only a couple of times per paid
+    // generation, so repeated failures cannot create unlimited AI calls.
+    const providerFault = isProviderFault(err);
+    await license.safeTailorRefund(supabase, auth.reservationId, providerFault, cfg.TAILOR_FORGIVEN_FAILURES);
+    console.error('tailor-resume: generation failed', { reservation: auth.reservationId, reason: (err && err.reason) || 'unexpected', providerFault });
     return json(502, { error: MSG.aiFailed });
   }
 

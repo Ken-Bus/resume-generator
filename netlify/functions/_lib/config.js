@@ -22,7 +22,15 @@ function get() {
     LEASE_SECONDS: Math.max(45, Math.ceil(aiTimeoutMs / 1000) + 20),
     // Tailoring authorisation: bound to one paid generation.
     TAILOR_TOKEN_TTL_SECONDS: 2 * 60 * 60,
-    TAILOR_MAX_PER_PAID_OP: 5
+    TAILOR_MAX_PER_PAID_OP: 5,
+    // Bounded failure protection (enforced in the database, under the license row lock).
+    // Failures are free to the customer, so costly ones (the AI ran but gave nothing usable) are budgeted per code.
+    // Provider outages (HTTP errors, network failures) are never counted.
+    FAIL_WINDOW_SECONDS: 15 * 60,
+    FAIL_WINDOW_MAX: 6,
+    FAIL_DAY_MAX: 30,
+    // Costly tailoring failures given back per paid generation; further ones stay used.
+    TAILOR_FORGIVEN_FAILURES: 2
   };
 }
 

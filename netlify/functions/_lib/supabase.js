@@ -20,10 +20,10 @@ function normalizeCode(raw) {
   return typeof raw === 'string' ? raw.trim().toUpperCase() : '';
 }
 
-function json(statusCode, body) {
+function json(statusCode, body, extraHeaders) {
   return {
     statusCode,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(extraHeaders || {}) },
     body: JSON.stringify(body)
   };
 }

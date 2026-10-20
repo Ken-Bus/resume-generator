@@ -7,12 +7,22 @@ How the 5-generations-per-code system is set up, how codes reach buyers, and how
 All billable work happens server-side. The browser never decides whether a generation is allowed.
 
 1. **`parse-resume`** receives the license code and the resume text.
-2. It **reserves** one generation in Supabase (`reserve_license_use`). This is atomic, so simultaneous requests can never hold more reservations than uses remain. A code with no uses left, or with all its remaining uses already in flight, is rejected **before any AI call**.
+2. It **reserves** one generation in Supabase (`reserve_license_use`). This is atomic, so simultaneous requests can never hold more reservations than uses remain. A code with no uses left, one throttled for repeated costly failures (see below), or with all its remaining uses already in flight, is rejected **before any AI call**.
 3. It runs the AI. If the AI errors, times out, is cut off, or returns something that isn't a usable resume, the reservation is **released** and the customer is **not charged**.
 4. Only after a validated result does it **commit** the reservation (`commit_license_use`), which decrements `licenses.uses_remaining` exactly once. Commit is idempotent.
 5. If the function crashes or is killed mid-call, nobody releases the reservation, but it has a short **lease** (45 s by default) and simply lapses. A failure can never permanently cost a use.
 6. A successful parse returns a **signed tailoring token** (HMAC, 2-hour life) tied to that paid generation. **`tailor-resume`** requires it, costs no extra generation, and allows at most 5 runs per paid generation (counted atomically in the database).
 7. "Try Sample" loads a static sample in the browser. It makes no AI call.
+
+### Bounded failure protection
+
+Failures are free to the customer, so they must not be free to abuse. Both limits are enforced in the database, under the same row lock as the reservation, so parallel bursts cannot bypass them.
+
+- **Parsing:** a failure that may have cost money (the AI ran but gave nothing usable, or timed out) counts against a **per-code budget of 6 per 15 minutes and 30 per 24 hours**. Past that the code is throttled: no AI call, no charge, HTTP 429 with a "please wait about N minutes" message and a `Retry-After` header. A burst can add at most "uses remaining" failures beyond the budget.
+- **Provider outages never count** (HTTP errors or network failures from the AI provider). They cost nothing, so a customer is never penalised for them, however long they last.
+- **A paid result already in flight always completes**, even if the code becomes throttled while it runs.
+- **Tailoring:** an outage is always given back. Other failed runs are given back **twice per paid generation**; after that a failed run stays used, so a token yields at most 7 AI calls plus any outages.
+- These limits bound *failure* cost per code. The AI provider **spend limit** (below) is the overall backstop and is **mandatory**.
 
 `consume-generation` is a **deprecated shim** that reads counts and never writes. It exists only so a browser tab opened before the release is not charged for a call the new server then rejects. Delete it about 72 hours after the release.
 
@@ -20,28 +30,59 @@ All billable work happens server-side. The browser never decides whether a gener
 
 1. Create a free-tier project at supabase.com.
 2. For a **new** project: run `supabase/schema.sql` in the SQL editor. It is idempotent and creates the `licenses` table, the reservation table and functions, and applies the lock-down below.
-3. For the **existing production** project: do **not** re-run all of `schema.sql`. Apply only the migrations you have approved, in order:
-   - `supabase/migrations/20261020_01_license_reservations.sql` — additive (new table and functions). Safe before the code deploy.
-   - `supabase/migrations/20261020_02_revoke_public_execute_consume_license_use.sql` — one statement that stops the public `anon`/`authenticated` roles from calling `consume_license_use`.
+3. For the **existing production** project: do **not** re-run all of `schema.sql`. Apply only the migrations you have approved, **in this order relative to the deploy**:
+   - `supabase/migrations/20261020_01_license_reservations.sql` — additive (new table and functions). **Before** the code deploys.
+   - `supabase/migrations/20261020_02_revoke_public_execute_consume_license_use.sql` — one `revoke` statement that stops the public `anon`/`authenticated` roles from calling `consume_license_use`. **After** the deploy has been smoke-tested. The new code never calls that function, so applying it last cannot break anything, and applying it earlier would only add risk to the still-running old code for no benefit.
 4. In Project Settings → API, copy the **Project URL** and the **service_role** key (not the `anon` key). Nothing in this app uses the `anon` key.
-5. **A merged change to `schema.sql` is not live until it is applied in Supabase.** After applying anything, re-run a read-only check that the live database matches (see "Verify" below).
+5. **A merged change to `schema.sql` is not live until it is applied in Supabase.** After applying anything, re-run the read-only checks in §5.
 
 The lock-down: `licenses` and `license_reservations` have RLS enabled with **no policies**, and every function is executable only by `service_role` (the key held by Netlify and by the delivery script).
 
 ## 2. Netlify environment variables
 
-Set in Site settings → Environment variables, and **in all four deploy contexts** (Production, Deploy Previews, Branch deploys, Local development), or some code paths will keep running on a stale or missing value. Redeploy after changing any of them.
+Set in Site configuration → Environment variables. `SUPABASE_*` and `ANTHROPIC_API_KEY` must be set in **all four deploy contexts** (Production, Deploy Previews, Branch deploys, Local development), or some code paths will keep running on a stale or missing value. Netlify applies a variable **at deploy time**, so redeploy after changing any of them.
 
 | Variable | Required | Purpose |
 |---|---|---|
 | `SUPABASE_URL` | yes | Project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | yes | Server-only key. Never put it in the browser, the repo, or a chat |
-| `ANTHROPIC_API_KEY` | yes | AI provider key. Set a monthly spend limit on it |
-| `TAILOR_TOKEN_SECRET` | yes, for tailoring | Random secret, **at least 32 characters** (for example from a password manager). If missing or short, resume analysis still works but tailoring is disabled and a warning is logged |
-| `AI_TIMEOUT_MS` | optional (default 24000) | Abort an AI call after this long. Keep it below your Netlify function timeout |
+| `ANTHROPIC_API_KEY` | yes | AI provider key. A spend limit on it is **mandatory** (§2.2) |
+| `AI_TIMEOUT_MS` | **verify before release** (§2.3) | Abort an AI call after this long. Must sit below the Netlify function timeout |
+| `TAILOR_TOKEN_SECRET` | yes, for tailoring | Random secret, at least 32 characters (§2.1). If missing or short, analysis still works but tailoring is disabled and a warning is logged |
+| `TAILOR_TOKEN_SECRET_PREVIOUS` | only during a rotation | The old secret, still **accepted** (never used to sign) so customers are not logged out (§2.1) |
 | `CODE_SUPPLY_THRESHOLD` | optional (default 20) | Replenish when fewer unassigned codes remain |
 | `CODE_SUPPLY_BATCH_SIZE` | optional (default 100) | Codes generated per replenishment |
-| `ALERT_WEBHOOK_URL` | optional | Any HTTP webhook receiver for the zero-supply alert. Unset = the alert is only written to the function log |
+| `ALERT_WEBHOOK_URL` | optional | Any HTTP webhook receiver for the zero-supply alert. Unset = only written to the function log |
+
+### 2.1 `TAILOR_TOKEN_SECRET`: generate, configure, rotate
+
+Secret values are never written in this repo, in a pull request, in a chat, in an email or in a screenshot.
+
+- **Generate** on your own computer: `openssl rand -base64 48` (or your password manager's random generator, 48+ characters). Copy it straight into Netlify. Do not reuse any other key.
+- **Configure** in Netlify: Add a variable named `TAILOR_TOKEN_SECRET`; mark it as a **secret** (write-only) and scope it to **Functions**. Use a **different random value** for Production and for Deploy Previews. Branch deploys and Local development may stay unset: tailoring is then simply disabled there and analysis still works. (Menu wording may differ slightly between Netlify plans.)
+- **Check without exposing it:** the smoke test's Tailor step works, and the function log contains no "TAILOR_TOKEN_SECRET is missing" warning. The code never logs the value.
+- **Rotate (planned, no customer impact):**
+  1. Generate a new value.
+  2. Set `TAILOR_TOKEN_SECRET_PREVIOUS` = the current value, and `TAILOR_TOKEN_SECRET` = the new value.
+  3. Redeploy; confirm tailoring still works (smoke test with your personal code).
+  4. After **at least 2 hours** (the token lifetime), delete `TAILOR_TOKEN_SECRET_PREVIOUS` and redeploy.
+- **Emergency (suspected exposure):** set a new `TAILOR_TOKEN_SECRET`, do **not** set a previous one, redeploy. Every outstanding token dies at once; affected customers must analyze again, which costs them a use, so restore it on request (§5, "Data").
+- **Rollback:** code from before this release ignores both variables, so leaving them set is harmless.
+
+### 2.2 AI provider spending controls (mandatory before release)
+
+- In the Anthropic Console, set a **monthly spend limit** and email alerts (for example at 50% and 80%). Size it from the Console's usage page; start conservative, since raising it is easy and an unbounded bill is not.
+- Give this application its **own key** (and, ideally, its own workspace) with a descriptive name and creation date, so it can be rotated or revoked without touching anything else.
+- Record the limit, the alert thresholds and the key's name/date somewhere private. Do not proceed to §5 until this is done.
+- After release, check the usage page daily for a week. Expected volume is about one AI call per analysis plus one per tailoring run, which should track your Etsy sales. Anything much higher is a signal to stop and investigate.
+
+### 2.3 Netlify function timeout (mandatory to verify)
+
+1. Find the effective synchronous function timeout: Site configuration → Functions (the exact location varies by plan). If you cannot find it, assume **10 seconds** and record that you assumed it.
+2. Measure real behavior: Logs → Functions → `parse-resume`, and note the longest of the last ~20 durations.
+3. Set `AI_TIMEOUT_MS` to the timeout **minus 1500 ms** (for example 26 s → `24500`; 10 s → `8500`).
+4. If real durations are close to that limit, **do not release**. Raise the platform timeout, or ask for the output-size cap to be lowered, because analyses longer than the limit fail (uncharged) and customers see errors.
+- If the platform kills the function before `AI_TIMEOUT_MS`, customers are still protected (the lease lapses and nothing is charged), but that analysis fails.
 
 ## 3. Seeding license codes
 
@@ -65,52 +106,96 @@ The earlier Zapier-based delivery (an `assign-next-code` endpoint and an `assign
 
 `templates/delivery-instructions.txt` / `.html` hold buyer instructions text with a `{{CODE}}` placeholder. They are kept as reference copies.
 
-## 5. Releasing this change safely
+## 5. Release runbook
 
-Order matters. Nothing here changes a license row, a code, or a remaining-uses balance.
+Nothing here changes a license row, a code, or a remaining-uses balance. **Use only your own personal test code for anything that spends a use. Never use a customer's code.**
 
-1. **Prerequisites (before any deploy):** set `TAILOR_TOKEN_SECRET` in all four Netlify contexts; optionally set the Anthropic spend limit.
-2. **Before/after fingerprint** of the license table (aggregate only, no codes or emails):
-   ```sql
-   select count(*) as rows, sum(uses_remaining) as sum_uses_remaining, sum(max_uses) as sum_max_uses,
-          md5(string_agg(code||':'||max_uses||':'||uses_remaining||':'||assigned::text||':'||coalesce(buyer_email,''), ',' order by code)) as fingerprint
-   from licenses;
-   ```
-   Take it before the first step and after each step. It must not change, except for uses you deliberately spend while smoke-testing.
-3. Apply migration 01 (additive). Re-take the fingerprint. If the API reports a new function as "not found" right after applying, run `notify pgrst, 'reload schema';` in the SQL editor to refresh Supabase's API cache.
-4. Apply migration 02 (the one-statement revoke). Run the privilege check below. Run one generation with your personal test code on the live site, which still works because the server uses the service-role key.
-5. Open the code change as a pull request and smoke-test the **Deploy Preview**. Note: previews use the same Supabase credentials as production, so test only with your personal code.
-6. Merge. Netlify deploys. Smoke-test production with your personal code. Re-take the fingerprint.
-7. Watch Netlify function logs for 401/403 spikes for 48–72 hours, and confirm the next real order is delivered normally.
-8. About 72 hours later, delete `netlify/functions/consume-generation.js` in a follow-up change.
+### Gates (all must be true before step 1)
 
-**Rollback**
-- Code: in Netlify, "Publish deploy" on the previous production deploy. The old page and old functions go back together.
-- Migration 02: `grant execute on function public.consume_license_use(text) to public;`
-- Migration 01: leave in place. It is additive and unused by the old code. (If you must remove it: `drop table license_reservations cascade;` and drop the five functions.)
-- There is no data migration to undo.
+| Gate | Check |
+|---|---|
+| G1 | AI provider **spend limit and alerts** set and recorded (§2.2) |
+| G2 | Netlify **function timeout** recorded and `AI_TIMEOUT_MS` set (§2.3) |
+| G3 | `TAILOR_TOKEN_SECRET` set for Production and Deploy Previews, different values (§2.1) |
+| G4 | A **new** AI key created and set in all four contexts. The currently live site keeps its old key until redeployed, so nothing changes yet |
+| G5 | Your personal code has **at least 2 uses left** (check below) |
+| G6 | Baseline fingerprints taken (below) and saved |
+| G7 | The current production deploy is identified in Netlify as the **known-good rollback target**, and will not be deleted |
+| G8 | The superseded-deployments inventory is completed (kept privately, not in this repo) |
 
-### Verify (read-only)
+### Read-only queries
 
 ```sql
--- Who can run each function? (expect anon/authenticated = false everywhere, service_role = true)
+-- Full fingerprint (aggregate only: no codes, no emails)
+select count(*) as rows, sum(uses_remaining) as sum_uses_remaining, sum(max_uses) as sum_max_uses,
+       md5(string_agg(code||':'||max_uses||':'||uses_remaining||':'||assigned::text||':'||coalesce(buyer_email,''), ',' order by code)) as fingerprint
+from licenses;
+
+-- Customers-only fingerprint: excludes YOUR personal code. This one must NEVER change during the release.
+select count(*) as rows, sum(uses_remaining) as sum_uses_remaining,
+       md5(string_agg(code||':'||max_uses||':'||uses_remaining||':'||assigned::text||':'||coalesce(buyer_email,''), ',' order by code)) as fingerprint
+from licenses where code <> '<YOUR_PERSONAL_CODE>';
+
+-- G5: your personal code's balance
+select uses_remaining from licenses where code = '<YOUR_PERSONAL_CODE>';
+
+-- Who can run each function? (expect anon/authenticated false everywhere; service_role true)
 select p.proname,
        has_function_privilege('anon', p.oid, 'execute')          as anon_can_run,
        has_function_privilege('authenticated', p.oid, 'execute') as authed_can_run,
        has_function_privilege('service_role', p.oid, 'execute')  as service_role_can_run
 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
 where n.nspname = 'public' order by 1;
+
+-- Reservations in flight right now (should be 0 before the smoke test)
+select count(*) from license_reservations where status = 'reserved' and expires_at > now();
 ```
+
+### Sequence
+
+1. **Apply migration 01.** Verify: the privilege query shows every function server-only; `license_reservations` exists; **both fingerprints unchanged**; `select count(*) from license_reservations` is 0. If the API reports a new function as "not found", run `notify pgrst, 'reload schema';`.
+2. **Deploy Preview: non-mutating checks only** (below).
+3. **Merge** (you). Wait until Netlify shows the production deploy as **Published** for the merge commit.
+4. **Production smoke test** (below). If any abort condition occurs, roll back (§ Rollback) and stop.
+5. **Apply migration 02.** Verify: the privilege query now shows `consume_license_use` server-only; **customers-only fingerprint unchanged**.
+6. **Watch for 48–72 hours:** Netlify function logs for 401/403/429/503 spikes, the AI usage page against your sales, and confirm the next real order is delivered normally.
+7. **Cleanup of superseded deployments and the old AI key**, using your private inventory. Revoke the old AI key **last**, after the watch window (see Rollback for why).
+8. Follow-up change: delete `netlify/functions/consume-generation.js`; update the Founder OS notes.
+
+### Deploy Preview: non-mutating checks only
+
+Netlify builds a Deploy Preview for every pull request, and **previews use production credentials**. Anything that spends a use or writes data on a preview is a production change, so previews get only checks that write nothing (verified by the test suite: the checks below leave the license fingerprint unchanged and add zero reservation rows):
+
+1. The page loads and shows the access-code gate.
+2. Click "Try a free sample". The browser's Network tab must show **no** request to `/.netlify/functions/*`, and the sample resume appears.
+3. Enter a malformed code (`abc`): the "doesn't look right" message appears.
+4. Enter a well-formed but made-up code (`FG-ZZZZ-9999`): "We couldn't find that code."
+5. **Do not** enter any real code (customer or personal) on a preview, and do not press Analyze with one.
+
+### Production smoke test (minimal, personal code only)
+
+- **When:** a quiet period, right after the deploy is Published. First run the reservations-in-flight query: it should be 0.
+- **Input:** a **3-line fake resume** (no real personal data) for **one Analyze**, then a **1-line job description** for **one Tailor**. That is **2 AI calls** in total.
+- **Expect:** the counter on your code drops by **exactly 1** (analysis), and does **not** change on the Tailor step.
+- **Verify in SQL:** the **customers-only fingerprint is identical** to the baseline; the full fingerprint differs only by your one use; exactly **one** `license_reservations` row for your code with status `committed` and `tailor_count = 1`.
+- **Also check (zero AI calls):** a made-up code and a missing code are refused with friendly messages; the Netlify function log shows no `TAILOR_TOKEN_SECRET` warning.
+- **Abort and roll back if:** Analyze with your valid code fails or is slow beyond the timeout you recorded; the counter drops without a result, or drops by more than 1; the customers-only fingerprint changes; the function log shows `reserve_license_use is missing` (migration 01 was not applied) or repeated 5xx.
+
+### Rollback
+
+| Situation | Action | Notes |
+|---|---|---|
+| Problem with the new code (any time in the watch window) | Netlify → Deploys → the recorded known-good deploy → **Publish deploy** | The old code works with the database in all three states: before migration 01, after 01, after 01+02 (checked in the test suite). The old deploy carries the **old AI key**, so that key must stay valid until the window ends. |
+| Problem after migration 02 | `grant execute on function public.consume_license_use(text) to public;` | Restores the original grants. |
+| Problem with migration 01 | Roll the **code** back first. Leave migration 01 in place: it is inert for the old code. Drop its objects only if you must, and never while the new code is live (it would fail closed with a 503 and no charge). | |
+| Secret problem | See §2.1 (rotate / emergency) | |
+| **After the old AI key has been revoked** | Do **not** "Publish deploy" an older deploy expecting AI to work: it holds the revoked key. Fix forward, or set the new key and redeploy from Git. | This is why the old key is revoked last. |
+| **Data** | There is no data migration. Balances are only written by `commit_license_use` (new) and `consume_license_use` (old) on the same column, and reservations are disposable. If a customer reports a lost use, confirm it in `license_reservations`, then: `update licenses set uses_remaining = least(uses_remaining + 1, max_uses) where code = '<CODE>';` | |
 
 ## 6. Tests
 
-`tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`.
+`tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`. Run them before every release.
 
-## 7. Manual checklist after a release (use your personal code only)
+## 7. After a security release: older deployments
 
-- Enter a valid code → analyze a resume → counter drops by exactly 1.
-- Try Sample → loads with no counter change.
-- Tailor to a job after analyzing → works; the counter does **not** change.
-- Reload the page and re-enter the same code → server shows the already-reduced count.
-- Made-up code → "We couldn't find that code." An exhausted code → "used all generations" with the Etsy link.
-- Paste an extremely long resume (over 30,000 characters) → clear "too long" message; counter unchanged.
+Treat every older deployment of this site as **live until proven otherwise**. Netlify keeps each deploy (and each Deploy Preview) reachable at its own URL, running the function code and the environment it was built with, and deleting one deployment does not disable any other. After a security release, rotate the AI provider key (revoking the old one, last) and work through a private inventory of older deployments. Keep that inventory out of this repository.

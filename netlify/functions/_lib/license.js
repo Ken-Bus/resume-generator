@@ -8,10 +8,16 @@ async function one(supabase, fn, args) {
   return data;
 }
 
-async function reserve(supabase, code, leaseSeconds) {
-  const d = await one(supabase, 'reserve_license_use', { p_code: code, p_lease_seconds: leaseSeconds });
+async function reserve(supabase, code, cfg) {
+  const d = await one(supabase, 'reserve_license_use', {
+    p_code: code,
+    p_lease_seconds: cfg.LEASE_SECONDS,
+    p_fail_window_seconds: cfg.FAIL_WINDOW_SECONDS,
+    p_fail_window_max: cfg.FAIL_WINDOW_MAX,
+    p_fail_day_max: cfg.FAIL_DAY_MAX
+  });
   if (!d) throw new Error('reserve_license_use returned no row');
-  return { outcome: d.outcome, reservationId: d.reservation_id, remaining: d.remaining, maximum: d.maximum };
+  return { outcome: d.outcome, reservationId: d.reservation_id, remaining: d.remaining, maximum: d.maximum, retryAfterSeconds: d.retry_after_seconds };
 }
 
 async function commit(supabase, reservationId) {
@@ -21,9 +27,10 @@ async function commit(supabase, reservationId) {
 }
 
 // Idempotent and best-effort: if this fails the lease expires on its own.
-async function safeRelease(supabase, reservationId) {
+// counted = false for provider outages, which never count toward the per-code failure budget.
+async function safeRelease(supabase, reservationId, counted = true) {
   try {
-    const { error } = await supabase.rpc('release_license_use', { p_reservation_id: reservationId });
+    const { error } = await supabase.rpc('release_license_use', { p_reservation_id: reservationId, p_counted: counted });
     if (error) throw error;
   } catch (e) {
     console.error('release_license_use failed; the lease will expire on its own', { reservation: reservationId });
@@ -36,9 +43,12 @@ async function tailorAuthorize(supabase, reservationId, max) {
   return { outcome: d.outcome, used: d.used };
 }
 
-async function safeTailorRefund(supabase, reservationId) {
+// A provider outage is always given back; other failures only up to forgiveMax per paid generation.
+async function safeTailorRefund(supabase, reservationId, providerFault, forgiveMax) {
   try {
-    const { error } = await supabase.rpc('refund_tailor_use', { p_reservation_id: reservationId });
+    const { error } = await supabase.rpc('refund_tailor_use', {
+      p_reservation_id: reservationId, p_provider_fault: !!providerFault, p_forgive_max: forgiveMax
+    });
     if (error) throw error;
   } catch (e) {
     console.error('refund_tailor_use failed', { reservation: reservationId });

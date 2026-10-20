@@ -78,4 +78,10 @@ function assertTailorShape(o) {
   return o;
 }
 
-module.exports = { AiError, callClaude, extractJson, assertResumeShape, assertTailorShape, isObject };
+// A provider outage costs nothing and is never the customer's doing, so it never counts against a failure
+// budget. Everything else (timeout, truncated/empty/malformed output) may have been billed, so it does.
+function isProviderFault(err) {
+  return !!err && (err.reason === 'upstream_status' || err.reason === 'network');
+}
+
+module.exports = { isProviderFault, AiError, callClaude, extractJson, assertResumeShape, assertTailorShape, isObject };

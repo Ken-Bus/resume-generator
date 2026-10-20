@@ -1,7 +1,7 @@
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
-const { callClaude, extractJson, assertResumeShape } = require('./_lib/ai');
+const { callClaude, extractJson, assertResumeShape, isProviderFault } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 
@@ -47,7 +47,7 @@ exports.handler = async function(event) {
   let reservation;
   try {
     supabase = getSupabaseClient();
-    reservation = await license.reserve(supabase, code, cfg.LEASE_SECONDS);
+    reservation = await license.reserve(supabase, code, cfg);
   } catch (err) {
     // 42883 / PGRST202 = the function does not exist, i.e. the database migration has not been applied yet.
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
@@ -60,6 +60,15 @@ exports.handler = async function(event) {
   if (reservation.outcome === 'not_found') return json(403, { error: MSG.notFound });
   if (reservation.outcome === 'exhausted') {
     return json(403, { error: MSG.exhausted, usesRemaining: 0, maxUses: reservation.maximum });
+  }
+  if (reservation.outcome === 'throttled') {
+    // Too many costly failures on this code recently. No AI call is made and nothing is charged.
+    const wait = Math.max(Number(reservation.retryAfterSeconds) || 60, 1);
+    const minutes = Math.ceil(wait / 60);
+    return json(429, {
+      error: `We’ve had several unsuccessful attempts on this code in a short time. To protect your account, please wait about ${minutes} minute${minutes === 1 ? '' : 's'} and try again. You haven’t been charged.`,
+      retryAfterSeconds: wait, usesRemaining: reservation.remaining, maxUses: reservation.maximum
+    }, { 'Retry-After': String(wait) });
   }
   if (reservation.outcome === 'busy') {
     return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
@@ -77,8 +86,10 @@ exports.handler = async function(event) {
     const text = await callClaude({ prompt, maxTokens: cfg.PARSE_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
     resultText = JSON.stringify(assertResumeShape(extractJson(text)));
   } catch (err) {
-    await license.safeRelease(supabase, reservation.reservationId);
-    console.error('parse-resume: generation failed', { reservation: reservation.reservationId, reason: (err && err.reason) || 'unexpected' });
+    // Provider outages are released uncounted; anything that may have cost money counts toward the per-code budget.
+    const providerFault = isProviderFault(err);
+    await license.safeRelease(supabase, reservation.reservationId, !providerFault);
+    console.error('parse-resume: generation failed', { reservation: reservation.reservationId, reason: (err && err.reason) || 'unexpected', counted: !providerFault });
     return json(502, { error: MSG.aiFailed });
   }
 
@@ -92,7 +103,7 @@ exports.handler = async function(event) {
     }
   }
   if (!committed) {
-    await license.safeRelease(supabase, reservation.reservationId); // no-op if the commit actually landed
+    await license.safeRelease(supabase, reservation.reservationId, false); // our database trouble, not a costly failure; no-op if the commit landed
     return json(503, { error: MSG.notCharged });
   }
 
