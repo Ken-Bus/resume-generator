@@ -5,7 +5,9 @@ function int(v, fallback, min = 1) {
 }
 
 function get() {
-  const aiTimeoutMs = int(process.env.AI_TIMEOUT_MS, 24000, 1000);
+  // Netlify documents 60 s for synchronous functions; 50 s leaves ~10 s for start-up, database calls and the response.
+  // Set AI_TIMEOUT_MS explicitly in Netlify as well (runbook §2.3); this fallback only protects against it being forgotten.
+  const aiTimeoutMs = int(process.env.AI_TIMEOUT_MS, 50000, 1000);
   return {
     MODEL: 'claude-sonnet-4-5-20250929',
     // Input limits (characters). A 5-page resume is roughly 15k characters.
