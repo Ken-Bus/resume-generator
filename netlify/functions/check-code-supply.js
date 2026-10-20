@@ -3,7 +3,7 @@ const { sendLowSupplyAlert } = require('./_lib/alert');
 const { generateAndInsertCodes } = require('../../lib/codes');
 
 // Scheduled daily (see netlify.toml). Keeps the unassigned code pool
-// topped up so assign-next-code never runs dry.
+// topped up so the Google Apps Script delivery never runs out of codes.
 const THRESHOLD = parseInt(process.env.CODE_SUPPLY_THRESHOLD || '20', 10);
 const BATCH_SIZE = parseInt(process.env.CODE_SUPPLY_BATCH_SIZE || '100', 10);
 

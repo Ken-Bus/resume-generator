@@ -1,0 +1,98 @@
+// Runs the REAL Netlify handlers against a REAL (local, disposable) Postgres. Only two things are faked:
+//   1. @supabase/supabase-js  -> a thin adapter that sends rpc()/from().select() to the local database
+//      as service_role (so the grants in the migrations are genuinely exercised);
+//   2. global fetch           -> the AI provider, with scripted failure modes. No network, no real key.
+const Module = require('module');
+const path = require('path');
+const H = require('../db/helpers');
+
+const FUNCS = path.join(__dirname, '..', '..', 'netlify', 'functions');
+
+function makeClient(pool) {
+  const run = async (sql, params) => {
+    try { return { rows: (await pool.query(sql, params)).rows, error: null }; }
+    catch (e) { return { rows: null, error: e }; }
+  };
+  return {
+    rpc(fn, args) {
+      const keys = Object.keys(args);
+      const sql = `select * from public.${fn}(${keys.map((k, i) => `${k} => $${i + 1}`).join(', ')})`;
+      const exec = async () => {
+        const r = await run(sql, keys.map((k) => args[k]));
+        if (r.error) return { data: null, error: r.error };
+        const scalar = r.rows.length === 1 && Object.keys(r.rows[0]).length === 1 && fn in r.rows[0];
+        return { data: scalar ? r.rows[0][fn] : r.rows, error: null };
+      };
+      return {
+        then: (res, rej) => exec().then(res, rej),
+        maybeSingle: async () => { const r = await exec(); return r.error ? r : { data: r.data[0] ?? null, error: null }; }
+      };
+    },
+    from(table) {
+      return { select: (cols) => ({ eq: (col, val) => ({
+        maybeSingle: async () => {
+          const r = await run(`select ${cols} from public.${table} where ${col} = $1 limit 1`, [val]);
+          return r.error ? { data: null, error: r.error } : { data: r.rows[0] ?? null, error: null };
+        } }) }) };
+    }
+  };
+}
+
+let currentPool = null;
+const origLoad = Module._load;
+Module._load = function (request, ...rest) {
+  if (request === '@supabase/supabase-js') return { createClient: () => makeClient(currentPool) };
+  return origLoad.call(this, request, ...rest);
+};
+
+// Fresh handler modules (the helper caches its client) bound to the given pool.
+function loadHandlers(pool) {
+  currentPool = pool;
+  for (const k of Object.keys(require.cache)) if (k.startsWith(FUNCS)) delete require.cache[k];
+  const load = (n) => require(path.join(FUNCS, n));
+  return {
+    parse: load('parse-resume').handler, tailor: load('tailor-resume').handler,
+    consume: load('consume-generation').handler, verify: load('verify-license').handler,
+    license: load('_lib/license'), tokens: load('_lib/token'), FUNCS
+  };
+}
+
+const post = (body, extra = {}) => ({ httpMethod: 'POST', body: typeof body === 'string' ? body : JSON.stringify(body), ...extra });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const parseBody = (res) => JSON.parse(res.body);
+
+const GOOD_RESUME = { name: 'Jordan Ellis', contact: { email: 'jordan.ellis@example.com' }, summary: { tagline: '', bullets: [], skills: ['Customer service'] },
+  experience: [{ title: 'Retail Associate', company: 'Fictional Maple Market', start: 'June 2023', end: 'August 2026', bullets: ['Assisted customers'] }],
+  education: [], certifications: [], projects: [], awards: [] };
+
+// Scriptable AI provider. mode: ok | http500 | hang | truncated | notjson | badshape | empty | throw
+function installAi(state) {
+  state.calls = 0; state.mode = state.mode || 'ok'; state.delayMs = state.delayMs || 0;
+  global.fetch = async (url, opts) => {
+    state.calls++;
+    const mode = state.mode;
+    if (state.delayMs) await sleep(state.delayMs);
+    if (mode === 'hang') return new Promise((_, rej) => opts.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
+    if (mode === 'throw') throw new Error('socket hang up');
+    if (mode === 'http500') return { ok: false, status: 500, json: async () => ({ error: { type: 'overloaded_error' } }) };
+    const body = JSON.parse(opts.body);
+    const isTailor = /tailoring assistant/.test(body.messages[0].content);
+    const payload = isTailor ? { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } } : GOOD_RESUME;
+    let text = JSON.stringify(payload), stop = 'end_turn';
+    if (mode === 'truncated') { text = text.slice(0, 40); stop = 'max_tokens'; }
+    if (mode === 'notjson') text = 'Sorry, I cannot parse that.';
+    if (mode === 'badshape') text = JSON.stringify([1, 2, 3]);
+    if (mode === 'empty') text = '';
+    return { ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text }], stop_reason: stop }) };
+  };
+  return state;
+}
+
+// Capture console.error so tests can prove logs never contain codes or resume text.
+function captureLogs() {
+  const lines = []; const orig = console.error;
+  console.error = (...a) => { lines.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); };
+  return { lines, restore: () => { console.error = orig; } };
+}
+
+module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS };

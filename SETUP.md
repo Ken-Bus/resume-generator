@@ -1,209 +1,116 @@
-# License-Key Setup
+# Setup and Operations
 
-Steps to get the 5-uses-per-code system live, plus automated Etsy code
-assignment/delivery and auto-replenishment.
+How the 5-generations-per-code system is set up, how codes reach buyers, and how to release changes to it safely.
 
-## 1. Create the Supabase project
+## How a generation is charged (read this first)
+
+All billable work happens server-side. The browser never decides whether a generation is allowed.
+
+1. **`parse-resume`** receives the license code and the resume text.
+2. It **reserves** one generation in Supabase (`reserve_license_use`). This is atomic, so simultaneous requests can never hold more reservations than uses remain. A code with no uses left, or with all its remaining uses already in flight, is rejected **before any AI call**.
+3. It runs the AI. If the AI errors, times out, is cut off, or returns something that isn't a usable resume, the reservation is **released** and the customer is **not charged**.
+4. Only after a validated result does it **commit** the reservation (`commit_license_use`), which decrements `licenses.uses_remaining` exactly once. Commit is idempotent.
+5. If the function crashes or is killed mid-call, nobody releases the reservation, but it has a short **lease** (45 s by default) and simply lapses. A failure can never permanently cost a use.
+6. A successful parse returns a **signed tailoring token** (HMAC, 2-hour life) tied to that paid generation. **`tailor-resume`** requires it, costs no extra generation, and allows at most 5 runs per paid generation (counted atomically in the database).
+7. "Try Sample" loads a static sample in the browser. It makes no AI call.
+
+`consume-generation` is a **deprecated shim** that reads counts and never writes. It exists only so a browser tab opened before the release is not charged for a call the new server then rejects. Delete it about 72 hours after the release.
+
+## 1. Supabase project
 
 1. Create a free-tier project at supabase.com.
-2. Open the SQL editor and run `supabase/schema.sql` from this repo. It's
-   idempotent (safe to re-run) and creates/updates, in one pass:
-   - the `licenses` table
-   - the `consume_license_use` function that atomically decrements
-     `uses_remaining` (safe under concurrent requests)
-   - the `assigned` / `assigned_at` columns used by the auto-assignment flow
-     below
-   - the `assign_next_license` function that atomically claims the oldest
-     unassigned code (safe under concurrent requests — two simultaneous
-     sales can never be handed the same code)
+2. For a **new** project: run `supabase/schema.sql` in the SQL editor. It is idempotent and creates the `licenses` table, the reservation table and functions, and applies the lock-down below.
+3. For the **existing production** project: do **not** re-run all of `schema.sql`. Apply only the migrations you have approved, in order:
+   - `supabase/migrations/20261020_01_license_reservations.sql` — additive (new table and functions). Safe before the code deploy.
+   - `supabase/migrations/20261020_02_revoke_public_execute_consume_license_use.sql` — one statement that stops the public `anon`/`authenticated` roles from calling `consume_license_use`.
+4. In Project Settings → API, copy the **Project URL** and the **service_role** key (not the `anon` key). Nothing in this app uses the `anon` key.
+5. **A merged change to `schema.sql` is not live until it is applied in Supabase.** After applying anything, re-run a read-only check that the live database matches (see "Verify" below).
 
-   If you already ran an older version of this file, just re-run the current
-   `supabase/schema.sql` — every statement uses `if not exists` / safe
-   `create or replace` patterns, so it won't error or duplicate anything.
-3. In Project Settings → API, copy the **Project URL** and the **service_role**
-   key (not the `anon` key — the service role key is required so the Netlify
-   functions can read/write past Row Level Security, which is enabled with no
-   public policies).
+The lock-down: `licenses` and `license_reservations` have RLS enabled with **no policies**, and every function is executable only by `service_role` (the key held by Netlify and by the delivery script).
 
-## 2. Configure Netlify environment variables
+## 2. Netlify environment variables
 
-In the Netlify site's Site settings → Environment variables, add (alongside
-the existing `ANTHROPIC_API_KEY`):
+Set in Site settings → Environment variables, and **in all four deploy contexts** (Production, Deploy Previews, Branch deploys, Local development), or some code paths will keep running on a stale or missing value. Redeploy after changing any of them.
 
-- `SUPABASE_URL`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `ALERT_WEBHOOK_URL` — **Ken needs to set this to a real URL before launch.**
-  See "Low-supply alert" below.
-- `CODE_SUPPLY_THRESHOLD` (optional, default `20`) — remaining unassigned
-  codes below this triggers auto-replenishment.
-- `CODE_SUPPLY_BATCH_SIZE` (optional, default `100`) — how many codes to
-  generate per replenishment run.
+| Variable | Required | Purpose |
+|---|---|---|
+| `SUPABASE_URL` | yes | Project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | Server-only key. Never put it in the browser, the repo, or a chat |
+| `ANTHROPIC_API_KEY` | yes | AI provider key. Set a monthly spend limit on it |
+| `TAILOR_TOKEN_SECRET` | yes, for tailoring | Random secret, **at least 32 characters** (for example from a password manager). If missing or short, resume analysis still works but tailoring is disabled and a warning is logged |
+| `AI_TIMEOUT_MS` | optional (default 24000) | Abort an AI call after this long. Keep it below your Netlify function timeout |
+| `CODE_SUPPLY_THRESHOLD` | optional (default 20) | Replenish when fewer unassigned codes remain |
+| `CODE_SUPPLY_BATCH_SIZE` | optional (default 100) | Codes generated per replenishment |
+| `ALERT_WEBHOOK_URL` | optional | Any HTTP webhook receiver for the zero-supply alert. Unset = the alert is only written to the function log |
 
-Redeploy after adding them.
-
-## 3. Seed the initial batch of codes
-
-Locally:
+## 3. Seeding license codes
 
 ```
 npm install
 SUPABASE_URL=https://xxxx.supabase.co SUPABASE_SERVICE_ROLE_KEY=xxxx npm run generate-codes -- 100
 ```
 
-This inserts 100 unique `FG-XXXX-XXXX` codes (5 uses each, unassigned) into
-Supabase and writes a `licenses-<timestamp>.csv` file in the current
-directory. Don't commit that CSV; `.gitignore` already excludes `*.csv`. You
-generally won't need this CSV for day-to-day delivery anymore — see the
-automated flow below — but it's still useful for manual/backup seeding.
+Inserts unique `FG-XXXX-XXXX` codes (5 uses each, unassigned) and writes a `licenses-<timestamp>.csv` in the current directory. Never commit that CSV (`.gitignore` excludes `*.csv`). Daily replenishment (`check-code-supply`) normally makes this unnecessary.
 
-To generate a different batch size: `npm run generate-codes -- 25`.
+## 4. Delivery to buyers
 
-## 4. Automated Etsy code assignment & delivery
+Codes are delivered by a **Google Apps Script that lives outside this repo**, in the Gmail account that receives the shop's sale notifications. On a time trigger it finds new sale emails, takes one unassigned code from the `licenses` table, marks it assigned with the buyer's email, emails the buyer the code and instructions, and labels the thread so it is never reprocessed. It talks to Supabase **directly** (the REST `licenses` table, with the service-role key held in the script's properties). It does **not** call any function in this repo.
 
-Codes are no longer hand-delivered. Two Netlify functions and one Zap handle
-it end to end:
+Things that must stay true for delivery to keep working:
+- the `licenses` columns `code`, `assigned`, `assigned_at`, `buyer_email` and `uses_remaining` keep their names and types;
+- the service-role key in the script is kept in sync with the one in Netlify whenever it is rotated;
+- the pool never runs dry: **`check-code-supply`** runs daily (`netlify.toml`, `schedule = "@daily"`), and when fewer than `CODE_SUPPLY_THRESHOLD` codes are unassigned it generates `CODE_SUPPLY_BATCH_SIZE` more.
 
-- **`assign-next-code`** — claims the next unused code from Supabase
-  (atomic, race-safe) and returns it. This is what Zapier calls per Etsy
-  order.
-- **`check-code-supply`** — runs automatically once a day (configured in
-  `netlify.toml` via `schedule = "@daily"`). Counts unassigned codes; if the
-  count is below `CODE_SUPPLY_THRESHOLD` (default 20), it generates
-  `CODE_SUPPLY_BATCH_SIZE` (default 100) more and inserts them, all
-  unassigned, into `licenses`.
+The earlier Zapier-based delivery (an `assign-next-code` endpoint and an `assign_next_license` database function) has been **removed**. It was replaced by the script above and is no longer part of this system.
 
-### Function URLs
+`templates/delivery-instructions.txt` / `.html` hold buyer instructions text with a `{{CODE}}` placeholder. They are kept as reference copies.
 
-Replace `flexandgrace-resume.netlify.app` if the site is deployed under a
-different domain.
+## 5. Releasing this change safely
 
-- Assign endpoint (Zapier webhook target):
-  `https://flexandgrace-resume.netlify.app/.netlify/functions/assign-next-code`
-- Scheduled replenishment (runs on its own; this URL is only for manual
-  testing — see the testing checklist):
-  `https://flexandgrace-resume.netlify.app/.netlify/functions/check-code-supply`
+Order matters. Nothing here changes a license row, a code, or a remaining-uses balance.
 
-`assign-next-code` is a `POST` endpoint. Body is optional — Zapier can send
-`{}` or include `orderId`/`email` for logging:
+1. **Prerequisites (before any deploy):** set `TAILOR_TOKEN_SECRET` in all four Netlify contexts; optionally set the Anthropic spend limit.
+2. **Before/after fingerprint** of the license table (aggregate only, no codes or emails):
+   ```sql
+   select count(*) as rows, sum(uses_remaining) as sum_uses_remaining, sum(max_uses) as sum_max_uses,
+          md5(string_agg(code||':'||max_uses||':'||uses_remaining||':'||assigned::text||':'||coalesce(buyer_email,''), ',' order by code)) as fingerprint
+   from licenses;
+   ```
+   Take it before the first step and after each step. It must not change, except for uses you deliberately spend while smoke-testing.
+3. Apply migration 01 (additive). Re-take the fingerprint. If the API reports a new function as "not found" right after applying, run `notify pgrst, 'reload schema';` in the SQL editor to refresh Supabase's API cache.
+4. Apply migration 02 (the one-statement revoke). Run the privilege check below. Run one generation with your personal test code on the live site, which still works because the server uses the service-role key.
+5. Open the code change as a pull request and smoke-test the **Deploy Preview**. Note: previews use the same Supabase credentials as production, so test only with your personal code.
+6. Merge. Netlify deploys. Smoke-test production with your personal code. Re-take the fingerprint.
+7. Watch Netlify function logs for 401/403 spikes for 48–72 hours, and confirm the next real order is delivered normally.
+8. About 72 hours later, delete `netlify/functions/consume-generation.js` in a follow-up change.
 
-```json
-{ "orderId": "12345", "email": "buyer@example.com" }
+**Rollback**
+- Code: in Netlify, "Publish deploy" on the previous production deploy. The old page and old functions go back together.
+- Migration 02: `grant execute on function public.consume_license_use(text) to public;`
+- Migration 01: leave in place. It is additive and unused by the old code. (If you must remove it: `drop table license_reservations cascade;` and drop the five functions.)
+- There is no data migration to undo.
+
+### Verify (read-only)
+
+```sql
+-- Who can run each function? (expect anon/authenticated = false everywhere, service_role = true)
+select p.proname,
+       has_function_privilege('anon', p.oid, 'execute')          as anon_can_run,
+       has_function_privilege('authenticated', p.oid, 'execute') as authed_can_run,
+       has_function_privilege('service_role', p.oid, 'execute')  as service_role_can_run
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' order by 1;
 ```
 
-Response on success:
+## 6. Tests
 
-```json
-{ "success": true, "code": "FG-AB12-CD34" }
-```
+`tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`.
 
-Response when the pool is empty (`503`):
+## 7. Manual checklist after a release (use your personal code only)
 
-```json
-{ "success": false, "error": "No license codes are available right now. Ken has been alerted." }
-```
-
-### Low-supply / zero-supply alert
-
-The daily replenishment run is designed to keep the pool from ever hitting
-zero, but as a safety net, both `assign-next-code` (if it ever finds zero
-codes) and `check-code-supply` (if it finds the pool was already at zero
-before replenishing) POST a JSON payload to `ALERT_WEBHOOK_URL`:
-
-```json
-{
-  "event": "license_code_supply_alert",
-  "timestamp": "2026-07-27T00:00:00.000Z",
-  "reason": "zero_supply",
-  "orderId": "12345",
-  "email": "buyer@example.com"
-}
-```
-
-**Ken: this needs to point somewhere real before launch, or these alerts go
-nowhere.** The simplest setup:
-
-1. In Zapier, create a new Zap with trigger **"Webhooks by Zapier" → "Catch
-   Hook"**. Copy the custom webhook URL it gives you.
-2. Set that URL as `ALERT_WEBHOOK_URL` in Netlify's environment variables
-   (see step 2 above), then redeploy.
-3. Add an action to that same Zap — **"Email by Zapier" → "Send Outbound
-   Email"** (or a Slack DM/message action) — to yourself, using the `reason`
-   field from the webhook payload in the subject/body so you know at a
-   glance whether it was a live sale that failed or the daily check catching
-   an empty pool.
-
-Until `ALERT_WEBHOOK_URL` is set, the functions log the alert to the Netlify
-function logs instead of erroring, so nothing breaks — but you won't be
-notified. Don't launch without wiring this up.
-
-## 5. Delivery instructions template
-
-`templates/delivery-instructions.txt` and `templates/delivery-instructions.html`
-contain the message sent to buyers, with a `{{CODE}}` placeholder. Zapier
-substitutes the real code into a copy of this text — it doesn't call
-anything in this repo to do so; you paste the template text directly into
-the Zap step (see below).
-
-## 6. Building the Zap
-
-Zapier itself is configured by Ken — Claude Code can't do this part. Build
-one Zap with these steps:
-
-1. **Trigger: New Order — Etsy.** Connect the Flex & Grace Etsy shop.
-   Filter (Zapier's built-in "Only continue if..." step, or a filter on the
-   trigger) so it only fires for orders containing the Resume Generator
-   listing.
-2. **Action 1: Webhooks by Zapier → POST.**
-   - URL: `https://flexandgrace-resume.netlify.app/.netlify/functions/assign-next-code`
-   - Payload type: JSON
-   - Data: optionally map the Etsy order ID and buyer email into `orderId`
-     and `email` fields (used only for logging/alerts, not required).
-   - This returns `{ "success": true, "code": "FG-AB12-CD34" }` (or a `503`
-     with `success: false` if the pool is empty — see the alert section
-     above; that failure is also why Action 2/3 should be conditioned on
-     `success` being `true`, e.g. with a Zapier filter step).
-3. **Action 2: Formatter by Zapier → Text → Replace.**
-   - Input: paste the contents of `templates/delivery-instructions.txt` (or
-     the HTML version if sending via an email action that renders HTML).
-   - Find: `{{CODE}}`
-   - Replace: the `code` field from Action 1's output.
-4. **Action 3: Send to the buyer.**
-   - If Etsy's messaging API is available as a Zapier action for your Etsy
-     app: use "Etsy → Send Message" with the formatted text from Action 2.
-   - Otherwise, use the buyer's email from the Etsy order data with an email
-     action (e.g. "Email by Zapier" or Gmail) — subject like "Your Flex &
-     Grace Resume Generator code", body from Action 2's output (use the
-     `.html` template if the email action supports HTML body).
-
-## 7. Testing checklist before going live
-
-- Call `assign-next-code` twice in a row (e.g. with `curl` or Postman) —
-  confirm two different codes are returned, and in Supabase's table editor
-  confirm both rows now have `assigned = true` and an `assigned_at`
-  timestamp.
-- Simulate near-zero supply: in Supabase, set `assigned = true` on all but a
-  couple of codes (or temporarily set `CODE_SUPPLY_THRESHOLD` higher than
-  your current unassigned count), then manually invoke
-  `check-code-supply`'s URL — confirm it generates a new batch and the
-  Netlify function log reports the count generated and the new remaining
-  count.
-- Force zero supply (mark every code `assigned = true`), call
-  `assign-next-code` — confirm it returns the 503/"no codes available"
-  response and the alert webhook fires (check the Zapier Zap history, or
-  the Netlify function logs if `ALERT_WEBHOOK_URL` isn't set yet).
-- Run the `{{CODE}}` substitution (Action 2 above, or manually) and confirm
-  no leftover `{{CODE}}` text remains and the code is inserted correctly.
-- End-to-end: manually trigger the full Zap chain (assign code → build
-  instructions → simulate delivery) with a test order and confirm the
-  message a buyer would receive looks correct and complete.
-- Existing license-key checks still apply:
-  - Enter a valid code → generates successfully, remaining count decreases
-  - Generate 5 times → 5th succeeds, remaining shows 0
-  - Attempt a 6th generation → blocked with the "used all generations"
-    message and Etsy link
-  - Refresh the page / clear `sessionStorage` mid-session → server-side
-    count still enforced (re-entering the same code shows the
-    already-reduced count)
-  - Invalid/made-up code → "We couldn't find that code" message, no access
-  - "Try Sample" (from the gate screen or the main panel) works without a
-    code
+- Enter a valid code → analyze a resume → counter drops by exactly 1.
+- Try Sample → loads with no counter change.
+- Tailor to a job after analyzing → works; the counter does **not** change.
+- Reload the page and re-enter the same code → server shows the already-reduced count.
+- Made-up code → "We couldn't find that code." An exhausted code → "used all generations" with the Etsy link.
+- Paste an extremely long resume (over 30,000 characters) → clear "too long" message; counter unchanged.

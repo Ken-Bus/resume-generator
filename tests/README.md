@@ -1,0 +1,27 @@
+# Regression tests
+
+These tests protect the license accounting: five paid generations per code, no charge for failed AI calls, safe behavior under simultaneous requests and crashes, signed tailoring authorization, and the customer page.
+
+They never touch Supabase, Anthropic, Etsy, Gmail or the Apps Script:
+- `db/` and `functions/` run the **real SQL and real Netlify handlers** against a **disposable local Postgres**, with the AI provider mocked (including timeouts, truncation and bad output). `db/live_snapshot.sql` reproduces the production database as it was before the reservation migrations, so the migrations are proven against the real starting point.
+- `ui/` drives the real `index.html` in headless Chromium with every endpoint mocked.
+
+## Run
+
+```
+cd tests
+npm install
+npm test
+```
+
+If no local Postgres is reachable, the DB-backed tests are **skipped** (not failed). To start a disposable one (Linux; adjust paths):
+
+```
+sudo mkdir -p /home/user/pgtest && sudo chown postgres /home/user/pgtest
+sudo -u postgres /usr/lib/postgresql/16/bin/initdb -D /home/user/pgtest/data -A trust
+sudo -u postgres /usr/lib/postgresql/16/bin/pg_ctl -D /home/user/pgtest/data -o "-p 5544 -k /home/user/pgtest -c listen_addresses=''" -l /home/user/pgtest/pg.log -w start
+```
+
+Environment overrides: `TEST_PG_HOST` (socket dir), `TEST_PG_PORT`, `TEST_PG_USER`, `PLAYWRIGHT_MODULE`, `CHROMIUM_PATH`.
+
+Never point these tests at a real Supabase project.

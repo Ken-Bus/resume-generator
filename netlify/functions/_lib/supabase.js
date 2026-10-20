@@ -17,13 +17,13 @@ function getSupabaseClient() {
 const CODE_RE = /^FG-[A-Z0-9]{4}-[A-Z0-9]{4}$/;
 
 function normalizeCode(raw) {
-  return (raw || '').trim().toUpperCase();
+  return typeof raw === 'string' ? raw.trim().toUpperCase() : '';
 }
 
 function json(statusCode, body) {
   return {
     statusCode,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     body: JSON.stringify(body)
   };
 }
