@@ -60,7 +60,7 @@ const isObject = (o) => o !== null && typeof o === 'object' && !Array.isArray(o)
 // A parsed resume must at least look like a resume.
 function assertResumeShape(o) {
   if (!isObject(o) || !(typeof o.name === 'string' || Array.isArray(o.experience))) throw new AiError('bad_shape');
-  for (const k of ['experience', 'education', 'certifications', 'projects', 'awards']) {
+  for (const k of ['experience', 'education', 'certifications', 'projects', 'volunteer', 'awards']) {
     if (o[k] !== undefined && !Array.isArray(o[k])) throw new AiError('bad_shape');
   }
   return o;

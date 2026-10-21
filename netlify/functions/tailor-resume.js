@@ -4,6 +4,7 @@ const { readJsonBody } = require('./_lib/http');
 const { callClaude, extractJson, assertTailorShape, isObject, isProviderFault } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
+const integrity = require('./_lib/integrity');
 
 const MSG = {
   needAnalyze: 'Tailoring is included with each analyzed resume. Analyze your resume with your access code first.',
@@ -69,7 +70,7 @@ exports.handler = async function(event) {
 
   const prompt = `You are a resume tailoring assistant. You will be given a candidate's resume as structured JSON, and a target job description. Your job:
 
-1. Rewrite the "summary.bullets", "summary.skills", and each experience entry's "bullets" to naturally emphasize skills, keywords, and phrasing that match the job description — WITHOUT inventing new experience, employers, titles, or fabricating anything not implied by the original resume. Keep facts (dates, companies, titles, degrees) exactly as given.
+1. Rewrite the "summary.bullets", "summary.skills", and each experience entry's "bullets" to naturally emphasize skills, keywords, and phrasing that match the job description — WITHOUT inventing new experience, employers, titles, or fabricating anything not implied by the original resume. Keep facts (dates, companies, titles, degrees) exactly as given. Never add a number, percentage, dollar amount, certification, license, supervisory duty or responsibility that is not already stated in the original resume.
 2. Keep the exact same JSON schema/structure as the input resume — only the wording of bullets, tagline, and skills should change.
 3. Also produce a "matchSummary" object with: "matchedKeywords" (array of strings — keywords/skills from the job description that ARE reflected in the resume), "missingKeywords" (array of strings — important keywords/skills from the job description that are NOT present in the candidate's background and could not be truthfully added), and "notes" (a short 1-2 sentence plain-English summary of overall fit).
 
@@ -83,9 +84,21 @@ Job description:
 ${jobDescription}`;
 
   let resultText;
+  let unverified = [];
   try {
     const text = await callClaude({ prompt, maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
-    resultText = JSON.stringify(assertTailorShape(extractJson(text)));
+    const shaped = assertTailorShape(extractJson(text));
+    // Restore facts and flag anything the customer never provided. Pure post-processing: it cannot fail the
+    // paid operation, and it never touches license or credit state.
+    try {
+      const checked = integrity.reconcile(resumeData, shaped.resume);
+      shaped.resume = checked.resume;
+      unverified = checked.unverified;
+    } catch (e) {
+      console.error('tailor-resume: integrity check failed', { reason: e && e.message });
+      unverified = [{ where: 'resume', text: '', reasons: ['Automatic check unavailable: please review every line before using this resume.'] }];
+    }
+    resultText = JSON.stringify(shaped);
   } catch (err) {
     // A provider outage is always given back. Other failures are given back only a couple of times per paid
     // generation, so repeated failures cannot create unlimited AI calls.
@@ -95,5 +108,5 @@ ${jobDescription}`;
     return json(502, { error: MSG.aiFailed });
   }
 
-  return json(200, { result: resultText, tailorRunsRemaining: Math.max(cfg.TAILOR_MAX_PER_PAID_OP - grant.used, 0) });
+  return json(200, { result: resultText, unverified, tailorRunsRemaining: Math.max(cfg.TAILOR_MAX_PER_PAID_OP - grant.used, 0) });
 };
