@@ -191,7 +191,7 @@ test('customer page (Chromium, mocked endpoints)', async (t) => {
     await unlock(s.page); await paste(s.page); await s.page.click('#parse-btn'); await s.page.waitForSelector('#resume-preview');
     const names = new Set(s.calls.map(c => c.name));
     for (const n of names) assert.ok(['verify-license', 'parse-resume', 'tailor-resume'].includes(n), n);
-    for (const u of s.external) assert.ok(/fonts\.(googleapis|gstatic)\.com|cdnjs\.cloudflare\.com/.test(u), `unexpected external host: ${u}`);
+    for (const u of s.external) assert.ok(/fonts\.(googleapis|gstatic)\.com/.test(u), `unexpected external host: ${u}`);
     await s.close();
   });
 

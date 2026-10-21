@@ -4,7 +4,8 @@ These tests protect the license accounting: five paid generations per code, no c
 
 They never touch Supabase, Anthropic, Etsy, Gmail or the Apps Script:
 - `db/` and `functions/` run the **real SQL and real Netlify handlers** against a **disposable local Postgres**, with the AI provider mocked (including timeouts, truncation and bad output). `db/live_snapshot.sql` reproduces the production database as it was before the reservation migrations, so the migrations are proven against the real starting point.
-- `ui/` drives the real `index.html` in headless Chromium with every endpoint mocked.
+- `ui/` drives the real `index.html` in headless Chromium with every endpoint mocked. `ui/guided.test.js` covers the guided builder, all 12 templates, mobile layout, and the PDF/Word exports (PDF text is read back with `pdftotext` when installed, and always by inflating the PDF's own streams).
+- `core/` unit-tests the shared section model (`resume-core.js`); `functions/integrity.test.js` covers the tailoring fabrication guard.
 
 ## Run
 

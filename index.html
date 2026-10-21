@@ -7,8 +7,11 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="/jspdf.umd.min.js"></script>
 <script src="/docx.umd.js"></script>
+<script src="/resume-core.js"></script>
+<script src="/resume-export.js"></script>
+<script src="/wizard.js"></script>
 <style>
   :root {
     --bg: #F4F3F0;
@@ -103,6 +106,10 @@
   .btn-word { background: #fff; color: #111; border: 1px solid #CCC; }
 
   @media (max-width: 768px) {
+    .header { padding: 12px 16px; flex-wrap: wrap; gap: 6px; }
+    .header-meta { white-space: normal; }
+    .panel-content { padding-bottom: 76px; }       /* keeps the floating PDF/Word buttons from covering the last fields */
+    .export-bar { bottom: 12px; right: 12px; }
     .layout { flex-direction: column; height: auto; }
     .left-panel { width: 100%; height: auto; }
     .resume-page { width: 100%; min-height: auto; }
@@ -130,6 +137,52 @@
   .gate-shop-link { margin-top: 16px; font-size: 10px; color: #AAA; }
   .gate-shop-link a { color: #888; }
   .error-box a { color: #c0392b; font-weight: 600; }
+
+  /* START PATHS + GUIDED BUILDER */
+  .start-paths { padding: 12px 16px; border-bottom: 1px solid var(--border); background: #FAFAF8; flex-shrink: 0; }
+  .start-title { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; margin-bottom: 8px; }
+  .start-card { display: block; width: 100%; text-align: left; background: #fff; border: 1px solid #DDD; border-radius: 6px; padding: 9px 11px; margin-bottom: 6px; cursor: pointer; font-family: 'DM Sans', sans-serif; color: #111; }
+  .start-card:hover, .start-card:focus-visible { border-color: #111; outline: none; }
+  .start-card strong { display: block; font-size: 12px; margin-bottom: 2px; }
+  .start-card span { display: block; font-size: 11px; color: #666; line-height: 1.4; }
+  .wiz-progress { font-size: 10px; color: #888; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px; }
+  .wiz-dots { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+  .wiz-dot { font-size: 10px; padding: 3px 7px; border: 1px solid #DDD; border-radius: 10px; background: #fff; color: #666; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-dot.active { background: #111; color: #fff; border-color: #111; }
+  .wiz-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; }
+  .wiz-help { font-size: 11px; color: #666; line-height: 1.5; margin-bottom: 10px; }
+  .wiz-note { font-size: 11px; color: #355; background: #F0F6F2; border: 1px solid #CFE3D6; border-radius: 4px; padding: 8px 10px; line-height: 1.5; margin-bottom: 10px; }
+  .wiz-label { display: block; font-size: 11px; font-weight: 600; color: #333; margin: 10px 0 3px; }
+  .wiz-optional { font-weight: 400; color: #999; }
+  .wiz-input { width: 100%; border: 1px solid #DDD; border-radius: 4px; padding: 8px 9px; font-size: 13px; font-family: 'DM Sans', sans-serif; outline: none; color: #111; background: #fff; }
+  .wiz-input:focus { border-color: #888; }
+  textarea.wiz-input { resize: vertical; line-height: 1.45; min-height: 74px; }
+  .wiz-example { font-size: 10.5px; color: #888; margin-top: 3px; line-height: 1.4; }
+  .wiz-choices { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .wiz-choice { text-align: left; padding: 9px 11px; border: 1px solid #DDD; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; font-family: 'DM Sans', sans-serif; color: #111; }
+  .wiz-choice.selected { border-color: #111; background: #F4F3F0; font-weight: 600; }
+  .wiz-checks { display: flex; flex-direction: column; gap: 5px; margin: 6px 0; }
+  .wiz-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.35; cursor: pointer; }
+  .wiz-check input { margin-top: 2px; flex-shrink: 0; }
+  .wiz-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+  .wiz-chip { font-size: 11px; padding: 4px 8px; border: 1px dashed #BBB; border-radius: 12px; background: #fff; cursor: pointer; font-family: 'DM Sans', sans-serif; color: #444; }
+  .wiz-chip:hover { border-color: #111; }
+  .wiz-card { border: 1px solid #E5E5E5; border-radius: 6px; padding: 10px; margin: 8px 0; background: #FAFAFA; }
+  .wiz-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 700; color: #555; margin-bottom: 2px; }
+  .wiz-link { background: transparent; border: none; color: #888; font-size: 11px; text-decoration: underline; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-add { width: 100%; padding: 8px; border: 1px dashed #BBB; border-radius: 4px; background: transparent; font-size: 12px; color: #555; cursor: pointer; margin-top: 6px; font-family: 'DM Sans', sans-serif; }
+  .wiz-nav { display: flex; gap: 8px; margin-top: 16px; position: sticky; bottom: 0; background: #fff; padding: 8px 0; }
+  .wiz-nav button { padding: 10px 12px; border-radius: 4px; font-size: 12px; font-family: 'DM Sans', sans-serif; cursor: pointer; }
+  .wiz-back { background: transparent; border: 1px solid #DDD; color: #555; }
+  .wiz-next { flex: 1; background: #111; border: none; color: #fff; font-weight: 700; }
+  .wiz-skip { background: transparent; border: none; color: #888; text-decoration: underline; }
+  .wiz-review-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #EEE; font-size: 12px; }
+  .wiz-review-row span { color: #666; font-size: 11px; }
+  .wiz-preview-link { display: none; font-size: 11px; color: #555; margin-top: 8px; }
+  .flag-warn { border-color: #E0A800 !important; background: #FFFBEA !important; }
+  .flag-note { font-size: 10px; color: #8a6d00; margin: -2px 0 4px; }
+  .notice-box { background: #FFFBEA; border: 1px solid #F0DC9A; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #6b5300; margin: 8px 0; line-height: 1.5; }
+  @media (max-width: 768px) { .wiz-preview-link { display: block; } }
 </style>
 </head>
 <body>
@@ -141,7 +194,7 @@
   </div>
   <div style="display:flex; align-items:center; gap:14px;">
     <div class="license-badge" id="license-badge" style="display:none;"></div>
-    <div class="header-meta">ATS-Friendly · 12 Templates</div>
+    <div class="header-meta">Text-Based PDF &amp; Word · 12 Templates</div>
   </div>
 </div>
 
@@ -161,10 +214,18 @@
 <div class="layout">
   <!-- LEFT PANEL -->
   <div class="left-panel">
+    <div class="start-paths" id="start-paths">
+      <div class="start-title">How would you like to start?</div>
+      <button class="start-card" onclick="startGuided('first')" id="start-first"><strong>Create My First Resume</strong><span>No experience needed. We&rsquo;ll ask simple questions.</span></button>
+      <button class="start-card" onclick="startGuided('returning')" id="start-returning"><strong>I&rsquo;ve Worked Before / Need a New Resume</strong><span>Describe your jobs in plain English.</span></button>
+      <button class="start-card" onclick="startPaste()" id="start-paste"><strong>I Already Have a Resume</strong><span>Paste it and we&rsquo;ll organize it for you.</span></button>
+    </div>
     <div class="panel-tabs">
+      <button class="panel-tab" onclick="switchPanel('guide')" id="tab-guide" style="display:none;">Guided</button>
       <button class="panel-tab active" onclick="switchPanel('paste')" id="tab-paste">Paste Resume</button>
       <button class="panel-tab" onclick="switchPanel('edit')" id="tab-edit">Edit Fields</button>
     </div>
+    <div class="panel-content" id="panel-guide" style="display:none;"></div>
     <div class="panel-content" id="panel-paste">
       <p class="paste-hint">Paste your resume as plain text. Our AI will analyze it into structured fields automatically.</p>
       <div id="error-box" class="error-box" style="display:none;"></div>
@@ -180,7 +241,7 @@
     </div>
     <div class="panel-content" id="panel-edit" style="display:none;">
       <div id="edit-fields">
-        <p style="font-size:11px;color:#999;">Analyze a resume or load the sample to edit fields.</p>
+        <p style="font-size:11px;color:#999;line-height:1.5;">Nothing to edit yet. <a href="#" onclick="startGuided('first');return false;" style="color:#555;">Build a resume step by step</a>, paste an existing resume, or load the sample.</p>
       </div>
             <div id="job-match-box" style="margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:6px;background:#FAFAFA;">
         <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:#555;margin-bottom:6px;">TAILOR TO A JOB (OPTIONAL)</div>
@@ -188,6 +249,7 @@
         <button class="btn-secondary" onclick="tailorToJob()" id="tailor-btn" style="margin-top:8px;">Tailor to This Job</button>
         <div id="match-summary-box" style="display:none;margin-top:10px;font-size:12px;line-height:1.5;"></div>
       </div>
+      <button class="wiz-link" style="margin-bottom:14px;" onclick="startGuided('first')">Start a new resume with the guided builder</button>
     </div>
   </div>
 
@@ -200,13 +262,14 @@
     <div class="preview-area" id="preview-area">
       <div class="empty-state">
         <div class="empty-icon">✦</div>
-        <div class="empty-title">Paste your resume to see a live preview</div>
-        <div class="empty-sub">or click "Try Sample" to explore all 12 templates</div>
+        <div class="empty-title">Your resume appears here as you build it</div>
+        <div class="empty-sub">Choose how to start on the left, or click "Try Sample" to explore all 12 templates</div>
       </div>
     </div>
   </div>
 </div>
 
+<div id="export-notice" class="notice-box" style="display:none;position:fixed;bottom:70px;right:20px;max-width:300px;z-index:100;"></div>
 <div class="export-bar" id="export-bar" style="display:none;">
   <button class="btn-export btn-pdf" onclick="exportPDF()" id="btn-pdf">⬇ PDF</button>
   <button class="btn-export btn-word" onclick="exportWord()" id="btn-word">⬇ Word</button>
@@ -302,6 +365,7 @@ const SAMPLE_DATA = {
     { name: 'Six Sigma Green Belt', org: 'ASQ', date: '2019' }
   ],
   projects: [],
+  volunteer: [],
   awards: [
     '2023 Midwest Retail Executive of the Year – Retail Innovation Council',
     "2021 Nordstrom President's Award – Top Regional Leader"
@@ -334,6 +398,9 @@ let state = {
   activePanel: 'paste',
   license: { code: null, verified: false, usesRemaining: null, maxUses: null },
   tailorToken: null,   // signed authorisation issued with each paid generation; held in memory only
+  wizard: null,        // guided builder session (see wizard.js); null when not in use
+  flags: new Set(),    // AI-written lines that need the customer's confirmation (see tailorToJob)
+  preTailor: null,     // copy of the resume from before the last tailoring run, for Undo
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -346,10 +413,24 @@ function init() {
 // ── Panel Switch ──────────────────────────────────────────────────────────────
 function switchPanel(panel) {
   state.activePanel = panel;
-  document.getElementById('panel-paste').style.display = panel === 'paste' ? 'block' : 'none';
-  document.getElementById('panel-edit').style.display = panel === 'edit' ? 'block' : 'none';
-  document.getElementById('tab-paste').classList.toggle('active', panel === 'paste');
-  document.getElementById('tab-edit').classList.toggle('active', panel === 'edit');
+  ['paste', 'edit', 'guide'].forEach(p => {
+    document.getElementById('panel-' + p).style.display = panel === p ? 'block' : 'none';
+    document.getElementById('tab-' + p).classList.toggle('active', panel === p);
+  });
+}
+
+// Shows/hides the parts of the page that depend on whether a resume exists yet.
+function syncChrome() {
+  const has = !!state.data && ResumeCore.hasContent(state.data);
+  document.getElementById('export-bar').style.display = has ? 'flex' : 'none';
+  document.getElementById('start-paths').style.display = state.data ? 'none' : 'block';
+  document.getElementById('tab-guide').style.display = state.wizard ? 'block' : 'none';
+}
+
+function startPaste() {
+  switchPanel('paste');
+  const el = document.getElementById('resume-input');
+  el.focus();
 }
 
 // ── Category & Variant Tabs ───────────────────────────────────────────────────
@@ -501,6 +582,7 @@ function submitGateCode() {
 }
 
 function skipGateForSample() {
+  pendingGeneration = null;     // a queued action must not fire later, after the customer chose the free sample
   hideGate();
   loadSample();
 }
@@ -543,6 +625,7 @@ async function parseResume() {
     }
     if (parsed) {
       state.data = parsed;
+      state.wizard = null; state.flags = new Set(); state.preTailor = null;
       state.tailorToken = json.tailorToken || null;
       if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
       if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
@@ -550,7 +633,7 @@ async function parseResume() {
       renderEditFields();
       renderPreview();
       switchPanel('edit');
-      document.getElementById('export-bar').style.display = 'flex';
+      syncChrome();
       return;
     }
     await handleParseFailure(res.status, json);
@@ -605,13 +688,7 @@ async function refreshLicenseCounter() {
   } catch (e) { /* the counter will refresh on the next action */ }
 }
 
-function emptyData() {
-  return { name:'', contact:{phone:'',email:'',location:'',linkedin:'',website:''},
-    summary:{tagline:'',bullets:[''],skills:['']},
-    experience:[{title:'',company:'',location:'',start:'',end:'',summary:'',bullets:['']}],
-    education:[{degree:'',school:'',location:'',date:'',honors:''}],
-    certifications:[], projects:[], awards:[] };
-}
+function emptyData() { return ResumeCore.blank(); }
 
 function showError(msg, isHTML) {
   const el = document.getElementById('error-box');
@@ -624,10 +701,11 @@ function loadSample() {
   document.getElementById('error-box').style.display = 'none';
   state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
   state.tailorToken = null;
+  state.wizard = null; state.flags = new Set(); state.preTailor = null;
   renderEditFields();
   renderPreview();
   switchPanel('edit');
-  document.getElementById('export-bar').style.display = 'flex';
+  syncChrome();
 }
 
 // ── Render Edit Fields ────────────────────────────────────────────────────────
@@ -648,7 +726,7 @@ function renderEditFields() {
     <div class="section-label">Summary</div>
     <div class="field-group"><div class="field-label">Tagline</div><input class="field-input" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
     ${(d.summary?.bullets||[]).map((b,i)=>`
-      <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateArrayItem('summary.bullets',${i},null,this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeArrayItem('summary.bullets',${i});renderEditFields();renderPreview()">✕</button></div>
+      <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateArrayItem('summary.bullets',${i},null,this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeArrayItem('summary.bullets',${i});renderEditFields();renderPreview()">✕</button></div>
     `).join('')}
     <button class="btn-add-item" onclick="addToArray('summary.bullets','');renderEditFields();renderPreview()">+ Add bullet</button>
     <div class="field-group" style="margin-top:8px;"><div class="field-label">Skills (comma separated)</div><input class="field-input" value="${esc((d.summary?.skills||[]).join(', '))}" oninput="updateField('summary.skills',this.value.split(',').map(s=>s.trim()).filter(Boolean))"></div>
@@ -663,15 +741,50 @@ function renderEditFields() {
           <div class="field-group"><div class="field-label">Start</div><input class="field-input" value="${esc(exp.start)}" oninput="updateArrayItem('experience',${i},'start',this.value)"></div>
           <div class="field-group"><div class="field-label">End</div><input class="field-input" value="${esc(exp.end)}" oninput="updateArrayItem('experience',${i},'end',this.value)"></div>
         </div>
+        <div class="field-group"><div class="field-label">Location (optional)</div><input class="field-input" value="${esc(exp.location)}" oninput="updateArrayItem('experience',${i},'location',this.value)"></div>
         <div class="field-group"><div class="field-label">Summary (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('experience',${i},'summary',this.value)">${esc(exp.summary)}</textarea></div>
         <div class="field-label">Bullets</div>
         ${(exp.bullets||[]).map((b,j)=>`
-          <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateExpBullet(${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeExpBullet(${i},${j});renderEditFields();renderPreview()">✕</button></div>
+          <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateExpBullet(${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeExpBullet(${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
         `).join('')}
         <button class="btn-add-item" onclick="addExpBullet(${i});renderEditFields();renderPreview()">+ Add bullet</button>
       </div>
     `).join('')}
     <button class="btn-add-item" onclick="addArrayItem('experience',{title:'',company:'',location:'',start:'',end:'',summary:'',bullets:['']});renderEditFields();renderPreview()">+ Add Position</button>
+
+    <div class="section-label">Projects</div>
+    ${(d.projects||[]).map((pr,i)=>`
+      <div class="card">
+        <div class="card-header"><span class="card-title">Project ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('projects',${i});renderEditFields();renderPreview()">Remove</button></div>
+        <div class="field-group"><div class="field-label">Name</div><input class="field-input" value="${esc(pr.name)}" oninput="updateArrayItem('projects',${i},'name',this.value)"></div>
+        <div class="field-group"><div class="field-label">Description (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea></div>
+        <div class="field-label">Bullets</div>
+        ${(pr.bullets||[]).map((b,j)=>`
+          <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateNested('projects',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('projects',${i},${j});renderEditFields();renderPreview()">✕</button></div>
+        `).join('')}
+        <button class="btn-add-item" onclick="addNested('projects',${i});renderEditFields();renderPreview()">+ Add bullet</button>
+      </div>
+    `).join('')}
+    <button class="btn-add-item" onclick="addArrayItem('projects',{name:'',description:'',bullets:['']});renderEditFields();renderPreview()">+ Add Project</button>
+
+    <div class="section-label">Volunteer &amp; Activities</div>
+    ${(d.volunteer||[]).map((v,i)=>`
+      <div class="card">
+        <div class="card-header"><span class="card-title">Role ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('volunteer',${i});renderEditFields();renderPreview()">Remove</button></div>
+        <div class="grid-2">
+          <div class="field-group"><div class="field-label">Role</div><input class="field-input" value="${esc(v.title)}" oninput="updateArrayItem('volunteer',${i},'title',this.value)"></div>
+          <div class="field-group"><div class="field-label">Organization</div><input class="field-input" value="${esc(v.organization)}" oninput="updateArrayItem('volunteer',${i},'organization',this.value)"></div>
+          <div class="field-group"><div class="field-label">Start</div><input class="field-input" value="${esc(v.start)}" oninput="updateArrayItem('volunteer',${i},'start',this.value)"></div>
+          <div class="field-group"><div class="field-label">End</div><input class="field-input" value="${esc(v.end)}" oninput="updateArrayItem('volunteer',${i},'end',this.value)"></div>
+        </div>
+        <div class="field-label">Bullets</div>
+        ${(v.bullets||[]).map((b,j)=>`
+          <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateNested('volunteer',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('volunteer',${i},${j});renderEditFields();renderPreview()">✕</button></div>
+        `).join('')}
+        <button class="btn-add-item" onclick="addNested('volunteer',${i});renderEditFields();renderPreview()">+ Add bullet</button>
+      </div>
+    `).join('')}
+    <button class="btn-add-item" onclick="addArrayItem('volunteer',{title:'',organization:'',location:'',start:'',end:'',bullets:['']});renderEditFields();renderPreview()">+ Add Volunteer / Activity</button>
 
     <div class="section-label">Education</div>
     ${(d.education||[]).map((edu,i)=>`
@@ -683,11 +796,12 @@ function renderEditFields() {
           <div class="field-group"><div class="field-label">Date</div><input class="field-input" value="${esc(edu.date)}" oninput="updateArrayItem('education',${i},'date',this.value)"></div>
           <div class="field-group"><div class="field-label">Honors</div><input class="field-input" value="${esc(edu.honors)}" oninput="updateArrayItem('education',${i},'honors',this.value)"></div>
         </div>
+        <div class="field-group"><div class="field-label">Location (optional)</div><input class="field-input" value="${esc(edu.location)}" oninput="updateArrayItem('education',${i},'location',this.value)"></div>
       </div>
     `).join('')}
     <button class="btn-add-item" onclick="addArrayItem('education',{degree:'',school:'',location:'',date:'',honors:''});renderEditFields();renderPreview()">+ Add Degree</button>
 
-    <div class="section-label">Certifications</div>
+    <div class="section-label">Certifications &amp; Training</div>
     ${(d.certifications||[]).map((c,i)=>`
       <div class="card">
         <div class="card-header"><span class="card-title">Cert ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('certifications',${i});renderEditFields();renderPreview()">Remove</button></div>
@@ -698,7 +812,7 @@ function renderEditFields() {
         </div>
       </div>
     `).join('')}
-    <button class="btn-add-item" onclick="addArrayItem('certifications',{name:'',org:'',date:''});renderEditFields();renderPreview()">+ Add Certification</button>
+    <button class="btn-add-item" onclick="addArrayItem('certifications',{name:'',org:'',date:''});renderEditFields();renderPreview()">+ Add Certification / Course</button>
 
     <div class="section-label">Awards</div>
     ${(d.awards||[]).map((a,i)=>`
@@ -707,6 +821,10 @@ function renderEditFields() {
     <button class="btn-add-item" onclick="addToArray('awards','');renderEditFields();renderPreview()">+ Add Award</button>
   `;
 }
+
+// Lines the AI wrote that mention numbers/credentials/duties not found in the customer's original resume.
+function flagClass(text) { return state.flags && state.flags.has(String(text || '').trim()) ? ' flag-warn' : ''; }
+function flagNote(text) { return flagClass(text) ? '<div class="flag-note">⚠ Added by AI — please make sure this is true, or edit it.</div>' : ''; }
 
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 // Resume text is applicant- or AI-supplied, so it is HTML-escaped before it is placed into the preview markup.
@@ -732,56 +850,57 @@ function updateArrayItem(arrayPath, index, field, value) {
   if (field) arr[index][field] = value; else arr[index] = value;
   renderPreview();
 }
-function removeArrayItem(arrayPath, index) {
-  const parts = arrayPath.split('.');
-  let arr = state.data;
-  for (const p of parts) arr = arr[p];
-  arr.splice(index, 1);
-}
-function addArrayItem(arrayPath, template) {
-  const parts = arrayPath.split('.');
-  let arr = state.data;
-  for (const p of parts) arr = arr[p];
-  arr.push(template);
-}
-function addToArray(path, val) {
+// Returns the array at a dotted path, creating it when older/AI-produced data does not have it yet.
+function arrayAt(path) {
   const parts = path.split('.');
-  let arr = state.data;
-  for (const p of parts) arr = arr[p];
-  arr.push(val);
+  let o = state.data;
+  for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]];
+  const k = parts[parts.length - 1];
+  if (!Array.isArray(o[k])) o[k] = [];
+  return o[k];
 }
+function removeArrayItem(arrayPath, index) { arrayAt(arrayPath).splice(index, 1); }
+function addArrayItem(arrayPath, template) { arrayAt(arrayPath).push(template); }
+function addToArray(path, val) { arrayAt(path).push(val); }
 function updateExpBullet(i, j, val) { state.data.experience[i].bullets[j] = val; renderPreview(); }
 function removeExpBullet(i, j) { state.data.experience[i].bullets.splice(j, 1); }
 function addExpBullet(i) { state.data.experience[i].bullets.push(''); }
 function updateAward(i, val) { state.data.awards[i] = val; renderPreview(); }
+function updateNested(arr, i, j, val) { state.data[arr][i].bullets[j] = val; renderPreview(); }
+function removeNested(arr, i, j) { state.data[arr][i].bullets.splice(j, 1); }
+function addNested(arr, i) { (state.data[arr][i].bullets = state.data[arr][i].bullets || []).push(''); }
 
 // ── Render Preview ────────────────────────────────────────────────────────────
 function renderPreview() {
   if (!state.data) return;
   const area = document.getElementById('preview-area');
   area.innerHTML = `<div class="resume-page" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
+  syncChrome();
 }
 
 function buildResumeHTML(rawData, t, useAlt) {
-  const d = escapeDeep(rawData);
+  // Content decisions (what shows, in what order) come from ResumeCore so the preview, PDF and Word agree.
+  const d = escapeDeep(ResumeCore.clean(rawData));
   const accent = useAlt && t.accentAlt ? t.accentAlt : t.accent;
   const accentLight = useAlt && t.accentAltLight ? t.accentAltLight : t.accentLight;
   const accent2 = t.accent2 || accent;
   const s = t.style;
 
-  const contact = [d.contact?.phone, d.contact?.email, d.contact?.location, d.contact?.linkedin, d.contact?.website].filter(Boolean).join('  |  ');
+  const contact = ResumeCore.contactLine(d.contact);
+  const dates = (a, b) => ResumeCore.dateRange(a, b);
 
   // Header
   let header = '';
+  const nameHtml = d.name || 'Your Name';
   if (s === 'centered' || s === 'modern-center' || s === 'studio' || s === 'foreman') {
     const corner = `<div style="position:absolute;top:0;right:0;width:30pt;height:30pt;overflow:hidden;"><svg width="30" height="30" viewBox="0 0 30 30"><path d="M30 0 L30 30 L0 0 Z" fill="${accent}" opacity="0.85"/></svg></div>`;
-    header = `<div style="position:relative;text-align:center;margin-bottom:10pt;">${corner}<div style="font-family:${t.font};font-size:26pt;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#111;">${d.name||'Your Name'}</div><div style="font-size:8pt;color:#555;margin-top:4pt;letter-spacing:0.04em;">${contact}</div></div>`;
-  } else if (s === 'left-rule' || s === 'educator' || s === 'researcher') {
-    header = `<div style="margin-bottom:10pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.04em;color:#111;">${d.name||'Your Name'}</div><div style="height:1.5px;background:${accent};margin:4pt 0;"></div><div style="font-size:8pt;color:#555;">${contact}</div></div>`;
+    header = `<div style="position:relative;text-align:center;margin-bottom:10pt;">${corner}<div style="font-family:${t.font};font-size:26pt;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#111;">${nameHtml}</div><div style="font-size:8pt;color:#555;margin-top:4pt;letter-spacing:0.04em;">${contact}</div></div>`;
+  } else if (s === 'left-rule') {
+    header = `<div style="margin-bottom:10pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.04em;color:#111;">${nameHtml}</div><div style="height:1.5px;background:${accent};margin:4pt 0;"></div><div style="font-size:8pt;color:#555;">${contact}</div></div>`;
   } else if (s === 'modern-left' || s === 'operator') {
-    header = `<div style="margin-bottom:8pt;border-bottom:3px solid ${accent2};padding-bottom:6pt;"><div style="font-family:${t.font};font-size:22pt;font-weight:900;letter-spacing:0.02em;color:#111;text-transform:uppercase;">${d.name||'Your Name'}</div><div style="font-size:8pt;color:#555;margin-top:3pt;">${contact}</div></div>`;
+    header = `<div style="margin-bottom:8pt;border-bottom:3px solid ${accent2};padding-bottom:6pt;"><div style="font-family:${t.font};font-size:22pt;font-weight:900;letter-spacing:0.02em;color:#111;text-transform:uppercase;">${nameHtml}</div><div style="font-size:8pt;color:#555;margin-top:3pt;">${contact}</div></div>`;
   } else if (s === 'editorial') {
-    header = `<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid ${accent};padding-bottom:6pt;margin-bottom:8pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.05em;">${d.name||'Your Name'}</div><div style="font-size:8pt;color:#555;text-align:right;max-width:45%;line-height:1.6;">${contact}</div></div>`;
+    header = `<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid ${accent};padding-bottom:6pt;margin-bottom:8pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.05em;">${nameHtml}</div><div style="font-size:8pt;color:#555;text-align:right;max-width:45%;line-height:1.6;">${contact}</div></div>`;
   }
 
   function secHdr(title) {
@@ -791,8 +910,6 @@ function buildResumeHTML(rawData, t, useAlt) {
       'studio': `text-align:center;background:${accentLight};color:${accent};`,
       'foreman': `text-align:center;background:${accentLight};color:${accent};`,
       'left-rule': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
-      'educator': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
-      'researcher': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
       'modern-left': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
       'operator': `text-align:left;border-bottom:2px solid ${accent2};color:${accent};`,
       'editorial': `text-align:left;font-style:italic;font-variant:small-caps;border-bottom:1px solid ${accent};color:${accent};`,
@@ -805,155 +922,90 @@ function buildResumeHTML(rawData, t, useAlt) {
     return (arr||[]).filter(Boolean).map(b=>`<div style="margin-bottom:2pt;padding-left:12pt;position:relative;font-size:8.5pt;line-height:1.55;"><span style="position:absolute;left:0;">•</span>${b}</div>`).join('');
   }
 
-  // Summary
-  let summary = '';
-  if (d.summary?.tagline || d.summary?.bullets?.length || d.summary?.skills?.length) {
-    summary = secHdr('Professional Summary') + `<div style="font-family:${t.font};font-size:8.5pt;line-height:1.55;color:#222;">
-      ${d.summary?.tagline ? `<div style="font-style:italic;margin-bottom:3pt;">${d.summary.tagline}</div>` : ''}
-      ${bullets(d.summary?.bullets)}
-      ${d.summary?.skills?.length ? `<div style="margin-top:4pt;font-size:8pt;color:#333;letter-spacing:0.03em;">${d.summary.skills.join(' – ')}</div>` : ''}
-    </div>`;
-  }
-
-  // Experience
-  let exp = '';
-  if (d.experience?.length) {
-    exp = secHdr('Experience') + (d.experience||[]).map(e=>`
+  const render = {
+    summary: () => `<div style="font-family:${t.font};font-size:8.5pt;line-height:1.55;color:#222;">
+      ${d.summary.tagline ? `<div style="font-style:italic;margin-bottom:3pt;">${d.summary.tagline}</div>` : ''}
+      ${bullets(d.summary.bullets)}
+      ${d.summary.skills.length ? `<div style="margin-top:4pt;font-size:8pt;color:#333;letter-spacing:0.03em;">${d.summary.skills.join(' – ')}</div>` : ''}
+    </div>`,
+    skills: () => `<div style="font-family:${t.font};font-size:8.5pt;line-height:1.55;color:#222;">${d.summary.skills.join(' – ')}</div>`,
+    experience: () => d.experience.map(e=>`
       <div style="margin-bottom:9pt;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;">
-          <div style="font-weight:700;font-size:9pt;color:#111;">${e.title||''}</div>
-          <div style="font-size:8pt;color:#555;white-space:nowrap;">${e.start||''}${e.end?' – '+e.end:''}</div>
+          <div style="font-weight:700;font-size:9pt;color:#111;">${e.title}</div>
+          <div style="font-size:8pt;color:#555;white-space:nowrap;">${dates(e.start, e.end)}</div>
         </div>
-        <div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${e.company||''}${e.location?' | '+e.location:''}</div>
+        <div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${e.company}${e.location?' | '+e.location:''}</div>
         ${e.summary?`<div style="font-size:8pt;color:#444;margin-bottom:2pt;font-style:italic;">${e.summary}</div>`:''}
         <div style="font-family:${t.font};">${bullets(e.bullets)}</div>
-      </div>`).join('');
-  }
-
-  // Education
-  let edu = '';
-  if (d.education?.length) {
-    edu = secHdr('Education') + (d.education||[]).map(e=>`
+      </div>`).join(''),
+    projects: () => d.projects.map(p=>`
+      <div style="margin-bottom:7pt;">
+        <div style="font-weight:700;font-size:9pt;color:#111;">${p.name}</div>
+        ${p.description?`<div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${p.description}</div>`:''}
+        <div style="font-family:${t.font};">${bullets(p.bullets)}</div>
+      </div>`).join(''),
+    volunteer: () => d.volunteer.map(v=>`
       <div style="margin-bottom:7pt;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;">
-          <div style="font-weight:700;font-size:9pt;color:#111;">${e.degree||''}</div>
-          <div style="font-size:8pt;color:#555;">${e.date||''}</div>
+          <div style="font-weight:700;font-size:9pt;color:#111;">${v.title}</div>
+          <div style="font-size:8pt;color:#555;white-space:nowrap;">${dates(v.start, v.end)}</div>
         </div>
-        <div style="font-style:italic;font-size:8.5pt;color:#555;">${e.school||''}${e.location?' | '+e.location:''}</div>
+        <div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${v.organization}${v.location?' | '+v.location:''}</div>
+        <div style="font-family:${t.font};">${bullets(v.bullets)}</div>
+      </div>`).join(''),
+    education: () => d.education.map(e=>`
+      <div style="margin-bottom:7pt;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;">
+          <div style="font-weight:700;font-size:9pt;color:#111;">${e.degree}</div>
+          <div style="font-size:8pt;color:#555;">${e.date}</div>
+        </div>
+        <div style="font-style:italic;font-size:8.5pt;color:#555;">${e.school}${e.location?' | '+e.location:''}</div>
         ${e.honors?`<div style="font-size:8pt;color:#444;font-style:italic;">${e.honors}</div>`:''}
-      </div>`).join('');
-  }
-
-  // Certs
-  let certs = '';
-  if (d.certifications?.length) {
-    certs = secHdr('Certifications') + (d.certifications||[]).map(c=>`
+      </div>`).join(''),
+    certifications: () => d.certifications.map(c=>`
       <div style="display:flex;justify-content:space-between;margin-bottom:3pt;font-size:8.5pt;">
-        <div><span style="font-weight:600;">${c.name||''}</span>${c.org?' | '+c.org:''}</div>
-        <div style="color:#555;">${c.date||''}</div>
-      </div>`).join('');
-  }
+        <div><span style="font-weight:600;">${c.name}</span>${c.org?' | '+c.org:''}</div>
+        <div style="color:#555;">${c.date}</div>
+      </div>`).join(''),
+    awards: () => bullets(d.awards)
+  };
 
-  // Awards
-  let awards = '';
-  if (d.awards?.length) {
-    awards = secHdr('Awards & Recognition') + bullets(d.awards);
-  }
-
-  const sectionsOrder = s === 'foreman'
-    ? certs + exp + edu + awards
-    : s === 'scholar' || s === 'researcher'
-    ? summary + edu + exp + certs + awards
-    : summary + exp + edu + certs + awards;
-
-  return `<div style="font-family:${t.font};font-size:9pt;line-height:1.5;color:#222;background:#FDFCF9;">${header}${sectionsOrder}</div>`;
+  const body = ResumeCore.sections(d, t).map(sec => secHdr(sec.title) + render[sec.key]()).join('');
+  return `<div style="font-family:${t.font};font-size:9pt;line-height:1.5;color:#222;background:#FDFCF9;">${header}${body}</div>`;
 }
 
-// ── Export PDF ────────────────────────────────────────────────────────────────
-async function exportPDF() {
-  const el = document.getElementById('resume-preview');
-  if (!el) return;
-  document.getElementById('btn-pdf').disabled = true;
-  document.getElementById('btn-pdf').textContent = 'Exporting…';
+// ── Export PDF / Word ─────────────────────────────────────────────────────────
+// Both exports draw real text from the same model as the preview (resume-core.js / resume-export.js).
+// They run in the browser and use no license, credit or network call.
+function exportNotice(msg) {
+  const el = document.getElementById('export-notice');
+  el.textContent = msg || '';
+  el.style.display = msg ? 'block' : 'none';
+}
+
+async function runExport(kind) {
+  if (!state.data || !ResumeCore.hasContent(state.data)) { exportNotice('Add some details to your resume before downloading.'); return; }
+  const btn = document.getElementById(kind === 'pdf' ? 'btn-pdf' : 'btn-word');
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Exporting…';
+  exportNotice('');
   try {
-   await html2pdf().from(el).set({
-  margin: 0,
-  filename: `${state.data?.name?.replace(/\s+/g,'_')||'resume'}.pdf`,
-  html2canvas: {
-    scale: 2,
-    useCORS: true,
-    scrollX: 0,
-    scrollY: -window.scrollY,
-    windowWidth: el.scrollWidth,
-    windowHeight: el.scrollHeight
-  },
-  jsPDF: { format: 'letter', unit: 'in', orientation: 'portrait' },
-  pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-}).save();
+    if (kind === 'pdf') {
+      const r = ResumeExport.exportPDF(state.data, state.selectedTemplate, state.useAltColor);
+      if (r.simplified) exportNotice('Some characters outside standard Latin letters were simplified in the PDF. The Word download keeps them.');
+    } else {
+      await ResumeExport.exportWord(state.data, state.selectedTemplate, state.useAltColor);
+    }
+  } catch (e) {
+    console.error('export failed', e);
+    exportNotice('Sorry, that download didn’t work. Please try again, or try the other format.');
   } finally {
-    document.getElementById('btn-pdf').disabled = false;
-    document.getElementById('btn-pdf').textContent = '⬇ PDF';
+    btn.disabled = false; btn.textContent = label;
   }
 }
-
-// ── Export Word ───────────────────────────────────────────────────────────────
-async function exportWord() {
-  document.getElementById('btn-word').disabled = true;
-  document.getElementById('btn-word').textContent = 'Exporting…';
-  try {
-    const { Document, Packer, Paragraph, TextRun, AlignmentType, ShadingType } = window.docx;
-    const d = state.data;
-    const accent = state.selectedTemplate.accent.replace('#','');
-    const contact = [d.contact?.phone,d.contact?.email,d.contact?.location,d.contact?.linkedin,d.contact?.website].filter(Boolean).join('  |  ');
-    const sections = [];
-
-    sections.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: (d.name||'').toUpperCase(), bold: true, size: 36, font: 'Georgia' })], spacing: { after: 60 } }));
-    sections.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: contact, size: 18, color: '555555', font: 'Georgia' })], spacing: { after: 200 } }));
-
-    const hdr = (title) => new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 19, color: accent, font: 'Georgia' })], shading: { type: ShadingType.SOLID, color: 'E8E8E8', fill: 'E8E8E8' }, spacing: { before: 200, after: 80 } });
-
-    if (d.summary?.tagline || d.summary?.bullets?.length) {
-      sections.push(hdr('Professional Summary'));
-      if (d.summary.tagline) sections.push(new Paragraph({ children: [new TextRun({ text: d.summary.tagline, italics: true, size: 18, font: 'Georgia' })], spacing: { after: 60 } }));
-      (d.summary.bullets||[]).filter(Boolean).forEach(b => sections.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: b, size: 18, font: 'Georgia' })], spacing: { after: 40 } })));
-      if (d.summary.skills?.length) sections.push(new Paragraph({ children: [new TextRun({ text: d.summary.skills.join(' – '), size: 18, font: 'Georgia' })], spacing: { after: 80 } }));
-    }
-    if (d.experience?.length) {
-      sections.push(hdr('Experience'));
-      d.experience.forEach(e => {
-        sections.push(new Paragraph({ children: [new TextRun({ text: e.title||'', bold: true, size: 18, font: 'Georgia' }), new TextRun({ text: `\t${e.start||''}${e.end?' – '+e.end:''}`, size: 18, font: 'Georgia', color: '555555' })], spacing: { before: 100, after: 40 } }));
-        sections.push(new Paragraph({ children: [new TextRun({ text: `${e.company||''}${e.location?' | '+e.location:''}`, italics: true, size: 18, font: 'Georgia', color: '555555' })], spacing: { after: 40 } }));
-        (e.bullets||[]).filter(Boolean).forEach(b => sections.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: b, size: 18, font: 'Georgia' })], spacing: { after: 40 } })));
-      });
-    }
-    if (d.education?.length) {
-      sections.push(hdr('Education'));
-      d.education.forEach(e => {
-        sections.push(new Paragraph({ children: [new TextRun({ text: e.degree||'', bold: true, size: 18, font: 'Georgia' }), new TextRun({ text: `\t${e.date||''}`, size: 18, font: 'Georgia', color: '555555' })], spacing: { before: 100, after: 40 } }));
-        sections.push(new Paragraph({ children: [new TextRun({ text: `${e.school||''}${e.location?' | '+e.location:''}`, italics: true, size: 18, font: 'Georgia' })], spacing: { after: 40 } }));
-        if (e.honors) sections.push(new Paragraph({ children: [new TextRun({ text: e.honors, italics: true, size: 18, font: 'Georgia', color: '444444' })], spacing: { after: 40 } }));
-      });
-    }
-    if (d.certifications?.length) {
-      sections.push(hdr('Certifications'));
-      d.certifications.forEach(c => sections.push(new Paragraph({ children: [new TextRun({ text: c.name||'', bold: true, size: 18, font: 'Georgia' }), new TextRun({ text: c.org?' | '+c.org:'', size: 18, font: 'Georgia' }), new TextRun({ text: `\t${c.date||''}`, size: 18, font: 'Georgia', color: '555555' })], spacing: { after: 60 } })));
-    }
-    if (d.awards?.length) {
-      sections.push(hdr('Awards & Recognition'));
-      d.awards.filter(Boolean).forEach(a => sections.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: a, size: 18, font: 'Georgia' })], spacing: { after: 40 } })));
-    }
-
-    const doc = new Document({ sections: [{ children: sections }] });
-    const blob = await Packer.toBlob(doc);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${d?.name?.replace(/\s+/g,'_')||'resume'}.docx`;
-    a.click(); URL.revokeObjectURL(url);
-  } finally {
-    document.getElementById('btn-word').disabled = false;
-    document.getElementById('btn-word').textContent = '⬇ Word';
-  }
-}
+function exportPDF() { return runExport('pdf'); }
+function exportWord() { return runExport('word'); }
 
 // ── Tailor to Job Description ──────────────────────────────────────────────
 // Tailoring runs from the Edit tab, where the Paste tab's error box is hidden, so its messages show in the tailoring box.
@@ -961,6 +1013,15 @@ function showTailorError(msg) {
   const box = document.getElementById('match-summary-box');
   box.style.display = 'block';
   box.innerHTML = `<div style="color:#c0392b;">${esc(msg)}</div>`;
+}
+
+function undoTailor() {
+  if (!state.preTailor) return;
+  state.data = state.preTailor; state.preTailor = null; state.flags = new Set();
+  renderEditFields(); renderPreview();
+  const box = document.getElementById('match-summary-box');
+  box.style.display = 'block';
+  box.innerHTML = '<div>Restored your resume from before tailoring.</div>';
 }
 
 async function tailorToJob() {
@@ -995,7 +1056,11 @@ async function tailorToJob() {
     }
 
     const parsed = JSON.parse(json.result);
+    state.preTailor = JSON.parse(JSON.stringify(state.data));      // lets the customer undo this run
     state.data = parsed.resume;
+    // The server flags AI-written lines containing numbers, credentials or duties that are not in the original resume.
+    const unverified = Array.isArray(json.unverified) ? json.unverified : [];
+    state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
     renderEditFields();
     renderPreview();
 
@@ -1006,6 +1071,9 @@ async function tailorToJob() {
       <div style="margin-bottom:6px;"><strong>Match notes:</strong> ${esc(ms.notes || '')}</div>
       ${ms.matchedKeywords?.length ? `<div style="margin-bottom:4px;"><strong style="color:#2a7;">Matched:</strong> ${ms.matchedKeywords.map(esc).join(', ')}</div>` : ''}
       ${ms.missingKeywords?.length ? `<div><strong style="color:#a52;">Not covered:</strong> ${ms.missingKeywords.map(esc).join(', ')}</div>` : ''}
+      ${unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'} before you use this resume.</strong> The AI added details that weren’t in your original (marked in yellow in Edit Fields). Keep only what is true.
+        <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
+      <button class="btn-secondary" style="margin-top:8px;" onclick="undoTailor()">Undo this tailoring</button>
     `;
   } catch (e) {
     showTailorError("Couldn't tailor to this job — please try again.");

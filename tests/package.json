@@ -3,7 +3,7 @@
   "private": true,
   "description": "Regression tests. Kept out of the root package.json so Netlify builds never install these.",
   "scripts": {
-    "test": "node --test --test-concurrency=1 \"db/*.test.js\" \"functions/*.test.js\" \"ui/*.test.js\""
+    "test": "node --test --test-concurrency=1 \"core/*.test.js\" \"db/*.test.js\" \"functions/*.test.js\" \"ui/*.test.js\""
   },
   "devDependencies": {
     "pg": "^8.13.0"
