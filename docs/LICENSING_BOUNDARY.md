@@ -1,23 +1,37 @@
-# Licensing boundary review (guided builder release)
+# Licensing boundary
 
-**What is enforced, and where**
+## What is enforced, and where
 
 | Action | Enforced by | Uses a generation? |
 |---|---|---|
-| Analyze Resume (`parse-resume`) | Server: reserve → AI → validate → commit; failures release | **Yes, 1** (unchanged) |
-| Tailor to This Job (`tailor-resume`) | Server: signed token from a paid Analyze, max 5 runs per paid generation (database-enforced) | No (unchanged) |
+| Analyze Resume (`parse-resume`) | Server: reserve -> AI -> validate -> commit; failures release | **Yes, 1** (unchanged) |
+| **Polish My Resume with AI** (`polish-resume`) | Server, same model as Analyze | **Yes, 1** (per successful polish) |
+| Tailor to This Job (`tailor-resume`) | Server: signed token from a paid Analyze/Polish, max 5 runs per paid generation | No (unchanged) |
+| **PDF / Word download** (`export-resume`) | **Server: the code is looked up in the database on every request, and the file is rendered on the server** | **No** (authorization check only) |
 | Verify code (`verify-license`) | Server, read-only | No |
-| Guided builder (new) | Browser: needs a verified code (`WIZARD_REQUIRES_LICENSE` in `wizard.js`) | **No.** Manual entry never calls a paid endpoint |
-| Free sample, Edit Fields, templates, PDF/Word export | Nothing (all run in the browser) | No |
+| Guided builder, Edit Fields, preview, templates | Browser: builder needs a verified code; nothing paid is called | No |
+| Free sample | Open, watermarked, not printable, cannot be downloaded | No |
 
-**Finding: the sample/editor/export workflow is not a credit bypass, but it is a free-use path.**
-Everything that costs money (the AI calls) stays enforced on the server and was not changed. But the editor and both exports run entirely in the browser, so anyone who loads the free sample can overwrite every field and export a finished resume without a code. This has been true since launch. The guided builder is gated behind a verified code, so this release does not add a new free path, but the repaired PDF export makes the existing one more usable.
+## The previous bypass, and how it is closed
 
-Browser-side gating cannot be made secure (the page and its scripts are public). Options, owner's decision, none applied:
+**Before:** the editor and both exports ran entirely in the browser, so anyone could load the free sample, overwrite every field and download a finished resume without a code.
 
-1. **Accept** it: the paid value is the AI (Analyze + Tailor). Simplest.
-2. **Deterrent**: unlicensed exports carry a small "Made with Flex & Grace" footer line.
-3. **Require a verified code to export** (deterrent only; a determined user can bypass it).
+**Now:** the browser no longer contains any PDF/Word code. The files exist only as the response of `export-resume`, which refuses unless the license code is found in the `licenses` table. Changing the page (forging `state.license`, adding the `licensed` class, calling the function directly, editing the sample) gets a 401/403 and no file. This is tested at the function level (direct requests, no browser) and in the browser.
 
-**Not changed in this release:** pricing, included credits (5 per code), entitlements, Supabase schema/permissions, token secrets, deploy configuration.
-**To make the builder open to everyone** (a customer-access change): set `WIZARD_REQUIRES_LICENSE = false` in `wizard.js`.
+**Security model of `export-resume`**
+- **Authorization:** code format check, then a database lookup on every request. There is no download token to steal or replay, and a deleted or revoked code stops working immediately.
+- **Replay/expiry:** nothing to replay. The call has no side effects and consumes nothing.
+- **Valid but exhausted code:** can still download. The code is the purchase; only the AI is limited by the five generations.
+- **Brute force and scraping:** bad codes are limited per client (20 per 10 minutes) and good codes per code (60 per 10 minutes). **These limiters are in memory on each warm function instance**, so they slow a client but are not a global guarantee. A global limit needs a platform rate-limit rule or a small database table (a migration, so not done here).
+- **CORS:** same-origin only. No `Access-Control-*` header is ever sent (tested).
+- **Errors and logs:** generic messages; codes and resume text are never logged (only a non-sensitive error code), tested including database-error paths.
+- **Privacy:** resume text now travels to the function to be rendered. It is not stored or logged.
+
+## What cannot be prevented (honest limits)
+
+- A person can always **screenshot or copy text from their own screen**. For unlicensed visitors the preview is watermarked and the print stylesheet hides it, which discourages casual use, but this is a deterrent, not a lock. What is protected is the product's download service.
+- **The renderer's source is public.** `netlify.toml` publishes the repository root (`publish = "."`), so `netlify/functions/*` source files are downloadable as static files. No secret is in them (the design does not rely on obscurity), but someone could copy the rendering code and run it locally. Publishing only a `public/` folder would stop that; it is a deploy-layout change left for the owner to decide.
+- `verify-license` has no rate limit (unchanged). Codes are 8 random characters (about 2.8 trillion possibilities), so guessing is impractical, but a platform rate-limit rule is recommended.
+
+## Not changed
+Pricing, the five included generations, entitlements, Supabase schema/permissions/migrations, token secrets, Netlify environment variables and deploy configuration. `license.js`, `token.js`, `config.js`, `supabase.js`, `verify-license.js`, `consume-generation.js` and `supabase/` have zero diff against `main`.

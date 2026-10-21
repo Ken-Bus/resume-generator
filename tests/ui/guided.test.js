@@ -12,6 +12,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.join(__dirname, '..', '..');
 const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
 const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { exportApi } = require('./export-api');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'rg-ui-'));
 
@@ -87,7 +88,9 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });
 
-  async function open(api = {}, viewport = { width: 1280, height: 900 }, extra = {}) {
+  const verifyOk0 = () => ({ status: 200, json: { valid: true, usesRemaining: 5, maxUses: 5 } });
+  async function open(api0 = {}, viewport = { width: 1280, height: 900 }, extra = {}) {
+    const api = { 'verify-license': verifyOk0, 'export-resume': exportApi(['FG-TEST-AAAA']), ...api0 };
     const ctx = await browser.newContext({ acceptDownloads: true, viewport, ...extra }); const page = await ctx.newPage();
     const calls = []; const external = []; const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
@@ -99,6 +102,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
         let body = null; try { body = JSON.parse(route.request().postData() || 'null'); } catch (e) {}
         calls.push({ name, body });
         const r = await (api[name] || (() => ({ status: 500, json: { error: 'unmocked' } })))(body, calls.length);
+        if (r.raw) return route.fulfill({ status: r.status, headers: r.headers, body: Buffer.from(r.body || '', r.isBase64Encoded ? 'base64' : 'utf8') });
         return route.fulfill({ status: r.status, contentType: 'application/json', body: JSON.stringify(r.json) });
       }
       if (url.startsWith(base)) return route.continue();
@@ -108,13 +112,18 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
     return { page, calls, external, errors, close: () => ctx.close() };
   }
   const verifyOk = () => ({ status: 200, json: { valid: true, usesRemaining: 5, maxUses: 5 } });
-  const paidCalls = (s) => s.calls.filter((c) => c.name !== 'verify-license');
+  const paidCalls = (s) => s.calls.filter((c) => !['verify-license', 'export-resume'].includes(c.name));      // downloads are authorization checks, never paid
   async function unlockViaWizard(s, path = 'first') {
     await s.page.fill('#gate-code-input', 'FG-TEST-AAAA'); await s.page.click('#gate-unlock-btn');
     await s.page.waitForSelector('#license-gate', { state: 'hidden' });
     await s.page.click(path === 'first' ? '#start-first' : '#start-returning');
     await s.page.waitForSelector('#panel-guide .wiz-title');
   }
+  async function licensed(s) {
+    await s.page.fill('#gate-code-input', 'FG-TEST-AAAA'); await s.page.click('#gate-unlock-btn');
+    await s.page.waitForSelector('#license-gate', { state: 'hidden' });
+  }
+  async function licensedSample(s) { await licensed(s); await s.page.evaluate(() => loadSample()); }
   async function load(s, data, template) {
     await s.page.evaluate(([d, tpl]) => { state.data = d; if (tpl) selectTemplate(tpl); renderEditFields(); renderPreview(); }, [data, template]);
   }
@@ -246,7 +255,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
 
   await t.test('blank, partial and single-field resumes never show empty headings or crash, and exports refuse an empty resume politely', async () => {
     const s = await open({ 'verify-license': verifyOk });
-    await s.page.click('.gate-sample-link');
+    await licensedSample(s);
     const blank = { name: '', contact: {}, summary: { tagline: '', bullets: [''], skills: [''] }, experience: [{ title: '', company: '', bullets: [''] }], education: [{ degree: '' }], certifications: [], projects: [{ name: '' }], volunteer: [], awards: [''] };
     await load(s, blank);
     const txt = await s.page.innerText('#resume-preview');
@@ -265,7 +274,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
 
   await t.test('PDF has selectable, extractable text in every one of the 12 templates (no page images), in reading order', async () => {
     const s = await open({});
-    await s.page.click('.gate-sample-link');
+    await licensedSample(s);
     const ids = await s.page.evaluate(() => TEMPLATES.map((x) => x.id));
     assert.equal(ids.length, 12);
     for (const id of ids) {
@@ -290,7 +299,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
     const out = {};
     for (const [label, vp, extra] of [['desktop', { width: 1280, height: 900 }, {}], ['phone', { width: 390, height: 844 }, { isMobile: true, hasTouch: true }]]) {
       const s = await open({}, vp, extra);
-      await s.page.click('.gate-sample-link');
+      await licensedSample(s);
       const r = pdfText(await download(s, '#btn-pdf', `${label}.pdf`));
       out[label] = r;
       for (const line of ['EMMA LARSEN', 'March 2020 – Present', 'Reduced shrinkage by 22% through inventory audit overhaul and team accountability initiatives'])
@@ -304,7 +313,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
 
   await t.test('Word export keeps experience summaries, projects, volunteering and training; per-template styling does not drop content', async () => {
     const s = await open({});
-    await s.page.click('.gate-sample-link');
+    await licensedSample(s);
     let x = docxText(await download(s, '#btn-word', 'sample.docx'));
     assert.match(x, /Oversaw full-cycle retail operations for 18 flagship stores/);     // the previously dropped experience summary
     assert.match(x, /March 2020 – Present/); assert.match(x, /CERTIFICATIONS & TRAINING/);
@@ -319,7 +328,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
 
   await t.test('PDF carries projects, volunteering, education-first order and the right section names for a first resume', async () => {
     const s = await open({});
-    await s.page.click('.gate-sample-link');
+    await licensedSample(s);
     await load(s, FIRST_TIMER, 'partner');
     const r = pdfText(await download(s, '#btn-pdf', 'first.pdf'));
     for (const needle of ['SCHOOL FOOD DRIVE'.toLowerCase(), 'Sorted and counted the cans', 'Community Food Pantry', '2025 – Present', 'Honor roll', 'Food Handler Course'])
@@ -330,7 +339,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
 
   await t.test('long content paginates cleanly: nothing lost across pages, no headings stranded at the bottom', async () => {
     const s = await open({});
-    await s.page.click('.gate-sample-link');
+    await licensedSample(s);
     const long = JSON.parse(JSON.stringify(WORKER));
     long.experience = Array.from({ length: 9 }, (_, i) => ({ title: `Role ${i + 1}`, company: `Fictional Co ${i + 1}`, location: '', start: `${2000 + i}`, end: `${2001 + i}`, summary: '', bullets: Array.from({ length: 5 }, (_, j) => `Task ${i + 1}.${j + 1} ${'with a deliberately long description that must wrap onto more than one line '.repeat(2)}`) }));
     await load(s, long, 'boardroom');
@@ -344,7 +353,7 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
 
   await t.test('characters the PDF font cannot draw are simplified with a notice; Word keeps them; no crash', async () => {
     const s = await open({});
-    await s.page.click('.gate-sample-link');
+    await licensedSample(s);
     await load(s, { ...WORKER, name: 'José Łukasz 日本', summary: { tagline: 'Café “manager” – smiley 🙂', bullets: [], skills: [] } }, 'partner');
     await download(s, '#btn-pdf', 'unicode.pdf');
     assert.match(await s.page.innerText('#export-notice'), /simplified/);

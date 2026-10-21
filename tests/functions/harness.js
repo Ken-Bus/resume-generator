@@ -28,12 +28,26 @@ function makeClient(pool) {
         maybeSingle: async () => { const r = await exec(); return r.error ? r : { data: r.data[0] ?? null, error: null }; }
       };
     },
+    // Minimal query builder: select / eq / gt / order / limit, awaited or finished with maybeSingle().
     from(table) {
-      return { select: (cols) => ({ eq: (col, val) => ({
-        maybeSingle: async () => {
-          const r = await run(`select ${cols} from public.${table} where ${col} = $1 limit 1`, [val]);
-          return r.error ? { data: null, error: r.error } : { data: r.rows[0] ?? null, error: null };
-        } }) }) };
+      return { select: (cols) => {
+        const where = []; const params = []; const order = []; let lim = null;
+        const q = {
+          eq(col, val) { params.push(val); where.push(`${col} = $${params.length}`); return q; },
+          gt(col, val) { params.push(val); where.push(`${col} > $${params.length}`); return q; },
+          order(col, o) { order.push(`${col} ${o && o.ascending === false ? 'desc' : 'asc'}`); return q; },
+          limit(n) { lim = n; return q; },
+          async _run(single) {
+            const sql = `select ${cols} from public.${table}${where.length ? ' where ' + where.join(' and ') : ''}${order.length ? ' order by ' + order.join(', ') : ''}${single ? ' limit 1' : lim ? ' limit ' + lim : ''}`;
+            const r = await run(sql, params);
+            if (r.error) return { data: null, error: r.error };
+            return { data: single ? (r.rows[0] ?? null) : r.rows, error: null };
+          },
+          maybeSingle() { return q._run(true); },
+          then(res, rej) { return q._run(false).then(res, rej); }
+        };
+        return q;
+      } };
     }
   };
 }
@@ -52,6 +66,7 @@ function loadHandlers(pool) {
   const load = (n) => require(path.join(FUNCS, n));
   return {
     parse: load('parse-resume').handler, tailor: load('tailor-resume').handler,
+    polish: load('polish-resume').handler, exportResume: load('export-resume'), polishModule: load('polish-resume'),
     consume: load('consume-generation').handler, verify: load('verify-license').handler,
     license: load('_lib/license'), tokens: load('_lib/token'), FUNCS
   };
@@ -68,16 +83,25 @@ const GOOD_RESUME = { name: 'Jordan Ellis', contact: { email: 'jordan.ellis@exam
 // Scriptable AI provider. mode: ok | http500 | hang | truncated | notjson | badshape | empty | throw
 function installAi(state) {
   state.calls = 0; state.mode = state.mode || 'ok'; state.delayMs = state.delayMs || 0;
+  state.inflight = 0; state.maxInflight = 0;
   global.fetch = async (url, opts) => {
     state.calls++;
+    state.inflight++; state.maxInflight = Math.max(state.maxInflight, state.inflight);
+    try { return await respond(url, opts); } finally { state.inflight--; }
+  };
+  const respond = async (url, opts) => {
     const mode = state.mode;
     if (state.delayMs) await sleep(state.delayMs);
     if (mode === 'hang') return new Promise((_, rej) => opts.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
     if (mode === 'throw') throw new Error('socket hang up');
     if (mode === 'http500') return { ok: false, status: 500, json: async () => ({ error: { type: 'overloaded_error' } }) };
     const body = JSON.parse(opts.body);
-    const isTailor = /tailoring assistant/.test(body.messages[0].content);
-    const payload = isTailor ? { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } } : GOOD_RESUME;
+    const prompt = body.messages[0].content;
+    const isTailor = /tailoring assistant/.test(prompt);
+    const isPolish = /resume-writing assistant/.test(prompt);
+    // Polish default: hand the customer's own resume back (the prompt embeds it after "Resume JSON:"); tests override with state.polishPayload.
+    const polished = isPolish ? (state.polishPayload ? state.polishPayload(JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : null;
+    const payload = isPolish ? polished : isTailor ? { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } } : GOOD_RESUME;
     let text = JSON.stringify(payload), stop = 'end_turn';
     if (mode === 'truncated') { text = text.slice(0, 40); stop = 'max_tokens'; }
     if (mode === 'notjson') text = 'Sorry, I cannot parse that.';

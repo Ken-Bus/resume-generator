@@ -7,10 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="/jspdf.umd.min.js"></script>
-<script src="/docx.umd.js"></script>
 <script src="/resume-core.js"></script>
-<script src="/resume-export.js"></script>
+<script src="/templates.js"></script>
 <script src="/wizard.js"></script>
 <style>
   :root {
@@ -138,6 +136,15 @@
   .gate-shop-link a { color: #888; }
   .error-box a { color: #c0392b; font-weight: 600; }
 
+
+  /* UNLICENSED DEMO: the sample preview is watermarked and not printable; downloads need an access code */
+  .resume-page.demo { position: relative; }
+  .resume-page.demo::after { content: "SAMPLE PREVIEW\A ACCESS CODE REQUIRED TO DOWNLOAD"; white-space: pre; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; transform: rotate(-28deg); font: 700 26px 'DM Sans', sans-serif; letter-spacing: 0.12em; line-height: 1.6; color: rgba(17,17,17,0.10); pointer-events: none; }
+  @media print {
+    body:not(.licensed) .resume-page { display: none !important; }
+    body:not(.licensed) .preview-area::before { content: "Printing and downloads need an access code."; display: block; font: 16px 'DM Sans', sans-serif; padding: 40px; }
+  }
+
   /* START PATHS + GUIDED BUILDER */
   .start-paths { padding: 12px 16px; border-bottom: 1px solid var(--border); background: #FAFAF8; flex-shrink: 0; }
   .start-title { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; margin-bottom: 8px; }
@@ -179,6 +186,14 @@
   .wiz-review-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #EEE; font-size: 12px; }
   .wiz-review-row span { color: #666; font-size: 11px; }
   .wiz-preview-link { display: none; font-size: 11px; color: #555; margin-top: 8px; }
+  #panel-guide.wiz-busy .wiz-nav, #panel-guide.wiz-busy .wiz-dots { pointer-events: none; opacity: 0.45; }
+  .wiz-polish { margin-top: 18px; padding: 12px; border: 1px solid #D9D4F0; border-radius: 6px; background: #F8F7FD; }
+  .wiz-polish-btn { width: 100%; padding: 11px; border: none; border-radius: 4px; background: #3B2F7F; color: #fff; font-weight: 700; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-polish-btn:disabled { background: #BBB; cursor: not-allowed; }
+  .wiz-confirm { border: 1px solid #E0A800; background: #FFFBEA; border-radius: 4px; padding: 10px; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  .wiz-confirm button { margin: 6px 6px 0 0; padding: 8px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-ok { background: #F0F6F2; border: 1px solid #CFE3D6; border-radius: 4px; padding: 8px 10px; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  .wiz-err { background: #FFF3F0; border: 1px solid #FFCCBB; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #c0392b; line-height: 1.5; margin-top: 8px; }
   .flag-warn { border-color: #E0A800 !important; background: #FFFBEA !important; }
   .flag-note { font-size: 10px; color: #8a6d00; margin: -2px 0 4px; }
   .notice-box { background: #FFFBEA; border: 1px solid #F0DC9A; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #6b5300; margin: 8px 0; line-height: 1.5; }
@@ -373,21 +388,7 @@ const SAMPLE_DATA = {
 };
 
 // ── Templates ─────────────────────────────────────────────────────────────────
-const TEMPLATES = [
-  { id:'boardroom', category:'Corporate', name:'The Boardroom', accent:'#1B2B47', accentLight:'#E8EDF3', font:"Georgia,'Times New Roman',serif", style:'centered' },
-  { id:'partner',   category:'Corporate', name:'The Partner',   accent:'#1B2B47', accentLight:'#E8EDF3', font:"Georgia,'Times New Roman',serif", style:'left-rule' },
-  { id:'builder',   category:'Tech',      name:'The Builder',   accent:'#3B5168', accentLight:'#E5EBF0', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'modern-left' },
-  { id:'architect', category:'Tech',      name:'The Architect', accent:'#3B5168', accentLight:'#E5EBF0', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'modern-center' },
-  { id:'editorial', category:'Creative',  name:'The Editorial', accent:'#A85432', accentLight:'#F5EDE8', accentAlt:'#6B7F5C', accentAltLight:'#EBF0E8', font:"Cambria,Georgia,serif", style:'editorial', colorToggle:true },
-  { id:'studio',    category:'Creative',  name:'The Studio',    accent:'#A85432', accentLight:'#F5EDE8', accentAlt:'#6B7F5C', accentAltLight:'#EBF0E8', font:"Cambria,Georgia,serif", style:'studio', colorToggle:true },
-  { id:'practitioner', category:'Healthcare', name:'The Practitioner', accent:'#2A6B6E', accentLight:'#E3EEEE', font:"Georgia,serif", style:'centered' },
-  { id:'educator',     category:'Healthcare', name:'The Educator',     accent:'#2A6B6E', accentLight:'#E3EEEE', font:"Georgia,serif", style:'left-rule' },
-  { id:'scholar',    category:'Academic', name:'The Scholar',   accent:'#6B2737', accentLight:'#F0E8EA', font:"Georgia,'Times New Roman',serif", style:'centered' },
-  { id:'researcher', category:'Academic', name:'The Researcher',accent:'#6B2737', accentLight:'#F0E8EA', font:"Georgia,'Times New Roman',serif", style:'left-rule' },
-  { id:'operator', category:'Trades', name:'The Operator', accent:'#2D2D2D', accentLight:'#EBEBEB', accent2:'#C2511F', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'operator' },
-  { id:'foreman',  category:'Trades', name:'The Foreman',  accent:'#2D2D2D', accentLight:'#EBEBEB', accent2:'#C2511F', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'foreman' },
-];
-const CATEGORIES = ['Corporate','Tech','Creative','Healthcare','Academic','Trades'];
+const { TEMPLATES, CATEGORIES } = ResumeTemplates;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -401,6 +402,7 @@ let state = {
   wizard: null,        // guided builder session (see wizard.js); null when not in use
   flags: new Set(),    // AI-written lines that need the customer's confirmation (see tailorToJob)
   preTailor: null,     // copy of the resume from before the last tailoring run, for Undo
+  polishOriginal: null, // the customer's own wording from before the last AI polish, for Restore
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -521,6 +523,9 @@ function hideGate() {
 }
 
 function renderLicenseBadge() {
+  document.body.classList.toggle('licensed', !!state.license.verified);
+  const pv = document.getElementById('resume-preview');                  // keep the demo watermark in step with the license
+  if (pv && pv.classList.contains('demo') === !!state.license.verified) renderPreview();
   const el = document.getElementById('license-badge');
   if (state.license.verified) {
     el.style.display = 'block';
@@ -625,7 +630,7 @@ async function parseResume() {
     }
     if (parsed) {
       state.data = parsed;
-      state.wizard = null; state.flags = new Set(); state.preTailor = null;
+      state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
       state.tailorToken = json.tailorToken || null;
       if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
       if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
@@ -701,7 +706,7 @@ function loadSample() {
   document.getElementById('error-box').style.display = 'none';
   state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
   state.tailorToken = null;
-  state.wizard = null; state.flags = new Set(); state.preTailor = null;
+  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
   renderEditFields();
   renderPreview();
   switchPanel('edit');
@@ -724,7 +729,7 @@ function renderEditFields() {
       <div class="field-group"><div class="field-label">Website</div><input class="field-input" value="${esc(d.contact?.website)}" oninput="updateField('contact.website',this.value)"></div>
     </div>
     <div class="section-label">Summary</div>
-    <div class="field-group"><div class="field-label">Tagline</div><input class="field-input" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
+    <div class="field-group"><div class="field-label">Tagline</div><input class="field-input${flagClass(d.summary?.tagline)}" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
     ${(d.summary?.bullets||[]).map((b,i)=>`
       <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateArrayItem('summary.bullets',${i},null,this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeArrayItem('summary.bullets',${i});renderEditFields();renderPreview()">✕</button></div>
     `).join('')}
@@ -760,7 +765,7 @@ function renderEditFields() {
         <div class="field-group"><div class="field-label">Description (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea></div>
         <div class="field-label">Bullets</div>
         ${(pr.bullets||[]).map((b,j)=>`
-          <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateNested('projects',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('projects',${i},${j});renderEditFields();renderPreview()">✕</button></div>
+          <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateNested('projects',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('projects',${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
         `).join('')}
         <button class="btn-add-item" onclick="addNested('projects',${i});renderEditFields();renderPreview()">+ Add bullet</button>
       </div>
@@ -779,7 +784,7 @@ function renderEditFields() {
         </div>
         <div class="field-label">Bullets</div>
         ${(v.bullets||[]).map((b,j)=>`
-          <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateNested('volunteer',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('volunteer',${i},${j});renderEditFields();renderPreview()">✕</button></div>
+          <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateNested('volunteer',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('volunteer',${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
         `).join('')}
         <button class="btn-add-item" onclick="addNested('volunteer',${i});renderEditFields();renderPreview()">+ Add bullet</button>
       </div>
@@ -874,7 +879,8 @@ function addNested(arr, i) { (state.data[arr][i].bullets = state.data[arr][i].bu
 function renderPreview() {
   if (!state.data) return;
   const area = document.getElementById('preview-area');
-  area.innerHTML = `<div class="resume-page" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
+  // Without a verified code the preview is a watermarked demo and cannot be printed (see the print rules).
+  area.innerHTML = `<div class="resume-page${state.license.verified ? '' : ' demo'}" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
   syncChrome();
 }
 
@@ -975,32 +981,60 @@ function buildResumeHTML(rawData, t, useAlt) {
   return `<div style="font-family:${t.font};font-size:9pt;line-height:1.5;color:#222;background:#FDFCF9;">${header}${body}</div>`;
 }
 
-// ── Export PDF / Word ─────────────────────────────────────────────────────────
-// Both exports draw real text from the same model as the preview (resume-core.js / resume-export.js).
-// They run in the browser and use no license, credit or network call.
+// ── Export PDF / Word (licensed, rendered on the server) ──────────────────────
+// Files are produced by the export-resume function after it verifies the access code in the database. This page
+// holds no PDF/Word rendering code, so a download cannot be produced by changing anything in the browser.
+// Downloading is an authorization check only: it never uses one of the code's generations.
 function exportNotice(msg) {
   const el = document.getElementById('export-notice');
   el.textContent = msg || '';
   el.style.display = msg ? 'block' : 'none';
 }
 
+let exporting = false;
 async function runExport(kind) {
+  if (exporting) return;
   if (!state.data || !ResumeCore.hasContent(state.data)) { exportNotice('Add some details to your resume before downloading.'); return; }
+  if (!state.license.verified) {
+    pendingGeneration = () => runExport(kind);
+    showGate('Enter your access code to download your resume. Downloading never uses one of your generations.');
+    return;
+  }
+  exporting = true;
   const btn = document.getElementById(kind === 'pdf' ? 'btn-pdf' : 'btn-word');
   const label = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Exporting…';
+  btn.disabled = true; btn.textContent = 'Preparing…';
   exportNotice('');
   try {
-    if (kind === 'pdf') {
-      const r = ResumeExport.exportPDF(state.data, state.selectedTemplate, state.useAltColor);
-      if (r.simplified) exportNotice('Some characters outside standard Latin letters were simplified in the PDF. The Word download keeps them.');
-    } else {
-      await ResumeExport.exportWord(state.data, state.selectedTemplate, state.useAltColor);
+    const res = await fetch('/.netlify/functions/export-resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: state.license.code, format: kind === 'pdf' ? 'pdf' : 'docx', template: state.selectedTemplate.id, alt: !!state.useAltColor, resume: state.data })
+    });
+    if (!res.ok) {
+      let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
+      const message = (json && json.error) || 'We couldn’t prepare your download. Please try again.';
+      if (res.status === 401 || res.status === 403) {
+        state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
+        sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+        renderLicenseBadge();
+        showGate(message);
+      } else {
+        exportNotice(message);
+      }
+      return;
     }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${ResumeCore.fileBase(state.data.name)}.${kind === 'pdf' ? 'pdf' : 'docx'}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    if (res.headers.get('X-Export-Notice') === 'simplified' && kind === 'pdf') exportNotice('Some characters outside standard Latin letters were simplified in the PDF. The Word download keeps them.');
   } catch (e) {
-    console.error('export failed', e);
-    exportNotice('Sorry, that download didn’t work. Please try again, or try the other format.');
+    exportNotice('We couldn’t reach the server. Downloading needs an internet connection. Your resume is still here, so please try again.');
   } finally {
+    exporting = false;
     btn.disabled = false; btn.textContent = label;
   }
 }

@@ -52,6 +52,13 @@
       c.experience.length || c.education.length || c.certifications.length || c.projects.length || c.volunteer.length || c.awards.length);
   }
 
+  // Is there anything an AI could actually reword? (Needs more than just a name and contact details.)
+  function hasWritableText(cleaned) {
+    const c = cleaned;
+    return !!(c.summary.tagline || c.summary.bullets.length || c.summary.skills.length ||
+      c.experience.some((e) => e.bullets.length || e.summary) || c.projects.some((p) => p.bullets.length || p.description) || c.volunteer.some((v) => v.bullets.length));
+  }
+
   function dateRange(start, end) {
     if (start && end) return `${start} – ${end}`;
     return start || end || '';
@@ -116,5 +123,5 @@
     return m ? Number(m[0]) : null;
   }
 
-  return { blank, clean, hasContent, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear };
+  return { blank, clean, hasContent, hasWritableText, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear };
 });

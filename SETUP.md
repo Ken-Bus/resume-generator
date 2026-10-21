@@ -12,7 +12,9 @@ All billable work happens server-side. The browser never decides whether a gener
 4. Only after a validated result does it **commit** the reservation (`commit_license_use`), which decrements `licenses.uses_remaining` exactly once. Commit is idempotent.
 5. If the function crashes or is killed mid-call, nobody releases the reservation, but it has a short **lease** (45 s by default) and simply lapses. A failure can never permanently cost a use.
 6. A successful parse returns a **signed tailoring token** (HMAC, 2-hour life) tied to that paid generation. **`tailor-resume`** requires it, costs no extra generation, and allows at most 5 runs per paid generation (counted atomically in the database).
-7. "Try Sample" loads a static sample in the browser. It makes no AI call.
+7. "Try Sample" loads a static sample in the browser. It makes no AI call. Its preview is watermarked and not printable, and it cannot be downloaded (see 9).
+8. **`polish-resume`** ("Polish My Resume with AI", after the guided questions) is charged **exactly like Analyze**: one reservation, one AI call, one commit only after a validated result, release on any failure. **One successful polish = one of the five included generations.** It returns the same signed tailoring token, so Tailor stays free, token-gated and capped at 5 runs. It also allows only one paid operation at a time per code, so a double-click or a retry while it runs is rejected uncharged (`_lib/inflight.js`), and an optional `requestId` makes a retry of a finished polish return the same result without a second charge (best-effort, in memory, 5 minutes).
+9. **`export-resume`** (PDF and Word downloads) is an **authorization check, not a generation**. The files are rendered **on the server**, and only after the access code is found in the `licenses` table (checked on every request; no bearer token to replay, a deleted code stops working at once). The browser holds no PDF/Word rendering code. It never reserves, commits or releases anything and never calls the AI. A code with all five generations used can still download (the code is the purchase). Bad codes are limited per client and good codes per code (best-effort, in memory: `_lib/rate.js`). The function sends no CORS headers (same-origin only) and never logs codes or resume text. **Resume text now passes through this function to be rendered; it is not stored or logged.**
 
 ### Bounded failure protection
 
@@ -39,6 +41,8 @@ Failures are free to the customer, so they must not be free to abuse. Both limit
 The lock-down: `licenses` and `license_reservations` have RLS enabled with **no policies**, and every function is executable only by `service_role` (the key held by Netlify and by the delivery script).
 
 ## 2. Netlify environment variables
+
+_No new variables are needed for downloads or AI Polish._ They use the existing `SUPABASE_*`, `ANTHROPIC_API_KEY`, `AI_TIMEOUT_MS` and `TAILOR_TOKEN_SECRET`. The new functions bundle `jspdf` and `docx` (about 19 MB zipped, well inside Netlify's 50 MB function limit; packaging verified with `@netlify/zip-it-and-ship-it`).
 
 Set in Site configuration → Environment variables. `SUPABASE_*` and `ANTHROPIC_API_KEY` must be set in **all four deploy contexts** (Production, Deploy Previews, Branch deploys, Local development), or some code paths will keep running on a stale or missing value. Netlify applies a variable **at deploy time**, so redeploy after changing any of them.
 
@@ -174,7 +178,8 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 2. Click "Try a free sample". The browser's Network tab must show **no** request to `/.netlify/functions/*`, and the sample resume appears.
 3. Enter a malformed code (`abc`): the "doesn't look right" message appears.
 4. Enter a well-formed but made-up code (`FG-ZZZZ-9999`): "We couldn't find that code."
-5. **Do not** enter any real code (customer or personal) on a preview, and do not press Analyze with one.
+5. With the sample loaded, click PDF or Word: the access-code gate appears and the Network tab shows **no** request to `/.netlify/functions/*`. The preview shows a "SAMPLE PREVIEW" watermark.
+6. **Do not** enter any real code (customer or personal) on a preview, and do not press Analyze, Polish or a download with one.
 
 ### Production smoke test (minimal, personal code only)
 
@@ -203,6 +208,7 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
   4. **No customer record changed:** the customers-only fingerprint equals the one you captured. The one legitimate exception is a **real order delivered by the Apps Script during your test** (it assigns a code and sets a buyer email). Check it with `select count(*) from licenses where assigned_at >= '<test_start_utc>';`: **0** means nothing happened, so any fingerprint change is a failure; **1** means a real order was delivered, which is expected and not a failure (re-capture the baseline and continue). Any other change is a failure.
   5. **No permission or schema change:** the privilege query gives the same answer as after migration 01 (migration 02 has **not** been applied yet).
   6. **Other customers are fine to appear:** a real customer using the site during the test adds reservation rows **for their own codes**. Those are expected and are never part of this check.
+- **Downloads (no writes, no AI):** with the same personal code, download one PDF and one Word file from the Edit Fields tab; `uses_remaining` and the reservation rows must not change. (Do **not** press Polish in the smoke test: it would spend a second generation.)
 - **Also check (zero AI calls, no writes):** a made-up code and a missing code are refused with friendly messages; the Netlify function log shows no `TAILOR_TOKEN_SECRET` warning; the AI provider's usage page shows **2** new calls from your test (any extra calls are real customers).
 - **Abort and roll back if:** Analyze with your valid code fails or runs longer than the timeout you recorded; the counter drops without a result, or by more than 1; any of checks 1–5 fails; the function log shows `reserve_license_use is missing` (migration 01 was not applied) or repeated 5xx.
 
@@ -220,7 +226,7 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 
 ## 6. Tests
 
-`tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`. Run them before every release.
+Run `npm install` at the repo root first (the export function's `jspdf` and `docx` are real dependencies, installed by Netlify at build time) and again in `tests/`. `tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`. Run them before every release.
 
 ## 7. After a security release: older deployments
 

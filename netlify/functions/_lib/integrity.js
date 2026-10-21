@@ -52,7 +52,7 @@ const FACT_FIELDS = {
 };
 
 // original = the resume the customer sent; output = the AI's tailored resume object.
-function reconcile(original, output) {
+function reconcile(original, output, options = {}) {
   const orig = isObj(original) ? original : {};
   const out = JSON.parse(JSON.stringify(isObj(output) ? output : {}));
   const originalText = allText(orig).join('\n');
@@ -79,14 +79,17 @@ function reconcile(original, output) {
 
   // 2. Flag unsupported lines.
   const unverified = [];
-  const check = (text, where) => {
+  // `always` (summary lines when the AI wrote the summary): even without a suspicious number or word, an
+  // AI-authored description of the person must be confirmed by them.
+  const check = (text, where, always) => {
     const t = s(text).trim();
     if (!t || originalLines.has(t) || unverified.length >= 40) return;
     const reasons = reasonsFor(t, originalText, originalNumbers);
+    if (!reasons.length && always) reasons.push('written by AI: confirm this describes you');
     if (reasons.length) unverified.push({ where, text: t, reasons });
   };
-  check(out.summary.tagline, 'summary.tagline');
-  arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`));
+  check(out.summary.tagline, 'summary.tagline', options.flagNewSummary);
+  arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`, options.flagNewSummary));
   const origSkills = new Set(arr(orig.summary && orig.summary.skills).map((x) => s(x).trim().toLowerCase()));
   arr(out.summary.skills).forEach((sk, i) => {
     const t = s(sk).trim();

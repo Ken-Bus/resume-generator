@@ -50,7 +50,7 @@ const Wiz = {
     }
     if (state.data && ResumeCore.hasContent(state.data) && !confirm('This will replace the resume currently in the editor. Start a new one?')) return;
     state.data = ResumeCore.blank();
-    state.flags = new Set(); state.preTailor = null;
+    state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
     state.wizard = { path, step: 0, work: null, target: '', autoTagline: '' };
     if (state.selectedTemplate.id === 'boardroom') selectTemplate('partner');   // plainest default; customers can change it
     Wiz.render();
@@ -59,9 +59,10 @@ const Wiz = {
     renderPreview();
   },
 
-  go(i) { state.wizard.step = Math.max(0, Math.min(WIZ_STEPS.length - 1, i)); Wiz.render(); document.getElementById('panel-guide').scrollTop = 0; },
-  next() { if (state.wizard.step >= WIZ_STEPS.length - 1) return Wiz.finish(); Wiz.go(state.wizard.step + 1); },
-  back() { Wiz.go(state.wizard.step - 1); },
+  busy() { return !!(state.wizard && state.wizard.polish && state.wizard.polish.busy); },   // a paid polish is running: stay put
+  go(i) { if (Wiz.busy()) return; state.wizard.step = Math.max(0, Math.min(WIZ_STEPS.length - 1, i)); Wiz.render(); document.getElementById('panel-guide').scrollTop = 0; },
+  next() { if (Wiz.busy()) return; if (state.wizard.step >= WIZ_STEPS.length - 1) return Wiz.finish(); Wiz.go(state.wizard.step + 1); },
+  back() { if (Wiz.busy()) return; Wiz.go(state.wizard.step - 1); },
   finish() { renderEditFields(); switchPanel('edit'); },
 
   // ── small data helpers (all write to state.data) ───────────────────────────
@@ -123,6 +124,149 @@ const Wiz = {
     state.data.summary.skills = picked.concat(extra);
     renderPreview();
   },
+
+  // ── AI polish (paid: exactly ONE of the code's included generations per successful polish) ──────────────
+  // Nothing here runs on navigation, typing or preview. A charge needs two deliberate clicks: the button, then
+  // an explicit confirmation that states the cost. The server charges only after a validated result.
+  polishState() { const w = state.wizard; return w.polish || (w.polish = { confirm: false, busy: false, requestId: null, msg: '', kind: '', done: null }); },
+  askPolish() { const p = Wiz.polishState(); if (p.busy) return; p.confirm = true; p.msg = ''; Wiz.render(); },
+  cancelPolish() { const p = Wiz.polishState(); p.confirm = false; Wiz.render(); },
+  newRequestId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  },
+
+  async doPolish() {
+    const w = state.wizard; const p = Wiz.polishState();
+    if (p.busy) return;                                                    // double-click: one request only
+    if (!state.license.verified || !state.license.code) { showGate('Enter your access code to use AI polish.'); return; }
+    if (!ResumeCore.hasWritableText(ResumeCore.clean(state.data))) return;
+    p.busy = true; p.confirm = false; p.msg = ''; p.kind = '';
+    if (!p.requestId) p.requestId = Wiz.newRequestId();                     // reused on a manual retry, so a lost reply is never charged twice
+    Wiz.render();
+    try {
+      const res = await fetch('/.netlify/functions/polish-resume', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', requestId: p.requestId })
+      });
+      let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
+      let parsed = null;
+      if (res.ok && json && json.result) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
+      if (parsed) {
+        state.polishOriginal = ResumeCore.clean(state.data);               // the customer's own wording, for Restore
+        state.data = parsed;
+        state.tailorToken = json.tailorToken || null;
+        if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
+        if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+        const unverified = Array.isArray(json.unverified) ? json.unverified : [];
+        state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
+        state.preTailor = null;
+        p.requestId = null;
+        p.done = { unverified };
+        p.msg = ''; p.kind = '';
+        renderLicenseBadge(); renderEditFields(); renderPreview();
+      } else {
+        await Wiz.polishFailed(res.status, json);
+      }
+    } catch (e) {
+      // The request may or may not have finished. Keep the request id so a manual retry cannot be charged twice.
+      p.msg = 'We couldn’t confirm whether that finished. Your resume is unchanged. Please check the generations counter above, then try again.';
+      p.kind = 'err';
+      refreshLicenseCounter();
+    } finally {
+      p.busy = false;
+      Wiz.render();
+    }
+  },
+
+  async polishFailed(status, json) {
+    const p = Wiz.polishState();
+    const message = (json && json.error) || 'Something went wrong while polishing. You haven’t been charged. Please try again.';
+    p.kind = 'err'; p.msg = message;
+    if (status === 401 || (status === 403 && !(json && json.usesRemaining === 0))) {
+      state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
+      sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+      renderLicenseBadge(); showGate(message); p.requestId = null; return;
+    }
+    if (status === 403) {                                                   // all generations used
+      state.license.usesRemaining = 0;
+      if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+      renderLicenseBadge(); p.requestId = null; return;
+    }
+    if (status === 409) return;                                             // something is already running: keep the id
+    p.requestId = null;                                                     // a definite, uncharged failure: next try is a fresh request
+    await refreshLicenseCounter();
+  },
+
+  // Which parts of the resume did the AI reword? (compared with the customer's own wording)
+  changedParts() {
+    const o = state.polishOriginal; if (!o) return [];
+    const d = ResumeCore.clean(state.data);
+    const out = [];
+    const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    if (!same([o.summary.tagline, o.summary.bullets, o.summary.skills], [d.summary.tagline, d.summary.bullets, d.summary.skills])) out.push({ kind: 'summary', i: 0, label: 'Headline and summary' });
+    [['experience', 'title', 'Job'], ['projects', 'name', 'Project'], ['volunteer', 'title', 'Activity']].forEach(([k, f, name]) => {
+      d[k].forEach((e, i) => {
+        const before = o[k][i]; if (!before) return;
+        if (!same([before.bullets, before.summary || '', before.description || ''], [e.bullets, e.summary || '', e.description || ''])) out.push({ kind: k, i, label: `${name}: ${e[f] || before[f] || i + 1}` });
+      });
+    });
+    return out;
+  },
+  restorePart(kind, i) {
+    const o = state.polishOriginal; if (!o) return;
+    if (kind === 'summary') state.data.summary = JSON.parse(JSON.stringify(o.summary));
+    else if (o[kind] && o[kind][i] && state.data[kind] && state.data[kind][i]) {
+      ['bullets', 'summary', 'description'].forEach(f => { if (f in o[kind][i]) state.data[kind][i][f] = JSON.parse(JSON.stringify(o[kind][i][f])); });
+    }
+    const lines = new Set();                                              // keep only flags whose line is still in the resume
+    (function walk(v) { if (typeof v === 'string') lines.add(v.trim()); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk); })(state.data);
+    state.flags = new Set([...state.flags].filter(t => lines.has(t)));
+    renderEditFields(); renderPreview(); Wiz.render();
+  },
+  restoreAll() {
+    if (!state.polishOriginal) return;
+    state.data = JSON.parse(JSON.stringify(state.polishOriginal));
+    state.polishOriginal = null; state.flags = new Set(); Wiz.polishState().done = null;
+    renderEditFields(); renderPreview(); Wiz.render();
+  },
+
+  polishBlock() {
+    const p = Wiz.polishState();
+    const left = state.license.usesRemaining, max = state.license.maxUses;
+    const writable = ResumeCore.hasWritableText(ResumeCore.clean(state.data));
+    const plural = (n) => `${n} generation${n === 1 ? '' : 's'}`;
+    let body;
+    if (p.busy) {
+      body = '<div class="loading-indicator"><div class="spinner"></div>Polishing your resume… this can take up to a minute. Please keep this page open.</div>';
+    } else if (left === 0) {
+      body = `<div class="wiz-err">You’ve used all ${max || 5} generations on this code.${etsyLinkHTML()} Your resume is still fully editable and downloadable.</div>`;
+    } else if (!writable) {
+      body = '<div class="wiz-example">Add a few answers first (what you did in a job, a project, or your skills), then come back.</div>';
+    } else if (p.confirm) {
+      body = `<div class="wiz-confirm"><strong>This will use 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}.</strong>
+          You are only charged if the polish completes. If it fails, nothing is used.
+          <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
+    } else {
+      body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="polish-btn">✨ Polish My Resume with AI</button>
+        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''}. Typing, previewing, editing and downloading never use one.</div>`;
+    }
+    let result = '';
+    if (p.done && state.polishOriginal) {
+      const parts = Wiz.changedParts(); const unv = p.done.unverified || [];
+      result = `<div class="wiz-ok"><strong>✓ Polished.</strong> That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}. Read it over: it’s your resume, so edit anything.
+        ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
+        ${unv.length ? `<div class="notice-box"><strong>Please check ${unv.length} line${unv.length === 1 ? '' : 's'}.</strong> The AI added something that wasn’t in your answers (marked yellow in Edit Fields). Keep only what is true.
+          <ul style="margin:6px 0 0 16px;">${unv.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
+        <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
+    }
+    const msg = p.msg ? `<div class="${p.kind === 'err' ? 'wiz-err' : 'wiz-ok'}" role="status">${esc(p.msg)}</div>` : '';
+    return `<div class="wiz-polish">
+      <div class="wiz-title" style="font-size:13px;">Want help with the wording? <span class="wiz-optional">(optional)</span></div>
+      <div class="wiz-help">AI can turn your answers into clear, professional resume wording. It uses only what you told us, flags anything it adds so you can check it, and you can restore your own wording at any time.</div>
+      ${body}${msg}${result}</div>`;
+  },
+
   scrollToPreview() { document.getElementById('preview-area').scrollIntoView({ behavior: 'smooth' }); },
 
   // ── rendering ──────────────────────────────────────────────────────────────
@@ -130,7 +274,9 @@ const Wiz = {
     const w = state.wizard; if (!w) return;
     const step = WIZ_STEPS[w.step];
     const last = w.step === WIZ_STEPS.length - 1;
-    document.getElementById('panel-guide').innerHTML = `
+    const panel = document.getElementById('panel-guide');
+    panel.classList.toggle('wiz-busy', Wiz.busy());                          // navigation is disabled while a polish runs
+    panel.innerHTML = `
       <div class="wiz-progress">Step ${w.step + 1} of ${WIZ_STEPS.length}</div>
       <div class="wiz-dots">${WIZ_STEPS.map((s, i) => `<button class="wiz-dot${i === w.step ? ' active' : ''}" onclick="Wiz.go(${i})">${s.label}</button>`).join('')}</div>
       ${Wiz.steps[step.id](w)}
@@ -294,7 +440,8 @@ const Wiz = {
         ${row('Projects & activities', [count(d.projects.length, 'project', ''), count(d.volunteer.length, 'activity', ''), count(d.certifications.length, 'training item', '')].filter(Boolean).join(', ') || 'Skipped', 4)}
         ${row('Skills', count(d.summary.skills.length, 'skill', 'Skipped'), 5)}
         ${d.experience.length === 0 ? '<div class="wiz-note">With no work history, your resume leads with education, then projects and activities, then skills.</div>' : ''}
-        <div class="wiz-note">Pick a design from the tabs above the preview. Simple styles like The Partner or The Builder work well for most first resumes. Then download a PDF or Word file with the buttons at the bottom right.</div>`;
+        <div class="wiz-note">Pick a design from the tabs above the preview. Simple styles like The Partner or The Builder work well for most first resumes. Then download a PDF or Word file with the buttons at the bottom right.</div>
+        ${Wiz.polishBlock()}`;
     }
   },
 

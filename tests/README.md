@@ -5,11 +5,13 @@ These tests protect the license accounting: five paid generations per code, no c
 They never touch Supabase, Anthropic, Etsy, Gmail or the Apps Script:
 - `db/` and `functions/` run the **real SQL and real Netlify handlers** against a **disposable local Postgres**, with the AI provider mocked (including timeouts, truncation and bad output). `db/live_snapshot.sql` reproduces the production database as it was before the reservation migrations, so the migrations are proven against the real starting point.
 - `ui/` drives the real `index.html` in headless Chromium with every endpoint mocked. `ui/guided.test.js` covers the guided builder, all 12 templates, mobile layout, and the PDF/Word exports (PDF text is read back with `pdftotext` when installed, and always by inflating the PDF's own streams).
+- `functions/export.test.js` proves downloads are server-authorized (unlicensed, invalid, tampered, rate-limited, CORS, logs) and that PDF/Word text is real for all 12 templates; `functions/polish.test.js` proves polish charges exactly one generation and every failure, retry and duplicate is handled; `ui/access-polish.test.js` covers the gate, watermark, print lock, offline/refresh behaviour and the polish click-through.
 - `core/` unit-tests the shared section model (`resume-core.js`); `functions/integrity.test.js` covers the tailoring fabrication guard.
 
 ## Run
 
 ```
+npm install            # repo root: the export function needs jspdf and docx
 cd tests
 npm install
 npm test

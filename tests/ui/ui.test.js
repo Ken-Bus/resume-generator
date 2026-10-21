@@ -9,6 +9,7 @@ const ROOT = path.join(__dirname, '..', '..');
 const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
 const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 
+const { exportApi } = require('./export-api');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 function serve() {
   const server = http.createServer((req, res) => {
@@ -41,6 +42,7 @@ test('customer page (Chromium, mocked endpoints)', async (t) => {
         const handler = api[name] || (() => ({ status: 500, json: { error: 'unmocked' } }));
         const r = await handler(body, calls.filter(c => c.name === name).length);
         if (r.delay) await new Promise(x => setTimeout(x, r.delay));
+        if (r.raw) return route.fulfill({ status: r.status, headers: r.headers, body: Buffer.from(r.body || '', r.isBase64Encoded ? 'base64' : 'utf8') });
         return route.fulfill(r.html ? { status: r.status, contentType: 'text/html', body: r.html } : { status: r.status, contentType: 'application/json', body: JSON.stringify(r.json) });
       }
       if (url.startsWith(base)) return route.continue();
@@ -178,19 +180,19 @@ test('customer page (Chromium, mocked endpoints)', async (t) => {
     await s.close();
   });
 
-  await t.test('Word export still works and carries the literal text', async () => {
-    const s = await open({ 'verify-license': verifyOk, 'parse-resume': okParse() });
+  await t.test('Word export still works (now through the licensed export function)', async () => {
+    const s = await open({ 'verify-license': verifyOk, 'parse-resume': okParse(), 'export-resume': exportApi(['FG-TEST-AAAA']) });
     await unlock(s.page); await paste(s.page); await s.page.click('#parse-btn'); await s.page.waitForSelector('#resume-preview');
     const [dl] = await Promise.all([s.page.waitForEvent('download', { timeout: 20000 }), s.page.click('#btn-word')]);
     assert.match(dl.suggestedFilename(), /\.docx$/);
     await s.close();
   });
 
-  await t.test('the page only talks to the four Netlify endpoints (no direct database access, no other hosts used by app code)', async () => {
+  await t.test('the page only talks to its own Netlify endpoints (no direct database access, no other hosts used by app code)', async () => {
     const s = await open({ 'verify-license': verifyOk, 'parse-resume': okParse() });
     await unlock(s.page); await paste(s.page); await s.page.click('#parse-btn'); await s.page.waitForSelector('#resume-preview');
     const names = new Set(s.calls.map(c => c.name));
-    for (const n of names) assert.ok(['verify-license', 'parse-resume', 'tailor-resume'].includes(n), n);
+    for (const n of names) assert.ok(['verify-license', 'parse-resume', 'tailor-resume', 'export-resume'].includes(n), n);
     for (const u of s.external) assert.ok(/fonts\.(googleapis|gstatic)\.com/.test(u), `unexpected external host: ${u}`);
     await s.close();
   });
