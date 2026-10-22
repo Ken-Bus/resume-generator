@@ -9,8 +9,12 @@
 //      A faithful paraphrase (the same facts in clearer words) brings in neither, so it is NOT flagged.
 // Pure functions: unit-tested without a database or the AI provider.
 
+const Core = require('../../../resume-core.js');
+
 const isObj = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
-const s = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
+// Text only (plus plain numbers). An object, array, boolean or function is never content, and converting a hostile object (for example one
+// with a non-function toString) must not be able to throw.
+const s = (v) => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '');
 const arr = (a) => (Array.isArray(a) ? a : []);
 
 function allText(v, out = []) {
@@ -123,11 +127,21 @@ const HEDGE_RE = /\b(help(?:ed|ing|s)?|assist(?:ed|ing|s)?|support(?:ed|ing|s)?|
 const rootKey = (w) => { const x = w.toLowerCase(); if (/^plan/.test(x)) return 'plan'; if (/^buil/.test(x)) return 'build'; return x === 'ran' ? 'ran' : x.slice(0, 5); };
 const hasRoot = (text, root) => new RegExp(`\\b${root.replace(/[^a-z]/g, '')}`, 'i').test(text);
 
-// scope = { text: the entry's own original text, lines: its original lines, blank: the field was empty in the customer's answers }
+// scope = { text: the entry's own original text, lines: its original lines, blank: the field was empty in the customer's answers,
+//           stems: stems of the entry's own words (+ the customer's stated goal), globalStems: stems of the whole resume }
 function scopedReasons(line, scope) {
   const reasons = [];
   if (!scope) return reasons;
   if (scope.blank) reasons.push('added where you wrote nothing: this part was blank in your answers');
+  // A line identical to one of the customer's lines in a DIFFERENT entry has been copied across, however few of its words are new here.
+  if (scope.foreign && scope.foreign.has(lineKey(line))) reasons.push('copied from a different part of your resume: this line belongs to another entry');
+  // Content words this entry never used. If some of them are the customer's words from a DIFFERENT entry, the line has been
+  // given details that belong elsewhere (a line copied between entries, or a word borrowed from another job or project).
+  if (scope.stems && scope.globalStems) {
+    const fresh = newContentWords(line, scope.stems);
+    const borrowed = fresh.filter((w) => scope.globalStems.has(stem(w)));
+    if (borrowed.length >= 1 && fresh.length >= 2) reasons.push(`details from a different part of your resume: ${borrowed.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
+  }
   const seen = new Set();
   BENEFICIARY_RES.forEach((re) => { for (const m of s(line).matchAll(re)) {
     const who = m[1].toLowerCase(); const root = who.split(' ')[0].slice(0, 5);
@@ -156,6 +170,7 @@ function scopedReasons(line, scope) {
 // options.vocabulary: extra words the customer supplied (their stated goal). They count as the customer's own words for the
 // "new details" test only; they never make a claim (leadership, credential, praise, number) count as supported.
 function reconcile(original, output, options = {}) {
+  const maxFlags = Number.isFinite(options.maxFlags) ? options.maxFlags : 40;
   const orig = isObj(original) ? original : {};
   const out = JSON.parse(JSON.stringify(isObj(output) ? output : {}));
   const originalText = allText(orig).join('\n');
@@ -193,7 +208,10 @@ function reconcile(original, output, options = {}) {
   // content words the customer never used). A faithful paraphrase has neither, so it passes without a warning.
   const check = (text, where, scope) => {
     const t = s(text).trim();
-    if (!t || originalLines.has(t) || unverified.length >= 40) return;
+    // With the entry-scoped checks a line is "the customer's own" only if it is one of THIS entry's lines; a line that is identical
+    // to a line of a different entry has been moved there, and is checked like any other.
+    const known = options.entryScope && scope ? scope.lines : null;
+    if (!t || (known ? known.includes(t) : originalLines.has(t)) || unverified.length >= maxFlags) return;
     const { claims, details } = analyse(t, originalText, originalNumbers, originalStems);
     const reasons = claims.slice();
     if (details.length >= 2) reasons.push(`new details not in your answers: ${details.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
@@ -201,20 +219,27 @@ function reconcile(original, output, options = {}) {
     scoped.forEach((r) => reasons.push(r));
     if (reasons.length) unverified.push({ where, text: t, kind: claims.length || scoped.length ? 'claim' : 'details', reasons });
   };
-  const wholeScope = { text: originalText, lines: allText(orig).map((x) => s(x).trim()).filter(Boolean), blank: false };
+  // Every line of the customer's resume, by entry, so a line can be recognised as having come from somewhere else.
+  const linesByEntry = [];
+  ['experience', 'volunteer', 'projects'].forEach((k) => arr(orig[k]).forEach((e, i) => { if (isObj(e)) linesByEntry.push({ k, i, keys: allText(e).map(lineKey).filter(Boolean) }); }));
+  const topKeys = allText(isObj(orig.summary) ? orig.summary : {}).map(lineKey).filter(Boolean);
+  const foreignOf = (k, i) => new Set(linesByEntry.filter((x) => !(x.k === k && x.i === i)).flatMap((x) => x.keys).concat(topKeys));
+  const wholeScope = { text: originalText, lines: allText(orig).map((x) => s(x).trim()).filter(Boolean), blank: false, stems: originalStems, globalStems: originalStems };
   check(out.summary.tagline, 'summary.tagline', wholeScope);
   arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`, wholeScope));
   const origSkills = new Set(arr(orig.summary && orig.summary.skills).map((x) => s(x).trim().toLowerCase()));
+  const origSkillKeys = new Set(arr(orig.summary && orig.summary.skills).map((x) => lineKey(x)).filter(Boolean));   // 'Teamwork.' is not a new skill
   arr(out.summary.skills).forEach((sk, i) => {
     const t = s(sk).trim();
-    if (!t || origSkills.has(t.toLowerCase()) || originalText.toLowerCase().includes(t.toLowerCase())) return;
-    if (unverified.length < 40) unverified.push({ where: `summary.skills.${i}`, text: t, kind: 'claim', reasons: ['skill not found in your resume'] });
+    if (!t || origSkills.has(t.toLowerCase()) || origSkillKeys.has(lineKey(t)) || originalText.toLowerCase().includes(t.toLowerCase())) return;
+    if (unverified.length < maxFlags) unverified.push({ where: `summary.skills.${i}`, text: t, kind: 'claim', reasons: ['skill not found in your resume'] });
   });
   ['experience', 'volunteer', 'projects'].forEach((k) => arr(out[k]).forEach((e, i) => {
     if (!isObj(e)) return;
     const o0 = isObj(arr(orig[k])[i]) ? arr(orig[k])[i] : {};
     const lines = allText(o0).map((x) => s(x).trim()).filter(Boolean);
-    const scope = (blank) => ({ text: lines.join('\n'), lines, blank });
+    const entryStems = stemSet(`${lines.join('\n')}\n${s(options.vocabulary)}`);
+    const scope = (blank) => ({ text: lines.join('\n'), lines, blank, stems: entryStems, globalStems: originalStems, foreign: foreignOf(k, i) });
     const hadBullets = arr(o0.bullets).some((b) => s(b).trim());
     arr(e.bullets).forEach((b, j) => check(b, `${k}.${i}.bullets.${j}`, scope(!hadBullets)));
     check(e.summary, `${k}.${i}.summary`, scope(!s(o0.summary).trim()));
@@ -226,7 +251,8 @@ function reconcile(original, output, options = {}) {
 
 // ── did the AI change anything the customer can see? ───────────────────────────────────────────────────────────────
 // Compares the customer's answers with the result, line by line, and reports how many lines were
-//   reworded  a real change in wording (different words, or a line added or removed),
+//   reworded  a real change in wording (different words, or a line added),
+//   dropped   a line removed (not an improvement on its own, so it never counts toward a charge),
 //   cosmetic  only capitals, punctuation or spacing differ,
 //   unchanged identical.
 // Observation only: it touches no license state, and what counts as "meaningful" is decided by the caller. Pure.
@@ -248,10 +274,11 @@ const lineKey = (t) => s(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 function assessChange(before, after) {
   const a = new Map(textLines(before).map((l) => [l.where, l.text.trim()]));
   const b = new Map(textLines(after).map((l) => [l.where, l.text.trim()]));
-  const res = { reworded: 0, cosmetic: 0, unchanged: 0 };
+  const res = { reworded: 0, cosmetic: 0, unchanged: 0, dropped: 0 };
   new Set([...a.keys(), ...b.keys()]).forEach((where) => {
     const x = a.get(where); const y = b.get(where);
-    if (x === undefined || y === undefined) res.reworded++;                      // a line was added or removed
+    if (y === undefined) res.dropped++;                                          // a line was removed: reported, but deleting text is not an improvement
+    else if (x === undefined) res.reworded++;                                    // a line was added
     else if (x === y) res.unchanged++;
     else if (lineKey(x) === lineKey(y)) res.cosmetic++;
     else res.reworded++;
@@ -259,4 +286,122 @@ function assessChange(before, after) {
   return res;
 }
 
-module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons };
+// ── the accepted result: guard, withhold, sanitise ──────────────────────────────────────────────────────────────────
+// reconcile() FLAGS unsupported lines. guardResume() goes one step further and returns only what is accepted: every flagged line is put
+// back to the customer's own wording (it is "withheld"), the result is re-checked until nothing is flagged, and only known resume fields
+// survive (so an unexpected key or a non-text value from the AI never reaches the page, a PDF or a Word file).
+// What was withheld is reported WITHOUT the AI's text, only where it was and why, so a withheld suggestion is never handed out for free.
+const SECTION_NAME = { experience: 'Job', volunteer: 'Activity', projects: 'Project' };
+const ENTRY_KEY = { experience: 'title', volunteer: 'title', projects: 'name' };
+
+function describeWhere(orig, where) {
+  const m = /^(experience|volunteer|projects)\.(\d+)\.(bullets|summary|description)(?:\.(\d+))?$/.exec(where);
+  if (m) {
+    const e = arr(orig[m[1]])[Number(m[2])] || {};
+    const name = s(e[ENTRY_KEY[m[1]]]) || s(e.company) || s(e.organization) || `#${Number(m[2]) + 1}`;
+    const part = m[3] === 'bullets' ? `bullet ${Number(m[4]) + 1}` : m[3] === 'summary' ? 'summary' : 'description';
+    return `${SECTION_NAME[m[1]]}: ${name}, ${part}`;
+  }
+  if (where === 'summary.tagline') return 'Headline';
+  if (/^summary\.bullets\./.test(where)) return 'Summary bullet';
+  if (/^summary\.skills\./.test(where)) return 'Skills';
+  return 'Resume';
+}
+
+// Putting ONE line back by position is only safe when the AI kept the lines in order. If it reordered them (Tailor does, on purpose) a
+// positional revert would duplicate one of the customer's lines and lose another, so the whole group is put back instead.
+const hasDuplicates = (list) => { const seen = new Set(); return arr(list).some((x) => { const k = lineKey(x); if (!k) return false; if (seen.has(k)) return true; seen.add(k); return false; }); };
+function revertGroup(current, original, index, groupOnly) {
+  const ob = arr(original);
+  if (!groupOnly && arr(current).length === ob.length) {
+    const trial = arr(current).slice(); trial[index] = ob[index];
+    if (!hasDuplicates(trial)) return trial;
+  }
+  return JSON.parse(JSON.stringify(ob));
+}
+
+function withholdFlagged(orig, resume, unverified, options = {}) {
+  const out = JSON.parse(JSON.stringify(resume));
+  const withheld = [];
+  const origSummary = isObj(orig.summary) ? orig.summary : {};
+  if (!isObj(out.summary)) out.summary = { tagline: '', bullets: [], skills: [] };
+  unverified.forEach((u) => {
+    const w = s(u.where);
+    let m;
+    if (w === 'summary.tagline') out.summary.tagline = s(origSummary.tagline);
+    else if ((m = /^summary\.bullets\.(\d+)$/.exec(w))) {
+      out.summary.bullets = revertGroup(out.summary.bullets, origSummary.bullets, Number(m[1]), options.groupOnly);
+    } else if (/^summary\.skills\.\d+$/.test(w)) {
+      const keep = arr(out.summary.skills).filter((sk) => s(sk).trim() !== s(u.text).trim());
+      const have = new Set(keep.map((x) => lineKey(x)));
+      arr(origSummary.skills).forEach((sk) => { if (!have.has(lineKey(sk))) keep.push(sk); });        // never lose a skill the customer listed
+      out.summary.skills = keep;
+    } else if ((m = /^(experience|volunteer|projects)\.(\d+)\.bullets\.(\d+)$/.exec(w))) {
+      const e = arr(out[m[1]])[Number(m[2])]; const o0 = arr(orig[m[1]])[Number(m[2])];
+      if (isObj(e) && isObj(o0)) e.bullets = revertGroup(e.bullets, o0.bullets, Number(m[3]), options.groupOnly);
+    } else if ((m = /^(experience|volunteer|projects)\.(\d+)\.(summary|description)$/.exec(w))) {
+      const e = arr(out[m[1]])[Number(m[2])]; const o0 = arr(orig[m[1]])[Number(m[2])];
+      if (isObj(e)) e[m[3]] = isObj(o0) ? s(o0[m[3]]) : '';
+    }
+    withheld.push({ where: w, label: describeWhere(orig, w), kind: u.kind, reasons: arr(u.reasons).map(s) });
+  });
+  return { resume: out, withheld };
+}
+
+// mode: 'polish' (also keeps text the AI blanked) or 'tailor'. options.vocabulary: the customer's stated goal.
+// -> { resume (accepted, sanitised), withheld: [{ where, label, kind, reasons }] }
+function guardResume(original, output, options = {}) {
+  const orig = isObj(original) ? original : {};
+  const base = { vocabulary: options.vocabulary, keepBlankedText: options.mode === 'polish', entryScope: true, maxFlags: 1000 };
+  let current = output; const withheld = [];
+  for (let pass = 0; pass < 4; pass++) {
+    const r = reconcile(orig, current, base);
+    if (!r.unverified.length) { current = r.resume; break; }
+    const w = withholdFlagged(orig, r.resume, r.unverified, { groupOnly: options.mode === 'tailor' });
+    withheld.push(...w.withheld); current = w.resume;
+    if (pass === 3) current = JSON.parse(JSON.stringify(orig));          // cannot settle: fall back to the customer's own wording
+  }
+  // Keep only fields the resume model knows (drops unexpected keys, non-text values, empty rows).
+  const resume = Core.clean(current);
+  // Facts always come from the customer, whatever the AI sent.
+  resume.name = s(orig.name).trim(); resume.contact = Core.clean({ contact: orig.contact }).contact;
+  return { resume, withheld };
+}
+
+// ── Analyze: check the parsed resume against the text the customer pasted ───────────────────────────────────────────
+// A parser should only move what the customer wrote into fields. Contact details and years that do not appear in the pasted text
+// are invented, so they are removed (a wrong email on a resume is worse than a blank one). A number inside a bullet that the pasted
+// text does not contain is kept but flagged, so the customer confirms it. Unknown fields and non-text values are dropped.
+function groundAnalyzed(sourceText, parsed) {
+  const src = s(sourceText);
+  const lower = src.toLowerCase();
+  const srcDigits = src.replace(/\D/g, '');
+  const srcNumbers = numbersIn(src);
+  const resume = Core.clean(parsed);
+  const removed = [];
+  const url = (x) => s(x).toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '');
+  const c = resume.contact;
+  if (c.email && !lower.includes(c.email.toLowerCase())) { c.email = ''; removed.push('email'); }
+  if (c.phone && (c.phone.replace(/\D/g, '').length < 7 || !srcDigits.includes(c.phone.replace(/\D/g, '')))) { c.phone = ''; removed.push('phone'); }
+  ['linkedin', 'website'].forEach((f) => { if (c[f] && !lower.includes(url(c[f]))) { c[f] = ''; removed.push(f); } });
+  const years = (x) => (s(x).match(/\b\d{4}\b/g) || []);
+  const grounded = (x) => years(x).every((y) => srcNumbers.has(y) || new RegExp(`['\u2019]\\s?${y.slice(2)}\\b`).test(src));   // "'19" in the text supports 2019
+  ['experience', 'volunteer'].forEach((k) => resume[k].forEach((e) => ['start', 'end'].forEach((f) => { if (e[f] && !grounded(e[f])) { e[f] = ''; removed.push(`${k} ${f} date`); } })));
+  resume.education.forEach((e) => { if (e.date && !grounded(e.date)) { e.date = ''; removed.push('education date'); } });
+  resume.certifications.forEach((e) => { if (e.date && !grounded(e.date)) { e.date = ''; removed.push('certification date'); } });
+  const unverified = [];
+  const check = (text, where) => {
+    const t = s(text).trim(); if (!t) return;
+    const extra = [...numbersIn(t)].filter((n) => !srcNumbers.has(n));
+    if (extra.length) unverified.push({ where, text: t, kind: 'claim', reasons: [`number not in the text you pasted: ${extra.slice(0, 3).join(', ')}`] });
+  };
+  resume.summary.bullets.forEach((b, i) => check(b, `summary.bullets.${i}`));
+  check(resume.summary.tagline, 'summary.tagline');
+  ['experience', 'volunteer', 'projects'].forEach((k) => resume[k].forEach((e, i) => {
+    arr(e.bullets).forEach((b, j) => check(b, `${k}.${i}.bullets.${j}`));
+    check(e.summary, `${k}.${i}.summary`); check(e.description, `${k}.${i}.description`);
+  }));
+  return { resume, unverified, removed };
+}
+
+module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };

@@ -26,7 +26,7 @@ test('configuration: Sonnet 5.5, no up-front thinking, output caps raised ~30% f
   // unchanged entitlement and anti-abuse settings
   assert.equal(cfg.TAILOR_MAX_PER_PAID_OP, 5); assert.equal(cfg.FAIL_WINDOW_MAX, 6); assert.equal(cfg.FAIL_DAY_MAX, 30); assert.equal(cfg.TAILOR_FORGIVEN_FAILURES, 2);
   assert.equal(cfg.NOCHANGE_WINDOW_MAX, 3); assert.equal(cfg.NOCHANGE_DAY_MAX, 10);
-  assert.equal(cfg.RESUME_MAX_CHARS, 30000); assert.equal(cfg.JOB_DESC_MAX_CHARS, 10000);
+  assert.equal(cfg.RESUME_MAX_CHARS, 20000); assert.equal(cfg.JOB_DESC_MAX_CHARS, 10000);
 });
 
 test('no source file still names the retired model', () => {
@@ -172,7 +172,7 @@ test('migration end to end: every paid feature on the new model with fictional p
       }
     });
 
-    await t.test(`${p.who}: invented facts are restored or dropped and unsupported claims are flagged, whatever the new model writes`, async () => {
+    await t.test(`${p.who}: invented facts are restored, dropped or WITHHELD whatever the new model writes; honest lines in the same reply are still accepted (one charge)`, async () => {
       reset(); const c = await seed();
       fake.polishPayload = (r) => { const o = clone(r); p.improve(o); o.name = 'Someone Else'; o.education[0].school = 'Invented University'; o.education[0].date = '2031';
         o.experience.push({ title: 'Store Manager', company: 'Invented Corp', location: '', start: '2020', end: '2024', summary: '', bullets: ['Managed a team of 12 and increased sales by 40%'] });
@@ -184,9 +184,12 @@ test('migration end to end: every paid feature on the new model with fictional p
       assert.equal(out.name, p.src.name); assert.equal(out.education[0].school, p.src.education[0].school); assert.equal(out.education[0].date, p.src.education[0].date);
       assert.equal(out.experience.length, p.src.experience.length); assert.equal(out.projects.length, p.src.projects.length);          // invented entries dropped
       p.src.experience.forEach((e, i) => { assert.equal(out.experience[i].company, e.company); assert.equal(out.experience[i].start, e.start); });
-      const reasons = b.unverified.map((u) => u.reasons.join(' ')).join(' | ');
+      const text = JSON.stringify(out);
+      for (const bad of ['Salesforce', 'Motivated', 'results-driven', 'Invented', '1,200', '40%', 'Supervised a team', 'Managed a team', 'state award', 'Led a campaign']) assert.equal(text.includes(bad), false, `${bad} must not reach the resume`);
+      const reasons = b.withheld.map((u) => u.reasons.join(' ')).join(' | ');
       assert.match(reasons, /number not in your resume/); assert.match(reasons, /skill not found|praise or personality/);
-      assert.ok(b.unverified.length >= 2, reasons); assert.equal(b.usesRemaining, 4);                                                   // flagged lines are shown to the customer; one charge
+      assert.ok(b.withheld.length >= 2, reasons); assert.deepEqual(b.unverified, []);
+      assert.equal(b.charged, true); assert.equal(b.usesRemaining, 4); assert.ok(b.changes.reworded >= 1);                                  // the honest improvement was accepted and charged once
     });
   }
 

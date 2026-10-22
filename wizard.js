@@ -68,6 +68,7 @@ function parseEdu(e) {
 const Wiz = {
   // ── lifecycle ──────────────────────────────────────────────────────────────
   start(path) {
+    if (state.aiBusy) return;
     if (WIZARD_REQUIRES_LICENSE && !state.license.verified) {
       pendingGeneration = () => Wiz.start(path);
       showGate('Enter your access code to start building. Building your resume by hand never uses one of your generations.');
@@ -75,8 +76,9 @@ const Wiz = {
     }
     if (state.data && ResumeCore.hasContent(state.data) && !confirm('This will replace the resume currently in the editor. Start a new one?')) return;
     state.data = ResumeCore.blank();
-    state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
+    state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null;
     state.polish = null;
+    const note = document.getElementById('analyze-notice'); if (note) note.innerHTML = '';
     state.wizard = { path, step: 0, work: null, target: '', autoTagline: '', profile: path === 'first' ? 'first' : 'experienced', edu: [] };
     if (state.selectedTemplate.id === 'boardroom') selectTemplate('partner');   // plainest default; customers can change it
     Wiz.render();
@@ -174,8 +176,8 @@ const Wiz = {
   // (p.msg), and starting a new attempt clears whatever the last one left behind. Every result goes through here.
   setOutcome(type, data) {
     const p = Wiz.polishState();
-    p.done = type === 'improved' ? data : null;
-    p.noChange = type === 'nochange' ? { at: Date.now() } : null;
+    p.done = type === 'improved' ? (data || {}) : null;
+    p.noChange = type === 'nochange' ? { reason: (data && data.reason) === 'flagged' ? 'flagged' : 'unchanged', withheld: Array.isArray(data && data.withheld) ? data.withheld : [] } : null;
     p.msg = type === 'error' ? data : ''; p.kind = type === 'error' ? 'err' : '';
   },
   // Polish is offered both on the Review step and at the top of the regular editor; both views read the same state.
@@ -192,11 +194,13 @@ const Wiz = {
     if (p.busy) return;                                                    // double-click: one request only
     if (!state.license.verified || !state.license.code) { showGate('Enter your access code to use AI polish.'); return; }
     if (!ResumeCore.hasWritableText(ResumeCore.clean(state.data))) return;
+    if (state.aiBusy) { p.confirm = false; Wiz.setOutcome('error', AI_BUSY_TEXT); Wiz.refreshPolish(); return; }
     p.busy = true; p.confirm = false; Wiz.setOutcome(null);                // forget the previous attempt's result
+    aiBegin('polish');                                                     // freezes the fields and the other AI buttons until this finishes
     if (!p.requestId) p.requestId = Wiz.newRequestId();                     // reused on a manual retry, so a lost reply is never charged twice
     Wiz.refreshPolish();
     try {
-      const res = await fetch('/.netlify/functions/polish-resume', {
+      const res = await aiFetch('/.netlify/functions/polish-resume', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId })
       });
@@ -208,11 +212,12 @@ const Wiz = {
         // tailoring token exactly as they were. This is a success, not a failure: it must never reach polishFailed.
         if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
         if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
-        p.requestId = null; Wiz.setOutcome('nochange');
+        p.requestId = null; Wiz.setOutcome('nochange', { reason: json.reason, withheld: json.withheld });
         renderLicenseBadge();
       } else if (parsed) {
         state.polishOriginal = ResumeCore.clean(state.data);               // the customer's own wording, for Restore
         state.data = parsed;
+        state.polishResult = JSON.parse(JSON.stringify(ResumeCore.clean(parsed)));   // what the polish returned, to tell later whether the customer edited it
         state.tailorToken = json.tailorToken || null;
         if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
         if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
@@ -220,7 +225,7 @@ const Wiz = {
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
-        Wiz.setOutcome('improved', { unverified });
+        Wiz.setOutcome('improved', { unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [] });
         renderLicenseBadge(); renderEditFields(); renderPreview();
       } else {
         await Wiz.polishFailed(res.status, json);
@@ -231,6 +236,7 @@ const Wiz = {
       refreshLicenseCounter();
     } finally {
       p.busy = false;
+      aiEnd('polish');
       Wiz.refreshPolish();
     }
   },
@@ -254,6 +260,20 @@ const Wiz = {
     await refreshLicenseCounter();
   },
 
+  // Which entry of `list` is the same one as `e` (same job title and company, project name, ...)? The position is tried first, then a
+  // unique match elsewhere. Restore uses this so that deleting, adding or re-ordering entries after a polish can never put one entry's
+  // wording into another.
+  ENTRY_ID: { experience: ['title', 'company'], projects: ['name'], volunteer: ['title', 'organization'] },
+  idOf(kind, e) { return (Wiz.ENTRY_ID[kind] || []).map(f => String((e && e[f]) || '').trim().toLowerCase()).join('|'); },
+  sameEntry(list, kind, e, i, mine) {
+    if (!Array.isArray(list)) return null;
+    const id = Wiz.idOf(kind, e);
+    if (list[i] && Wiz.idOf(kind, list[i]) === id) return list[i];
+    const hits = list.filter(x => Wiz.idOf(kind, x) === id);
+    return hits.length === 1 && mine.filter(x => Wiz.idOf(kind, x) === id).length === 1 ? hits[0] : null;
+  },
+  partOf(e) { return JSON.stringify([e.bullets || [], e.summary || '', e.description || '']); },
+
   // Which parts of the resume did the AI reword? (compared with the customer's own wording)
   changedParts() {
     const o = state.polishOriginal; if (!o) return [];
@@ -263,17 +283,29 @@ const Wiz = {
     if (!same([o.summary.tagline, o.summary.bullets, o.summary.skills], [d.summary.tagline, d.summary.bullets, d.summary.skills])) out.push({ kind: 'summary', i: 0, label: 'Headline and summary' });
     [['experience', 'title', 'Job'], ['projects', 'name', 'Project'], ['volunteer', 'title', 'Activity']].forEach(([k, f, name]) => {
       d[k].forEach((e, i) => {
-        const before = o[k][i]; if (!before) return;
-        if (!same([before.bullets, before.summary || '', before.description || ''], [e.bullets, e.summary || '', e.description || ''])) out.push({ kind: k, i, label: `${name}: ${e[f] || before[f] || i + 1}` });
+        const before = Wiz.sameEntry(o[k], k, e, i, d[k]); if (!before) return;
+        if (Wiz.partOf(before) !== Wiz.partOf(e)) out.push({ kind: k, i, label: `${name}: ${e[f] || before[f] || i + 1}` });
       });
     });
     return out;
   },
+  // Has the customer changed this since the polish returned it? Restoring would then throw their newer edits away, so ask first.
+  editedSincePolish(kind, i) {
+    const r = state.polishResult; if (!r) return false;
+    if (kind === 'summary') return JSON.stringify(ResumeCore.clean(state.data).summary) !== JSON.stringify(ResumeCore.clean(r).summary);
+    const mine = ResumeCore.clean(state.data)[kind]; const e = mine[i]; if (!e) return false;
+    const was = Wiz.sameEntry(ResumeCore.clean(r)[kind], kind, e, i, mine);
+    return !was || Wiz.partOf(was) !== Wiz.partOf(e);
+  },
   restorePart(kind, i) {
-    const o = state.polishOriginal; if (!o) return;
+    const o = state.polishOriginal; if (!o || state.aiBusy) return;
+    if (Wiz.editedSincePolish(kind, i) && !confirm('You have changed this part since the polish. Restoring puts back your wording from before the polish and replaces those newer changes. Continue?')) return;
     if (kind === 'summary') state.data.summary = JSON.parse(JSON.stringify(o.summary));
-    else if (o[kind] && o[kind][i] && state.data[kind] && state.data[kind][i]) {
-      ['bullets', 'summary', 'description'].forEach(f => { if (f in o[kind][i]) state.data[kind][i][f] = JSON.parse(JSON.stringify(o[kind][i][f])); });
+    else {
+      const cur = state.data[kind] && state.data[kind][i]; if (!cur) return;
+      const before = Wiz.sameEntry(o[kind], kind, cur, i, state.data[kind]);
+      if (!before) return;                                                // not the same entry any more: never guess
+      ['bullets', 'summary', 'description'].forEach(f => { if (f in before) cur[f] = JSON.parse(JSON.stringify(before[f])); });
     }
     const lines = new Set();                                              // keep only flags whose line is still in the resume
     (function walk(v) { if (typeof v === 'string') lines.add(v.trim()); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk); })(state.data);
@@ -281,9 +313,14 @@ const Wiz = {
     renderEditFields(); renderPreview(); Wiz.refreshPolish();
   },
   restoreAll() {
-    if (!state.polishOriginal) return;
+    if (!state.polishOriginal || state.aiBusy) return;
+    const r = state.polishResult;
+    const edited = r && JSON.stringify(ResumeCore.clean(state.data)) !== JSON.stringify(ResumeCore.clean(r));
+    if (edited && !confirm('You have changed your resume since the polish (by editing it or tailoring it). Restoring puts back your original wording from before the polish and replaces everything now in the editor. Continue?')) return;
     state.data = JSON.parse(JSON.stringify(state.polishOriginal));
-    state.polishOriginal = null; state.flags = new Set(); Wiz.polishState().done = null;
+    state.polishOriginal = null; state.polishResult = null; state.flags = new Set(); Wiz.polishState().done = null;
+    // A tailoring run belongs to the resume that was just replaced: its Undo and its notes no longer apply.
+    state.preTailor = null; const box = document.getElementById('match-summary-box'); if (box) { box.style.display = 'none'; box.innerHTML = ''; }
     renderEditFields(); renderPreview(); Wiz.refreshPolish();
   },
 
@@ -295,33 +332,42 @@ const Wiz = {
     let body;
     if (p.busy) {
       body = '<div class="loading-indicator"><div class="spinner"></div>Polishing your resume… this can take up to a minute. Please keep this page open.</div>';
+    } else if (state.aiBusy) {
+      body = '<div class="wiz-example">Another AI step is running. You can polish when it has finished.</div>';
     } else if (left === 0) {
       body = `<div class="wiz-err">You’ve used all ${max || 5} generations on this code.${etsyLinkHTML()} Your resume is still fully editable and downloadable.</div>`;
     } else if (!writable) {
       body = '<div class="wiz-example">Add a few answers first (what you did in a job, a project, or your skills), then come back.</div>';
     } else if (p.confirm) {
-      body = `<div class="wiz-confirm"><strong>The AI will review your resume. A generation is charged only if it makes meaningful improvements to your wording.</strong>
-          If it succeeds, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds nothing meaningful to improve, or anything goes wrong, nothing is used.
+      body = `<div class="wiz-confirm"><strong>The AI will review your resume. A generation is charged only if it makes meaningful improvements to your wording that stay true to your answers.</strong>
+          If it succeeds, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds nothing meaningful to improve, if its suggestions add details that are not in your answers, or if anything goes wrong, nothing is used.
           <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="${prefix}polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
     } else {
       body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="${prefix}polish-btn">✨ Polish My Resume with AI</button>
-        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI makes meaningful improvements. Typing, previewing, editing and downloading never use one.</div>`;
+        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI makes meaningful improvements that stay true to your answers. Typing, previewing, editing and downloading never use one.</div>`;
     }
     let result = '';
     if (p.done && state.polishOriginal) {
-      const parts = Wiz.changedParts(); const unv = p.done.unverified || [];
+      const parts = Wiz.changedParts(); const unv = p.done.unverified || []; const wh = p.done.withheld || [];
       const used = `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
         result = `<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
       } else
       result = `<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
         ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
+        ${wh.length ? `<div class="notice-box" id="${prefix}polish-withheld"><strong>${wh.length} suggested change${wh.length === 1 ? ' was' : 's were'} left out.</strong> They added details that are not in your answers, so your own wording was kept there.
+          <ul style="margin:6px 0 0 16px;">${wh.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
         ${unv.length ? `<div class="notice-box"><strong>Please check ${unv.length} line${unv.length === 1 ? '' : 's'}.</strong> The AI added something that wasn’t in your answers (marked yellow in Edit Fields). Keep only what is true.
           <ul style="margin:6px 0 0 16px;">${unv.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
         <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
     }
     if (p.noChange) {
-      result += `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged, which often means your answers are already clear. <strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}. If you add or change some answers, you can try again.</div>`;
+      const wh = p.noChange.withheld || [];
+      const list = wh.length ? `<ul style="margin:6px 0 0 16px;">${wh.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul>` : '';
+      const usedLine = `<strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
+      result += p.noChange.reason === 'flagged'
+        ? `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>The AI’s suggestions were not used.</strong> It suggested changes, but they added details that are not in your answers, so your wording is unchanged. ${usedLine}${list}</div>`
+        : `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged, which often means your answers are already clear. ${usedLine} If you add or change some answers, you can try again.</div>`;
     }
     if (state.polishOriginal && !p.done && !p.busy) {                    // an earlier polish is still in the resume: keep Restore reachable
       result += `<div style="margin-top:6px;"><button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;

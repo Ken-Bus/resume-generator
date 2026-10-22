@@ -85,7 +85,7 @@ test('flags are capped', () => {
 });
 
 // ── end to end through the real handler and real SQL ─────────────────────────────
-test('tailor-resume: facts restored, unverified lines returned, accounting identical to before', async (t) => {
+test('tailor-resume: facts restored, unsupported lines WITHHELD (put back to the original), accounting identical to before', async (t) => {
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_integrity');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
@@ -115,8 +115,11 @@ test('tailor-resume: facts restored, unverified lines returned, accounting ident
     const result = JSON.parse(body.result);
     assert.equal(result.resume.name, 'Michael Johnson');
     assert.equal(result.resume.experience[0].company, 'Fictional Freight Co');
-    assert.equal(body.unverified.length, 1);
-    assert.match(body.unverified[0].text, /cycle counts/);
+    assert.deepEqual(body.unverified, []);                                              // nothing unsupported is left in the resume
+    assert.equal(body.withheld.length, 1);
+    assert.match(body.withheld[0].reasons.join(), /number not in your resume/); assert.match(body.withheld[0].label, /Job: Warehouse Associate, bullet 1/);
+    assert.deepEqual(result.resume.experience[0].bullets, ORIGINAL.experience[0].bullets);   // the invented "500 cycle counts" line is gone, the customer's line is back
+    assert.equal(JSON.stringify(body).includes('500 cycle counts'), false);                  // and the AI's text is not handed out in the report
     assert.equal(body.tailorRunsRemaining, 4);
   } finally { global.fetch = realFetch; }
   // Tailoring is still free: the license balance did not move, and exactly one tailoring run was recorded.
@@ -133,16 +136,16 @@ const TAYLOR = {
 };
 
 test('assessChange: an unchanged result reports nothing reworded; real rewording, cosmetic-only edits and added/removed lines are told apart', () => {
-  assert.deepEqual(assessChange(TAYLOR, clone(TAYLOR)), { reworded: 0, cosmetic: 0, unchanged: 5 });
+  assert.deepEqual(assessChange(TAYLOR, clone(TAYLOR)), { reworded: 0, cosmetic: 0, unchanged: 5, dropped: 0 });
   const better = clone(TAYLOR); better.projects[0].bullets[0] = 'Asked classmates to donate canned food';
-  assert.deepEqual(assessChange(TAYLOR, better), { reworded: 1, cosmetic: 0, unchanged: 4 });
+  assert.deepEqual(assessChange(TAYLOR, better), { reworded: 1, cosmetic: 0, unchanged: 4, dropped: 0 });
   const cosmetic = clone(TAYLOR); cosmetic.projects[0].bullets = ['Asked classmates to donate cans.', '  sorted and counted the cans '];
-  assert.deepEqual(assessChange(TAYLOR, cosmetic), { reworded: 0, cosmetic: 1, unchanged: 4 });          // capital + full stop only; the 2nd line differs by spaces alone
+  assert.deepEqual(assessChange(TAYLOR, cosmetic), { reworded: 0, cosmetic: 1, unchanged: 4, dropped: 0 });          // capital + full stop only; the 2nd line differs by spaces alone
   const added = clone(TAYLOR); added.projects[0].bullets.push('Delivered the cans to the pantry');
   assert.equal(assessChange(TAYLOR, added).reworded, 1);
   const dropped = clone(TAYLOR); dropped.projects[0].bullets.pop();
-  assert.equal(assessChange(TAYLOR, dropped).reworded, 1);
-  assert.deepEqual(assessChange(null, undefined), { reworded: 0, cosmetic: 0, unchanged: 0 });            // junk in, no crash
+  assert.deepEqual(assessChange(TAYLOR, dropped), { reworded: 0, cosmetic: 0, unchanged: 4, dropped: 1 });   // deleting text is not an improvement: it never counts toward a charge
+  assert.deepEqual(assessChange(null, undefined), { reworded: 0, cosmetic: 0, unchanged: 0, dropped: 0 });            // junk in, no crash
 });
 
 test('assessChange ignores facts the guard restores (name, schools, dates): only wording the customer can see counts', () => {

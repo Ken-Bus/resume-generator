@@ -5,7 +5,9 @@
   if (typeof module === 'object' && module.exports) module.exports = factory();
   else root.ResumeCore = factory();
 })(typeof self !== 'undefined' ? self : this, function () {
-  const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v)).trim();
+  // Only text and plain numbers are content. An object, array or function (for example an AI reply that wraps a
+  // bullet as {"text": "..."}) is dropped instead of being printed as "[object Object]" in the preview, PDF and Word.
+  const str = (v) => (typeof v === 'string' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : '').trim();
   const list = (a) => (Array.isArray(a) ? a : []).map(str).filter(Boolean);
   const objs = (a) => (Array.isArray(a) ? a : []).filter((o) => o && typeof o === 'object');
   const anyText = (o, keys) => keys.some((k) => (Array.isArray(o[k]) ? o[k].length : str(o[k])));

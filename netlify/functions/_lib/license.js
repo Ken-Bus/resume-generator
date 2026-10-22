@@ -28,12 +28,17 @@ async function commit(supabase, reservationId) {
 
 // Idempotent and best-effort: if this fails the lease expires on its own.
 // counted = false for provider outages, which never count toward the per-code failure budget.
+// One retry: a lapsed lease is counted as a costly failure, so a brief database hiccup during the release should not become a strike
+// against a customer who did nothing wrong. If both attempts fail the lease still expires on its own and nothing is charged.
 async function safeRelease(supabase, reservationId, counted = true) {
-  try {
-    const { error } = await supabase.rpc('release_license_use', { p_reservation_id: reservationId, p_counted: counted });
-    if (error) throw error;
-  } catch (e) {
-    console.error('release_license_use failed; the lease will expire on its own', { reservation: reservationId });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const { error } = await supabase.rpc('release_license_use', { p_reservation_id: reservationId, p_counted: counted });
+      if (error) throw error;
+      return;
+    } catch (e) {
+      if (attempt === 1) console.error('release_license_use failed; the lease will expire on its own', { reservation: reservationId });
+    }
   }
 }
 

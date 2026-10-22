@@ -4,6 +4,8 @@ const { readJsonBody } = require('./_lib/http');
 const { callClaude, extractJson, assertResumeShape, isProviderFault } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
+const integrity = require('./_lib/integrity');
+const usage = require('./_lib/usage');
 
 const MSG = {
   refresh: 'Please refresh the page and enter your access code again.',
@@ -12,6 +14,7 @@ const MSG = {
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
   aiFailed: 'We couldn’t analyze this resume right now. You haven’t been charged. Please try again.',
+  tooLong: 'This resume is too long for the AI to analyze in one go (it could not finish in time or space). You haven’t been charged. Try pasting fewer or shorter entries, for example your most recent jobs first.',
   notCharged: 'Something went wrong on our side. Please check the counter above before trying again.',
   server: 'Server error, please try again.'
 };
@@ -78,19 +81,27 @@ exports.handler = async function(event) {
     return json(503, { error: MSG.server });
   }
 
-  const prompt = `You are a resume parser. Extract structured JSON from this resume. Return ONLY valid JSON, no markdown fences.\n\nSchema: {"name":"string","contact":{"phone":"string","email":"string","location":"string","linkedin":"string","website":"string"},"summary":{"tagline":"string","bullets":["string"],"skills":["string"]},"experience":[{"title":"string","company":"string","location":"string","start":"string","end":"string","summary":"string","bullets":["string"]}],"education":[{"degree":"string","school":"string","location":"string","date":"string","honors":"string"}],"certifications":[{"name":"string","org":"string","date":"string"}],"projects":[{"name":"string","description":"string","bullets":["string"]}],"volunteer":[{"title":"string","organization":"string","location":"string","start":"string","end":"string","bullets":["string"]}],"awards":["string"]}\n\nResume:\n${resumeText}`;
+  const prompt = `You are a resume parser. Extract structured JSON from this resume. Copy only what is written in the resume: if something is not there, leave it as an empty string or empty list, and never guess an email, phone number, website, date or number. Return ONLY valid JSON, no markdown fences.\n\nSchema: {"name":"string","contact":{"phone":"string","email":"string","location":"string","linkedin":"string","website":"string"},"summary":{"tagline":"string","bullets":["string"],"skills":["string"]},"experience":[{"title":"string","company":"string","location":"string","start":"string","end":"string","summary":"string","bullets":["string"]}],"education":[{"degree":"string","school":"string","location":"string","date":"string","honors":"string"}],"certifications":[{"name":"string","org":"string","date":"string"}],"projects":[{"name":"string","description":"string","bullets":["string"]}],"volunteer":[{"title":"string","organization":"string","location":"string","start":"string","end":"string","bullets":["string"]}],"awards":["string"]}\n\nResume:\n${resumeText}`;
 
   // 2. Run the AI. ANY failure releases the reservation and the customer is not charged.
   let resultText;
+  let unverified = [];
   try {
     const text = await callClaude({ prompt, maxTokens: cfg.PARSE_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'analyze', ref: reservation.reservationId });
-    resultText = JSON.stringify(assertResumeShape(extractJson(text)));
+    // The parsed resume is checked against the text that was pasted: invented contact details and dates are removed, unsupported
+    // numbers are flagged, and only known fields (as text) survive.
+    const grounded = integrity.groundAnalyzed(resumeText, assertResumeShape(extractJson(text)));
+    resultText = JSON.stringify(grounded.resume); unverified = grounded.unverified;
+    if (grounded.removed.length) console.warn('parse-resume: removed details that were not in the pasted text', { ref: 'A201', count: grounded.removed.length });
   } catch (err) {
-    // Provider outages are released uncounted; anything that may have cost money counts toward the per-code budget.
-    const providerFault = isProviderFault(err);
+    // Provider outages (and faults in our own checks) are released uncounted; anything that may have cost money counts toward the per-code budget.
+    const guardFault = !(err && err.name === 'AiError');
+    const providerFault = guardFault || isProviderFault(err);
     await license.safeRelease(supabase, reservation.reservationId, !providerFault);
-    console.error('parse-resume: generation failed', { reservation: reservation.reservationId, reason: (err && err.reason) || 'unexpected', counted: !providerFault });
-    return json(502, { error: MSG.aiFailed });
+    console.error('parse-resume: generation failed', { ref: guardFault ? 'A107' : undefined, reservation: reservation.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', counted: !providerFault });
+    usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'failed' });
+    const long = err && err.name === 'AiError' && (err.reason === 'timeout' || err.reason === 'truncated');
+    return json(502, { error: long ? MSG.tooLong : MSG.aiFailed });
   }
 
   // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
@@ -125,8 +136,10 @@ exports.handler = async function(event) {
     console.error('parse-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
   }
 
+  usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'charged', withheld: unverified.length });
   return json(200, {
     result: resultText,
+    unverified,
     usesRemaining: committed.remaining,
     maxUses: committed.maximum,
     tailorToken

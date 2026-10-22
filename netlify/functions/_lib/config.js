@@ -19,7 +19,8 @@ function get() {
     // Source: Anthropic pricing page, Oct 2026. Update together with MODEL.
     PRICE_PER_MTOK: { input: 2, output: 10 },
     // Input limits (characters). A 5-page resume is roughly 15k characters.
-    RESUME_MAX_CHARS: 30000,
+    // A pasted resume longer than this cannot be parsed inside the Analyze output cap (PARSE_MAX_TOKENS), so it is refused before the call.
+    RESUME_MAX_CHARS: 20000,
     JOB_DESC_MAX_CHARS: 10000,
     RESUME_JSON_MAX_CHARS: 60000,
     MAX_BODY_BYTES: 262144,

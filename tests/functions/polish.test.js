@@ -38,6 +38,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
   const rsv = async (c) => (await db.admin('select status, tailor_count from license_reservations where code=$1 order by created_at', [c])).rows;
   const polish = (code, resume = ANSWERS, extra = {}) => hs.polish(post({ code, resume, target: 'customer service', ...extra }));
   const parse = (code) => hs.parse(post({ code, resumeText: 'Jordan Ellis — Retail Associate' }));
+  const clearCap = () => hs.polishModule._nochange._events.clear();
   const reset = () => { ai.mode = 'ok'; ai.delayMs = 0; ai.calls = 0; ai.maxInflight = 0; ai.polishPayload = null; hs.polishModule._recent.clear(); process.env.TAILOR_TOKEN_SECRET = SECRET; process.env.AI_TIMEOUT_MS = '1000'; };
 
   await t.test('rejected before any AI call and before any reservation: no code, bad format, unknown, exhausted, nothing to polish, malformed, oversized', async () => {
@@ -172,9 +173,9 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     assert.equal(ai.calls, calls);
   });
 
-  await t.test('truthful content: invented jobs, changed facts and made-up metrics cannot get through unflagged', async () => {
-    reset(); const c = await seed();
-    ai.polishPayload = (src) => {
+  await t.test('truthful content: invented jobs, changed facts and made-up metrics never reach the resume; with nothing else to accept the polish is free', async () => {
+    reset(); clearCap(); const c = await seed();
+    const fabricate = (src) => {
       const o = clone(src);
       o.name = 'Tay Rivers'; o.experience = [{ title: 'Store Manager', company: 'Big Retail Inc', start: '2020', end: '2024', bullets: ['Supervised 25 employees'] }];
       o.education[0].degree = 'MBA'; o.certifications.push({ name: 'CDL Class A', org: 'DMV', date: '2025' });
@@ -182,16 +183,22 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
       o.projects[0].bullets = ['Organized a food drive that collected 1,200 cans', 'Sorted and counted the cans'];
       return o;
     };
-    const b = parseBody(await polish(c)); const out = JSON.parse(b.result);
+    ai.polishPayload = fabricate;
+    const b = parseBody(await polish(c));
+    assert.equal(b.noChange, true); assert.equal(b.reason, 'flagged'); assert.equal(b.charged, false); assert.equal(b.result, undefined);   // nothing accepted: no text, no charge
+    assert.ok(b.withheld.length >= 4, JSON.stringify(b.withheld.map((w) => w.label)));
+    assert.equal(await uses(c), 5); assert.equal((await rsv(c))[0].status, 'released');
+    // …and with ONE honest improvement alongside, that improvement is accepted and charged once; every fabrication is still gone
+    reset(); clearCap(); const d = await seed();
+    ai.polishPayload = (src) => { const o = fabricate(src); o.projects[0].bullets = ['Organized a food drive that collected 1,200 cans', 'Sorted and counted the donated cans']; return o; };
+    const g = parseBody(await polish(d)); const out = JSON.parse(g.result);
     assert.equal(out.name, 'Taylor Rivera');                                                                  // facts restored
     assert.deepEqual(out.experience, []);                                                                     // no work history is NOT an error, and none is invented
     assert.equal(out.education[0].degree, 'High School Diploma');
     assert.deepEqual(out.certifications, ANSWERS.certifications);
-    const flagged = b.unverified.map((u) => u.text);
-    for (const must of ['Dynamic leader with a proven record of results', 'Increased donations by 300%', 'Organized a food drive that collected 1,200 cans', 'Salesforce'])
-      assert.ok(flagged.includes(must), `should flag: ${must}`);
-    assert.equal(flagged.includes('Sorted and counted the cans'), false);                                      // an honest rewording is not flagged
-    assert.equal(await uses(c), 4);                                                                           // flagging never changes the charge
+    assert.deepEqual(out.projects[0].bullets, ['asked classmates to donate cans', 'Sorted and counted the donated cans']);   // the honest line is in, the 1,200-cans line is back to the customer's own
+    const text = JSON.stringify(out); for (const bad of ['Dynamic leader', '300%', '1,200', 'Salesforce', 'Supervised', 'MBA', 'CDL', 'Big Retail']) assert.equal(text.includes(bad), false, bad);
+    assert.deepEqual(g.unverified, []); assert.ok(g.withheld.length >= 3); assert.equal(g.charged, true); assert.equal(await uses(d), 4);
   });
 
   await t.test('an AI-written introduction is flagged only when it ADDS something; restating the customer’s goal and skills passes without a warning', async () => {
@@ -199,11 +206,13 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     const base = clone(ANSWERS); base.summary = { tagline: '', bullets: [], skills: ['Teamwork'] };
     ai.polishPayload = (src) => { const o = clone(src); o.summary.tagline = 'Applicant with teamwork skills'; return o; };
     let b = parseBody(await polish(c, base, { target: 'customer service' }));
-    assert.deepEqual(b.unverified, []); assert.equal(JSON.parse(b.result).summary.tagline, 'Applicant with teamwork skills');
+    assert.deepEqual(b.unverified, []); assert.deepEqual(b.withheld, []); assert.equal(JSON.parse(b.result).summary.tagline, 'Applicant with teamwork skills');
+    assert.equal(await uses(c), 4);                                                                // an accepted introduction is a meaningful improvement: one charge
     ai.polishPayload = (src) => { const o = clone(src); o.summary.tagline = 'Friendly and reliable newcomer'; return o; };
     b = parseBody(await polish(c, base));
-    assert.deepEqual(b.unverified.map((u) => u.text), ['Friendly and reliable newcomer']); assert.match(b.unverified[0].reasons.join(), /praise or personality/);
-    assert.equal(await uses(c), 3);                                                                // two polishes, two generations: flags never change the charge
+    assert.equal(b.noChange, true); assert.equal(b.reason, 'flagged'); assert.equal(b.withheld[0].label, 'Headline'); assert.match(b.withheld[0].reasons.join(), /praise or personality/);
+    assert.equal(JSON.stringify(b).includes('Friendly and reliable newcomer'), false);             // the rejected text is not handed out
+    assert.equal(await uses(c), 4);                                                                // …and a polish whose only change is rejected is free
   });
 
   await t.test('the customer’s audience choice reaches the AI; it cannot be forged into the prompt; the charge is still exactly one generation', async () => {
@@ -336,7 +345,6 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
   const cosmetic = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate cans.', '  Sorted and counted the cans  ']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays.']; o.summary.tagline = 'Seeking a Customer Service position.'; return o; };
   const rows = async (c) => (await db.admin('select status, failure_counted fc from license_reservations where code=$1 order by created_at', [c])).rows;
   const watchWarn = () => { const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); return { logs, stop: () => { console.warn = orig; } }; };
-  const clearCap = () => hs.polishModule._nochange._events.clear();
 
   await t.test('UNCHANGED (the Taylor case): released, charges ZERO, resume text not sent back, P201 logged with counts only', async () => {
     reset(); clearCap(); const c = await seed(); ai.polishPayload = ECHO; const w = watchWarn();
@@ -359,7 +367,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
       volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }], awards: [] };
     try {
       const b = parseBody(await polish(c, plain));
-      assert.deepEqual(b.changes, { reworded: 0, cosmetic: 0, unchanged: 9 }); assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.error, undefined);
+      assert.deepEqual(b.changes, { reworded: 0, cosmetic: 0, unchanged: 9, dropped: 0 }); assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.error, undefined);
       assert.equal(b.usesRemaining, 5); assert.equal(await uses(c), 5); assert.ok(w.logs.some((l) => /P201/.test(l) && /"unchanged":9/.test(l)));
     } finally { w.stop(); }
   });
@@ -370,20 +378,30 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     projects: [{ name: 'School Food Drive', description: '', bullets: ['Asked classmates to donate canned food', 'Helped organize food for pickup'] }],
     volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }], awards: [] };
 
-  await t.test('REPORTED CASE end to end: blank description filled, beneficiary from another entry, helper -> organizer: all three come back FLAGGED; wording kept; credit rules unchanged (one charge)', async () => {
+  await t.test('REPORTED CASE end to end: blank description filled, beneficiary from another entry, helper -> organizer: all three are WITHHELD, the polish is free, nothing is applied', async () => {
     reset(); clearCap(); const c = await seed();
     ai.polishPayload = (r) => { const o = clone(r); o.projects[0].description = 'Collected donated food for families in the community.';
       o.projects[0].bullets = ['Asked classmates to donate canned food for families in the community.', 'Organized donated food for pickup.']; return o; };
-    const b = parseBody(await polish(c, TAYLOR_ENTRY)); const out = JSON.parse(b.result);
-    assert.equal(b.charged, true); assert.equal(b.usesRemaining, 4); assert.equal(await uses(c), 4);             // unchanged accounting: meaningful change = one charge
-    const by = Object.fromEntries(b.unverified.map((u) => [u.where, u.reasons.join(' | ')]));
+    const b = parseBody(await polish(c, TAYLOR_ENTRY));
+    assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.reason, 'flagged'); assert.equal(b.usesRemaining, 5); assert.equal(await uses(c), 5);
+    assert.equal(b.result, undefined);                                                                           // nothing is applied to the resume
+    const by = Object.fromEntries(b.withheld.map((u) => [u.where, u.reasons.join(' | ')]));
     assert.match(by['projects.0.description'], /added where you wrote nothing/);
-    assert.match(by['projects.0.bullets.0'], /who benefited is not in this entry: “families”/);
+    assert.match(by['projects.0.bullets.0'], /families/);
     assert.match(by['projects.0.bullets.1'], /your role changed/);
-    assert.equal(b.unverified.length, 3);
-    assert.equal(out.projects[0].bullets[1], 'Organized donated food for pickup.');                               // warned, never silently reverted or deleted
-    assert.equal(out.volunteer[0].organization, 'Community Food Pantry'); assert.equal(out.projects[0].name, 'School Food Drive');
-    const log = JSON.stringify(b.unverified); assert.equal(log.includes(c), false);
+    assert.equal(b.withheld.length, 3); assert.deepEqual(b.withheld.map((w) => w.label).sort(), ['Project: School Food Drive, bullet 1', 'Project: School Food Drive, bullet 2', 'Project: School Food Drive, description']);
+    assert.equal(JSON.stringify(b).includes('Collected donated food'), false); assert.equal(JSON.stringify(b).includes('Organized donated'), false);   // the AI's text is not handed out for free
+    assert.deepEqual((await rsv(c)).map((x) => x.status), ['released']);
+  });
+
+  await t.test('mixed: an honest improvement is accepted and charged once; the unsupported lines next to it are withheld and reported', async () => {
+    reset(); clearCap(); const c = await seed();
+    ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food for families in the community.', 'Helped organize the food pickup']; o.volunteer[0].bullets[1] = 'Greeted arriving families'; return o; };
+    const b = parseBody(await polish(c, TAYLOR_ENTRY)); const out = JSON.parse(b.result);
+    assert.equal(b.charged, true); assert.equal(await uses(c), 4);
+    assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Helped organize the food pickup']);   // line 1 put back, line 2 accepted
+    assert.equal(out.volunteer[0].bullets[1], 'Greeted arriving families');
+    assert.equal(b.withheld.length, 1); assert.match(b.withheld[0].reasons.join(), /families/); assert.deepEqual(b.unverified, []);
   });
 
   await t.test('a faithful improvement of the same entry returns NO warnings and is charged once (useful wording is preserved)', async () => {
@@ -444,6 +462,8 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     assert.equal(ai.calls, 3); assert.equal(await uses(c), 5);
     const r4 = await polish(c); const b4 = parseBody(r4);                                                    // 4th inside the window
     assert.equal(r4.statusCode, 429); assert.ok(Number(r4.headers['Retry-After']) >= 1); assert.match(b4.error, /haven’t been charged/);
+    assert.doesNotMatch(b4.error, /add or change some of your answers/);                                       // the cap is per code, so changing answers does not lift it: do not say it does
+    assert.match(b4.error, /keep editing your resume and downloading it/);
     assert.equal(ai.calls, 3, 'no AI call for a capped request'); assert.equal((await rows(c)).length, 3, 'no reservation for a capped request'); assert.equal(await uses(c), 5);
     assert.equal(JSON.stringify(b4).includes(c), false);
     assert.equal(parseBody(await polish(other)).noChange, true);                                             // a different code is not affected

@@ -85,9 +85,10 @@ const ECHO = (r) => r;
 function REWORD_FIRST_BULLET(r) {
   const o = JSON.parse(JSON.stringify(r));
   for (const list of [o.summary && o.summary.bullets, ...['experience', 'projects', 'volunteer'].map((k) => (o[k] || []).map((e) => e.bullets))].flat().filter(Array.isArray)) {
-    if (list.length) { list[0] = `Carefully handled the following work: ${list[0]}`; return o; }
+    // A real but FAITHFUL change: it adds no new content word, number, beneficiary or role, so the integrity checks accept it.
+    if (list.length) { list[0] = `${list[0]} and more`; return o; }
   }
-  o.summary = { ...(o.summary || {}), tagline: `Seeking work where I can use my skills ${(o.summary && o.summary.tagline) || ''}`.trim() };
+  o.summary = { ...(o.summary || {}), tagline: `${(o.summary && o.summary.tagline) || 'Seeking work'} and more` };
   return o;
 }
 
@@ -122,7 +123,12 @@ function installAi(state) {
     // default "success" really is a meaningful improvement and is charged. Tests that need an unchanged or cosmetic-only reply
     // set state.polishPayload (see ECHO below).
     const polished = isPolish ? (state.polishPayload || REWORD_FIRST_BULLET)(JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : null;
-    const payload = isPolish ? polished : isTailor ? { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } } : GOOD_RESUME;
+    // Tailor / Analyze can be scripted too: state.tailorPayload(resume, jobDescription) and state.parsePayload(resumeText).
+    const between = (a, b) => { const i = prompt.indexOf(a); if (i < 0) return ''; const s = i + a.length; const j = b ? prompt.indexOf(b, s) : prompt.length; return prompt.slice(s, j < 0 ? prompt.length : j).trim(); };
+    const tailorOut = () => { if (!state.tailorPayload) return { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } };
+      return state.tailorPayload(JSON.parse(between('Resume JSON:\n', '\n\nJob description:')), between('Job description:\n', null)); };
+    const parseOut = () => (state.parsePayload ? state.parsePayload(between('Resume:\n', null)) : GOOD_RESUME);
+    const payload = isPolish ? polished : isTailor ? tailorOut() : parseOut();
     let text = JSON.stringify(payload), stop = 'end_turn';
     if (mode === 'truncated') { text = text.slice(0, 40); stop = 'max_tokens'; }
     if (mode === 'notjson') text = 'Sorry, I cannot parse that.';

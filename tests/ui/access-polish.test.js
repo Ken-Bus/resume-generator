@@ -240,9 +240,9 @@ test('access control and AI polish (Chromium)', async (t) => {
   });
 
   await t.test('capped / failed no-change attempts: the cap message is shown uncharged, the counter does not move, and the button comes back', async () => {
-    const s = await open({ 'polish-resume': () => ({ status: 429, json: { error: 'The AI has already reviewed this resume several times and found nothing meaningful to improve. Please add or change some of your answers, or try again in about 9 minutes. You haven’t been charged.', retryAfterSeconds: 540 } }) }); await toReview(s);
+    const s = await open({ 'polish-resume': () => ({ status: 429, json: { error: 'The AI has already reviewed this resume several times without being able to use any of its suggestions. To protect your account, please try again in about 9 minutes. You can keep editing your resume and downloading it in the meantime. You haven’t been charged.', retryAfterSeconds: 540 } }) }); await toReview(s);
     await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-polish .wiz-err');
-    assert.match(await s.page.innerText('.wiz-polish .wiz-err'), /nothing meaningful to improve[\s\S]*haven’t been charged/);
+    assert.match(await s.page.innerText('.wiz-polish .wiz-err'), /without being able to use any of its suggestions[\s\S]*haven’t been charged/);
     assert.match(await s.page.innerText('#license-badge'), /5 of 5/); assert.equal(await s.page.evaluate(() => state.license.verified), true);
     assert.equal(await s.page.isEnabled('#polish-btn'), true); await s.close();
   });
@@ -384,7 +384,7 @@ test('access control and AI polish (Chromium)', async (t) => {
   });
 
   await t.test('HTML in polished text is shown literally and never runs', async () => {
-    const evil = { ...POLISHED, projects: [{ name: '<img src=x onerror="window.__xss=1">Drive', description: '', bullets: ['<script>window.__xss2=1</script>'] }] };
+    const evil = { ...POLISHED, projects: [{ name: 'School food drive', description: '<img src=x onerror="window.__xss=1">Drive', bullets: ['<script>window.__xss2=1</script>'] }] };
     const s = await open({ 'polish-resume': () => ({ status: 200, json: { result: JSON.stringify(evil), usesRemaining: 4, maxUses: 5, tailorToken: 't', unverified: [{ text: '<script>window.__xss2=1</script>', reasons: ['<img src=y onerror="window.__xss3=1">'] }] } }) });
     await toReview(s); await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-ok'); await s.page.waitForTimeout(300);
     assert.deepEqual(await s.page.evaluate(() => Object.keys(window).filter((k) => k.startsWith('__xss'))), []);

@@ -199,6 +199,21 @@
   .flag-note { font-size: 10px; color: #8a6d00; margin: -2px 0 4px; }
   .notice-box { background: #FFFBEA; border: 1px solid #F0DC9A; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #6b5300; margin: 8px 0; line-height: 1.5; }
   @media (max-width: 768px) { .wiz-preview-link { display: block; } }
+  /* Frozen while a paid/AI step is running (see setAiBusy) */
+  body.ai-busy [inert] { opacity: 0.65; }
+  /* Phones: inputs under 16px make iOS Safari zoom the page on focus, and tap targets under ~40px are hard to hit. */
+  @media (max-width: 768px) {
+    input, textarea, select, .field-input, .wiz-input, .gate-input, .resume-textarea { font-size: 16px !important; }
+    button, .btn-x, .btn-add-item, .btn-remove, .wiz-dot, .wiz-link, .wiz-back, .wiz-next, .gate-sample-link, .category-tab, .variant-btn, .panel-tab { min-height: 40px; }
+    .btn-x, .btn-remove { min-width: 40px; }
+    .wiz-dot { min-width: 40px; padding-left: 8px; padding-right: 8px; }
+    .gate-shop-link a, .gate-error a, a.wiz-link { display: inline-flex; align-items: center; min-height: 40px; }
+    .wiz-preview-link { min-height: 40px; padding: 10px 0; }
+    .wiz-link { min-width: 40px; }
+    /* A checkbox or radio is tapped through its label: make the whole row a comfortable target and the control itself bigger. */
+    .wiz-check { min-height: 40px; align-items: center; }
+    .wiz-check input { width: 22px; height: 22px; margin-top: 0; }
+  }
 </style>
 </head>
 <body>
@@ -257,6 +272,7 @@
     </div>
     <div class="panel-content" id="panel-edit" style="display:none;">
       <div id="edit-polish"></div>
+      <div id="analyze-notice"></div>
       <div id="edit-fields">
         <p style="font-size:11px;color:#999;line-height:1.5;">Nothing to edit yet. <a href="#" onclick="startGuided('first');return false;" style="color:#555;">Build a resume step by step</a>, paste an existing resume, or load the sample.</p>
       </div>
@@ -406,6 +422,9 @@ let state = {
   preTailor: null,     // copy of the resume from before the last tailoring run, for Undo
   polishOriginal: null, // the customer's own wording from before the last AI polish, for Restore
   polish: null,         // AI polish UI state (confirm / busy / result), shared by the Review step and the editor
+  polishResult: null,   // the resume exactly as the last polish returned it, to tell whether the customer has edited since (see Restore)
+  aiBusy: null,         // 'analyze' | 'polish' | 'tailor' while a paid or AI step is running: only one at a time (see setAiBusy)
+  sampleJson: null,     // the untouched sample, so Analyze can tell "sample" from "the customer's own work"
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -414,6 +433,32 @@ function init() {
   renderVariants();
   initLicenseGate();
 }
+
+// An AI request that never answers (a stalled phone connection) must not leave the editor frozen: every AI call gives up after this long
+// (the server's own limit is shorter), the lock is released in `finally`, and the customer is told to check the counter.
+let AI_CLIENT_TIMEOUT_MS = 75000;
+async function aiFetch(url, options) {
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), AI_CLIENT_TIMEOUT_MS);
+  try { return await fetch(url, { ...options, signal: ctl.signal }); } finally { clearTimeout(timer); }
+}
+
+// ── One AI step at a time ───────────────────────────────────────────────────────────────────────────────────────────
+// Analyze, AI Polish and Tailor all replace the resume with what the server returns. If two overlapped, the slower answer would overwrite
+// the faster one (a paid result thrown away), and anything typed while a step runs would be overwritten too. So while one runs the others
+// are disabled and the fields are frozen (inert); everything is released together when it finishes.
+const AI_BUSY_TEXT = 'Please wait until the AI step that is already running has finished.';
+function setAiBusy(name) {
+  state.aiBusy = name || null;
+  document.body.classList.toggle('ai-busy', !!name);
+  ['edit-fields', 'resume-input', 'job-desc-input', 'panel-guide'].forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    if (name) el.setAttribute('inert', ''); else el.removeAttribute('inert');
+  });
+  ['parse-btn', 'tailor-btn'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !!name; });
+  if (typeof renderEditPolish === 'function') renderEditPolish();
+}
+function aiBegin(name) { if (state.aiBusy) return false; setAiBusy(name); return true; }
+function aiEnd(name) { if (state.aiBusy === name) setAiBusy(null); }
 
 // ── Panel Switch ──────────────────────────────────────────────────────────────
 function switchPanel(panel) {
@@ -607,11 +652,15 @@ async function parseResume() {
     showGate('Enter your access code to generate your resume.');
     return;
   }
-  if (text.length > 30000) {
-    showError('That resume is too long to analyze (limit 30,000 characters). Please trim older or less relevant sections and try again.');
+  if (text.length > 20000) {
+    showError('That resume is too long to analyze (limit 20,000 characters). Please trim older or less relevant sections and try again.');
     return;
   }
-  if (analyzing) return;
+  if (state.aiBusy) { if (state.aiBusy !== 'analyze') showError(AI_BUSY_TEXT); return; }       // a repeat click while this very step runs is simply ignored
+  // Analyzing replaces what is in the editor. The untouched sample is free to replace; the customer's own work is not.
+  const hasOwnWork = !!state.data && ResumeCore.hasContent(state.data) && !(state.sampleJson && JSON.stringify(state.data) === state.sampleJson);
+  if (hasOwnWork && !confirm('Analyzing this text will replace the resume currently in the editor (including anything you typed or polished). Continue?')) return;
+  if (!aiBegin('analyze')) return;
   analyzing = true;
 
   document.getElementById('parse-btn').disabled = true;
@@ -620,7 +669,7 @@ async function parseResume() {
 
   try {
     // The server checks the code, reserves a generation, runs the AI, and only charges for a validated result.
-    const res = await fetch('/.netlify/functions/parse-resume', {
+    const res = await aiFetch('/.netlify/functions/parse-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ code: state.license.code, resumeText: text })
@@ -634,8 +683,15 @@ async function parseResume() {
     }
     if (parsed) {
       state.data = parsed;
-      state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polish = null;
+      state.wizard = null; state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polish = null; state.sampleJson = null;
+      // Numbers the AI put in that are not in the pasted text are shown in yellow for the customer to confirm.
+      const unverified = Array.isArray(json.unverified) ? json.unverified : [];
+      state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
+      const note = document.getElementById('analyze-notice');
+      if (note) note.innerHTML = unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
+          <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '';
       state.tailorToken = json.tailorToken || null;
+      document.getElementById('match-summary-box').style.display = 'none';
       if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
       if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
       renderLicenseBadge();
@@ -651,6 +707,7 @@ async function parseResume() {
     refreshLicenseCounter();
   } finally {
     analyzing = false;
+    aiEnd('analyze');
     document.getElementById('parse-btn').disabled = false;
     document.getElementById('loading').style.display = 'none';
   }
@@ -708,9 +765,12 @@ function showError(msg, isHTML) {
 function loadSample() {
   document.getElementById('resume-input').value = SAMPLE_RESUME;
   document.getElementById('error-box').style.display = 'none';
+  if (state.aiBusy) return;
   state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
+  state.sampleJson = JSON.stringify(state.data);
   state.tailorToken = null;
-  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polish = null;
+  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polish = null;
+  const note = document.getElementById('analyze-notice'); if (note) note.innerHTML = '';
   renderEditFields();
   renderPreview();
   switchPanel('edit');
@@ -1055,7 +1115,7 @@ function showTailorError(msg) {
 }
 
 function undoTailor() {
-  if (!state.preTailor) return;
+  if (!state.preTailor || state.aiBusy) return;
   state.data = state.preTailor; state.preTailor = null; state.flags = new Set();
   renderEditFields(); renderPreview();
   const box = document.getElementById('match-summary-box');
@@ -1075,13 +1135,15 @@ async function tailorToJob() {
     showTailorError('That job description is too long (limit 10,000 characters). Please paste the key sections only.');
     return;
   }
+  if (state.aiBusy) { if (state.aiBusy !== 'tailor') showTailorError(AI_BUSY_TEXT); return; }
+  if (!aiBegin('tailor')) return;
 
   const btn = document.getElementById('tailor-btn');
   btn.disabled = true;
   btn.textContent = 'Tailoring…';
 
   try {
-    const res = await fetch('/.netlify/functions/tailor-resume', {
+    const res = await aiFetch('/.netlify/functions/tailor-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken })
@@ -1097,7 +1159,9 @@ async function tailorToJob() {
     const parsed = JSON.parse(json.result);
     state.preTailor = JSON.parse(JSON.stringify(state.data));      // lets the customer undo this run
     state.data = parsed.resume;
-    // The server flags AI-written lines containing numbers, credentials or duties that are not in the original resume.
+    // The server puts back to the customer's own wording any line that borrows a detail from another entry, inflates a role, or adds a
+    // beneficiary, result, number or skill that is not in the resume. It reports what it left out (without the AI's text).
+    const withheld = Array.isArray(json.withheld) ? json.withheld : [];
     const unverified = Array.isArray(json.unverified) ? json.unverified : [];
     state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
     renderEditFields();
@@ -1110,6 +1174,8 @@ async function tailorToJob() {
       <div style="margin-bottom:6px;"><strong>Match notes:</strong> ${esc(ms.notes || '')}</div>
       ${ms.matchedKeywords?.length ? `<div style="margin-bottom:4px;"><strong style="color:#2a7;">Matched:</strong> ${ms.matchedKeywords.map(esc).join(', ')}</div>` : ''}
       ${ms.missingKeywords?.length ? `<div><strong style="color:#a52;">Not covered:</strong> ${ms.missingKeywords.map(esc).join(', ')}</div>` : ''}
+      ${withheld.length ? `<div class="notice-box"><strong>${withheld.length} suggested change${withheld.length === 1 ? ' was' : 's were'} left out.</strong> They added details that are not in your resume, so your own wording was kept there.
+        <ul style="margin:6px 0 0 16px;">${withheld.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
       ${unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'} before you use this resume.</strong> The AI added details that weren’t in your original (marked in yellow in Edit Fields). Keep only what is true.
         <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
       <button class="btn-secondary" style="margin-top:8px;" onclick="undoTailor()">Undo this tailoring</button>
@@ -1117,6 +1183,7 @@ async function tailorToJob() {
   } catch (e) {
     showTailorError("Couldn't tailor to this job — please try again.");
   } finally {
+    aiEnd('tailor');
     btn.disabled = false;
     btn.textContent = 'Tailor to This Job';
   }

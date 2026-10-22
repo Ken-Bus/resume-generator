@@ -51,3 +51,13 @@ Use the personal test license and fictional data on the branch deploy; each Anal
 4. **Tailor**: works with the token, counter unchanged, one `ai-usage` line with `fn":"tailor"`.
 5. **A long fictional resume** (about 3-4 pages): confirm it finishes inside the 50-second limit and does not truncate. Longer outputs from the new tokenizer make this the most likely place for a surprise.
 6. **Re-test the clean Taylor Rivera resume** after the prompt change (Oct 22). If the model still returns nothing meaningful, that costs nothing (P201). If it improves the wording, it costs one generation: read every changed line against the original and confirm no invented fact, number, title or praise word.
+
+## Outcome line and measuring real cost (added in the release-hardening pass)
+Besides `ai-usage`, every paid attempt writes one `ai-outcome` line, joined to it by the same reservation id:
+
+```
+ai-outcome {"fn":"polish","outcome":"flagged","reworded":0,"withheld":3,"ref":"<reservation uuid>"}
+```
+`outcome` is `charged`, `nochange` (nothing to improve), `flagged` (everything withheld), `failed` or `ok` (Tailor). Join the two lines on `ref` to total the AI cost of each kind of attempt, and to see how much is spent on attempts the customer is not charged for. Tokens per second for a call is `out / (ms / 1000)`: use it to calibrate the timeout and the long-resume limits after the first real runs.
+
+**Limits derived from the output caps** (so a call that is certain to be cut off is refused for free): Analyze refuses pasted text over 20,000 characters; Polish and Tailor refuse a resume whose JSON is over about 19,000 characters (`_lib/limits.js`: the reply is about as long as the request, at roughly 0.385 output tokens per character against `TAILOR_MAX_TOKENS`). Timeouts and truncations show a plain "too long" message and are counted failures; nothing is charged. These limits are arithmetic, not measured: re-check them against the long-resume acceptance test.

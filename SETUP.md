@@ -255,12 +255,20 @@ fetch('/.netlify/functions/polish-resume',{method:'POST',body:'{}'}).then(r=>r.s
 fetch('/.netlify/functions/tailor-resume',{method:'POST',body:'{}'}).then(r=>r.status)  // 500 = AI key missing; 503 = TAILOR_TOKEN_SECRET missing/short; 401 = both present
 ```
 
+**Publication and security-header checks (free; do these on the branch deploy BEFORE anything else):** the repository root is published, so these paths must answer 404 and the page must still load. In a terminal (replace the host):
+```
+for p in /SETUP.md /package.json /netlify.toml /supabase/schema.sql /scripts/generate-codes.js /lib/codes.js /docs/AI_POLISH.md /tests/package.json /netlify/functions/polish-resume.js /netlify/functions/_lib/integrity.js /templates/delivery-instructions.html; do printf '%s ' $p; curl -s -o /dev/null -w '%{http_code}\n' https://<branch>--<site>.netlify.app$p; done   # every line must end in 404
+for p in / /index.html /wizard.js /resume-core.js /templates.js; do printf '%s ' $p; curl -s -o /dev/null -w '%{http_code}\n' https://<branch>--<site>.netlify.app$p; done                                           # every line must end in 200
+curl -sI https://<branch>--<site>.netlify.app/ | grep -iE 'content-security-policy|x-frame-options|referrer-policy|permissions-policy|x-content-type-options'                                              # all five present
+```
+Then open the page with the browser console open and click through the gate, the guided builder and Try Sample: there must be **no** "Refused to ..." / Content-Security-Policy messages. If the page breaks, remove the `Content-Security-Policy` line from `netlify.toml` and redeploy; the other protections do not depend on it. Also open `https://<site>/.netlify/functions/check-code-supply` once on **production** after release: it should not return a code count to an anonymous visitor (see `docs/RELEASE_HARDENING.md`).
+
 **Zero-cost checks right after the build (no generation spent):**
 1. Enter `FG-ZZZZ-9999` at the gate: "We couldn't find that code." (proves the Supabase variables work).
 2. Open `/.netlify/functions/export-resume` and `/.netlify/functions/polish-resume` in the browser: each answers "Method Not Allowed" (proves the functions deployed).
 3. Click Try Sample, then PDF: the access-code gate appears and nothing downloads.
 
-**Then, with your personal code:** download a PDF and a Word file (counter unchanged); run one Polish (if it improves the wording the counter drops by exactly 1 and AI-added lines are yellow; if the page says "No meaningful improvements were found" the counter must not move, and the Netlify log shows `polish-resume: result had NO wording changes` ref P201); run one Tailor (works, counter unchanged); repeat a build and a download on a phone.
+**Then, with your personal code:** download a PDF and a Word file (counter unchanged); run one Polish (if it improves the wording the counter drops by exactly 1 and AI-added lines are yellow; if the page says "No meaningful improvements were found" or "The AI's suggestions were not used" the counter must not move, and the Netlify log shows ref P201 or P202; any "left out" list must name where and why without showing AI text); run one Tailor (works, counter unchanged); repeat a build and a download on a phone.
 
 **Cleanup:** remove the branch from the branch-deploy list, delete the branch-only `TAILOR_TOKEN_SECRET`, and revoke any test API key.
 
@@ -276,7 +284,12 @@ Customers see a friendly message with a short reference. The same reference is w
 | P104 | polish-resume | The database returned an unexpected reservation answer | Check the function log; report it |
 | P105 | polish-resume | The duplicate-request check failed (the reservation is released) | Check Supabase status / table access for `service_role` |
 | P106 | polish-resume | The AI finished but the charge could not be recorded (released, uncharged) | Check the counter, then try again |
-| P201 | polish-resume | Not an error: the AI found nothing meaningful to improve; the reservation was released and nothing was charged | None. Counts only are logged (reworded / cosmetic / unchanged) |
+| P107 | polish-resume | Our own integrity check failed on the AI's answer (released uncounted, nothing charged, no AI text shown) | Report it: the function log has the reason code |
+| P201 | polish-resume | Not an error: the AI found nothing meaningful to improve; the reservation was released and nothing was charged | None. Counts only are logged (reworded / cosmetic / unchanged / dropped) |
+| P202 | polish-resume | Not an error: every change the AI suggested was withheld by the integrity checks (borrowed detail, inflated role, added beneficiary or result, blank filled in); released, nothing charged | None. Counts only are logged. A pattern may mean the prompt needs another look |
+| A107 | parse-resume | Our own check failed on the parsed resume (released uncounted, nothing charged) | Report it |
+| A201 | parse-resume | Not an error: contact details or dates the AI produced were not in the pasted text and were removed | None |
+| T107 | tailor-resume | Our own integrity check failed (the run is given back, nothing charged) | Report it |
 | E101 | export-resume | The license lookup failed | Check Supabase status and the database settings |
 | E102 | export-resume | The file could not be rendered | Check the function log; report it |
 

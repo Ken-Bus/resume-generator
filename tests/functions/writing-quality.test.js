@@ -228,5 +228,5 @@ test('the same guardrails still catch embellishment of those plain lines, and ca
     'praise': (o) => { o.volunteer[0].bullets[1] = 'Warmly greeted families with dedication'; } };
   for (const [name, edit] of Object.entries(bad)) { const out = clone(PLAIN); edit(out); assert.ok(reconcile(PLAIN, out, { keepBlankedText: true }).unverified.length >= 1, `${name} must be flagged`); }
   const caps = clone(PLAIN); caps.volunteer[0].bullets[0] = 'packed grocery boxes on saturdays.';
-  const r = reconcile(PLAIN, caps, { keepBlankedText: true }); assert.deepEqual(assessChange(PLAIN, r.resume), { reworded: 0, cosmetic: 1, unchanged: 8 });
+  const r = reconcile(PLAIN, caps, { keepBlankedText: true }); assert.deepEqual(assessChange(PLAIN, r.resume), { reworded: 0, cosmetic: 1, unchanged: 8, dropped: 0 });
 });

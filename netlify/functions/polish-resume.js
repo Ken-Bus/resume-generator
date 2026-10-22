@@ -7,6 +7,8 @@ const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
 const nochange = require('./_lib/nochange');
+const usage = require('./_lib/usage');
+const limits = require('./_lib/limits');
 const { isFirstInFlight } = require('./_lib/inflight');
 const Core = require('../../resume-core.js');
 
@@ -43,6 +45,9 @@ const MSG = {
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
   noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
+  flaggedOnly: 'The AI suggested changes, but every one of them added details that are not in your answers, so your wording is unchanged and no generation was used.',
+  tooLong: 'This resume is too long to polish in one go (the AI could not finish it in time or space). You haven’t been charged. Try again with fewer or shorter entries, for example your most recent jobs first.',
+  tooLongInput: 'This resume is too long to polish in one go. You haven’t been charged. Shorten it a little (fewer or shorter entries) and try again.',
   notCharged: 'Something went wrong on our side. Please check the counter above before trying again.',
   server: 'Server error, please try again.'
 };
@@ -142,6 +147,9 @@ exports.handler = async function(event) {
   if (JSON.stringify(resume).length > cfg.RESUME_JSON_MAX_CHARS) return json(413, { error: 'That resume is too long to polish. Please shorten it and try again.' });
   const source = Core.clean(resume);
   if (!Core.hasWritableText(source)) return json(400, { error: MSG.nothing });
+  // The reply is about as long as the resume. If it cannot fit in the output cap the call is certain to be cut off, so refuse now:
+  // no reservation, no AI call, no cost.
+  if (!limits.fitsOutput(JSON.stringify(source).length, cfg.TAILOR_MAX_TOKENS)) return json(413, { error: MSG.tooLongInput });
   const target = typeof rawTarget === 'string' ? rawTarget.replace(/["\\`]/g, "'").replace(/\s+/g, ' ').trim().slice(0, 120) : '';
   const profile = chooseProfile(typeof rawProfile === 'string' ? rawProfile : '', source);
   const rid = typeof requestId === 'string' && REQUEST_ID_RE.test(requestId) ? requestId : null;
@@ -165,7 +173,7 @@ exports.handler = async function(event) {
   if (!capped.allowed) {
     const minutes = Math.ceil(capped.retryAfterSeconds / 60);
     return json(429, {
-      error: `The AI has already reviewed this resume several times and found nothing meaningful to improve. Please add or change some of your answers, or try again in about ${minutes} minute${minutes === 1 ? '' : 's'}. You haven’t been charged.`,
+      error: `The AI has already reviewed this resume several times without being able to use any of its suggestions. To protect your account, please try again in about ${minutes} minute${minutes === 1 ? '' : 's'}. You can keep editing your resume and downloading it in the meantime. You haven’t been charged.`,
       retryAfterSeconds: capped.retryAfterSeconds
     }, { 'Retry-After': String(capped.retryAfterSeconds) });
   }
@@ -209,37 +217,39 @@ exports.handler = async function(event) {
     return json(503, { error: refMsg('P105'), ref: 'P105' });
   }
 
-  // 2. Run the AI. ANY failure releases the reservation and the customer is not charged.
+  // 2. Run the AI and guard its answer. ANY failure releases the reservation and the customer is not charged.
   let polished;
-  let unverified = [];
-  let changes = null;                                             // observation only: how much of the wording the AI actually changed
+  let withheld = [];
+  let changes;
   try {
     const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'polish', ref: reservation.reservationId });
     const shaped = assertResumeShape(extractJson(text));
-    try {
-      const checked = integrity.reconcile(source, shaped, { vocabulary: target, keepBlankedText: true, entryScope: true });
-      polished = checked.resume; unverified = checked.unverified;
-    } catch (e) {
-      console.error('polish-resume: integrity check failed', { reason: safeReason(e) });
-      polished = shaped;
-      unverified = [{ where: 'resume', text: '', reasons: ['Automatic check unavailable: please review every line before using this resume.'] }];
-    }
-    try { changes = integrity.assessChange(source, polished); } catch (e) { changes = null; }
+    // Only what passes the integrity checks is accepted: facts come back from the customer's answers, and every line that borrows,
+    // inflates or invents is put back to the customer's own wording. If this step itself fails we refuse to ship unguarded AI text.
+    const guarded = integrity.guardResume(source, shaped, { mode: 'polish', vocabulary: target });
+    polished = guarded.resume; withheld = guarded.withheld;
+    changes = integrity.assessChange(source, polished);
   } catch (err) {
-    const providerFault = isProviderFault(err);
+    const guardFault = !(err && err.name === 'AiError');                   // a bug in our own checks is not the customer's failure
+    const providerFault = guardFault || isProviderFault(err);
     await license.safeRelease(supabase, reservation.reservationId, !providerFault);
-    console.error('polish-resume: generation failed', { reservation: reservation.reservationId, reason: (err && err.reason) || 'unexpected', counted: !providerFault });
-    return json(502, { error: MSG.aiFailed });
+    console.error('polish-resume: generation failed', { ref: guardFault ? 'P107' : undefined, reservation: reservation.reservationId, reason: guardFault ? safeReason(err) : (err && err.reason) || 'unexpected', counted: !providerFault });
+    usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'failed' });
+    const long = err && err.name === 'AiError' && (err.reason === 'timeout' || err.reason === 'truncated');
+    return json(502, { error: long ? MSG.tooLong : MSG.aiFailed });
   }
 
-  // 2b. Nothing meaningful to improve: release the reservation, uncharged and NOT counted as a failure (the customer did
-  // nothing wrong), and do not hand back any text, so the customer's own wording is never replaced by cosmetic edits.
-  // The counts (never resume text or the code) go to the function log (ref P201).
-  if (changes && changes.reworded === 0) {
+  // 2b. Nothing ACCEPTED is a meaningful improvement (the AI changed nothing, or only capitals/punctuation, or every change it made was
+  // withheld by the integrity checks): release the reservation, uncharged and NOT counted as a failure, and hand back no text. It is
+  // capped separately (_lib/nochange.js) so it cannot become unlimited free AI. Counts only go to the log (P201 / P202).
+  if (changes.reworded === 0) {
+    const flaggedOnly = withheld.length > 0;
     await license.safeRelease(supabase, reservation.reservationId, false);
     nochange.record(code);
-    console.warn('polish-resume: result had NO wording changes; released, not charged', { ref: 'P201', reservation: reservation.reservationId, ...changes });
-    const body = { noChange: true, charged: false, message: MSG.noChange, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+    console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
+      { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, withheld: withheld.length });
+    usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', reworded: 0, withheld: withheld.length });
+    const body = { noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
     if (rid) cachePut(cacheKey(code, rid), body);
     return json(200, body);
   }
@@ -267,7 +277,9 @@ exports.handler = async function(event) {
   if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
-  const body = { result: JSON.stringify(polished), unverified, changes, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
+  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'charged', reworded: changes.reworded, withheld: withheld.length });
+  // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
+  const body = { result: JSON.stringify(polished), unverified: [], withheld, changes, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
   if (rid) cachePut(cacheKey(code, rid), body);
   return json(200, body);
 };

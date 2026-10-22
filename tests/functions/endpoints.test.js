@@ -55,10 +55,10 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
 
   await t.test('parse: input limits => 413 before reservation or AI', async () => {
     reset(); const c = await seed();
-    assert.equal((await callParse(c, 'x'.repeat(30001))).statusCode, 413);
+    assert.equal((await callParse(c, 'x'.repeat(20001))).statusCode, 413);
     assert.equal((await hs.parse(post({ code: c, resumeText: 'x'.repeat(300000) }))).statusCode, 413);
     assert.equal(ai.calls, 0); assert.equal((await rsv(c)).length, 0); assert.equal(await uses(c), 5);
-    assert.equal((await callParse(c, 'x'.repeat(30000))).statusCode, 200);   // exactly at the limit is fine
+    assert.equal((await callParse(c, 'x'.repeat(20000))).statusCode, 200);   // exactly at the limit is fine
   });
 
   await t.test('parse: success charges exactly one use and returns result, counts and a tailoring token', async () => {
