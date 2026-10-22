@@ -80,6 +80,17 @@ const GOOD_RESUME = { name: 'Jordan Ellis', contact: { email: 'jordan.ellis@exam
   experience: [{ title: 'Retail Associate', company: 'Fictional Maple Market', start: 'June 2023', end: 'August 2026', bullets: ['Assisted customers'] }],
   education: [], certifications: [], projects: [], awards: [] };
 
+// Polish replies. ECHO = the AI hands the customer's resume back untouched (the Taylor Rivera case).
+const ECHO = (r) => r;
+function REWORD_FIRST_BULLET(r) {
+  const o = JSON.parse(JSON.stringify(r));
+  for (const list of [o.summary && o.summary.bullets, ...['experience', 'projects', 'volunteer'].map((k) => (o[k] || []).map((e) => e.bullets))].flat().filter(Array.isArray)) {
+    if (list.length) { list[0] = `Carefully handled the following work: ${list[0]}`; return o; }
+  }
+  o.summary = { ...(o.summary || {}), tagline: `Seeking work where I can use my skills ${(o.summary && o.summary.tagline) || ''}`.trim() };
+  return o;
+}
+
 // Scriptable AI provider. mode: ok | http500 | hang | truncated | notjson | badshape | empty | throw
 function installAi(state) {
   state.calls = 0; state.mode = state.mode || 'ok'; state.delayMs = state.delayMs || 0;
@@ -100,8 +111,10 @@ function installAi(state) {
     state.lastPrompt = prompt;
     const isTailor = /tailoring assistant/.test(prompt);
     const isPolish = /careful resume editor/.test(prompt);
-    // Polish default: hand the customer's own resume back (the prompt embeds it after "Resume JSON:"); tests override with state.polishPayload.
-    const polished = isPolish ? (state.polishPayload ? state.polishPayload(JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : null;
+    // Polish default: a genuine rewording of the customer's first bullet (the prompt embeds their resume after "Resume JSON:"), so a
+    // default "success" really is a meaningful improvement and is charged. Tests that need an unchanged or cosmetic-only reply
+    // set state.polishPayload (see ECHO below).
+    const polished = isPolish ? (state.polishPayload || REWORD_FIRST_BULLET)(JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : null;
     const payload = isPolish ? polished : isTailor ? { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } } : GOOD_RESUME;
     let text = JSON.stringify(payload), stop = 'end_turn';
     if (mode === 'truncated') { text = text.slice(0, 40); stop = 'max_tokens'; }
@@ -120,4 +133,4 @@ function captureLogs() {
   return { lines, restore: () => { console.error = orig; } };
 }
 
-module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS };
+module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS, ECHO };

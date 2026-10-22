@@ -6,12 +6,16 @@ const { callClaude, extractJson, assertResumeShape, isProviderFault } = require(
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
+const nochange = require('./_lib/nochange');
 const { isFirstInFlight } = require('./_lib/inflight');
 const Core = require('../../resume-core.js');
 
 // "Polish My Resume with AI": turns the customer's own guided answers into clear resume wording.
 // PAID OPERATION, charged exactly like Analyze: ONE of the code's included generations, and only after a
-// validated result. Same reserve -> AI -> commit / release model, same signed tailoring token (so Tailor stays free,
+// validated result THAT MEANINGFULLY IMPROVES THE WORDING (at least one line actually reworded; capitals, punctuation and
+// spacing alone do not count). A result with nothing meaningful to improve releases the reservation uncharged and uncounted
+// (it never touches the database failure budget), is capped separately in _lib/nochange.js, and is never applied to the resume.
+// Same reserve -> AI -> commit / release model, same signed tailoring token (so Tailor stays free,
 // token-gated and capped). Nothing here changes how Analyze or Tailor are charged.
 //
 // Duplicate-charge protection (on top of the browser's single-flight button):
@@ -38,6 +42,7 @@ const MSG = {
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
+  noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
   notCharged: 'Something went wrong on our side. Please check the counter above before trying again.',
   server: 'Server error, please try again.'
 };
@@ -147,6 +152,16 @@ exports.handler = async function(event) {
     }
   }
 
+  // Free-but-costly requests are capped separately: a code that keeps getting "nothing to improve" must change something first.
+  const capped = nochange.check(code, cfg);
+  if (!capped.allowed) {
+    const minutes = Math.ceil(capped.retryAfterSeconds / 60);
+    return json(429, {
+      error: `The AI has already reviewed this resume several times and found nothing meaningful to improve. Please add or change some of your answers, or try again in about ${minutes} minute${minutes === 1 ? '' : 's'}. You haven’t been charged.`,
+      retryAfterSeconds: capped.retryAfterSeconds
+    }, { 'Retry-After': String(capped.retryAfterSeconds) });
+  }
+
   let reservation;
   try {
     reservation = await license.reserve(supabase, code, cfg);
@@ -209,6 +224,18 @@ exports.handler = async function(event) {
     return json(502, { error: MSG.aiFailed });
   }
 
+  // 2b. Nothing meaningful to improve: release the reservation, uncharged and NOT counted as a failure (the customer did
+  // nothing wrong), and do not hand back any text, so the customer's own wording is never replaced by cosmetic edits.
+  // The counts (never resume text or the code) go to the function log (ref P201).
+  if (changes && changes.reworded === 0) {
+    await license.safeRelease(supabase, reservation.reservationId, false);
+    nochange.record(code);
+    console.warn('polish-resume: result had NO wording changes; released, not charged', { ref: 'P201', reservation: reservation.reservationId, ...changes });
+    const body = { noChange: true, charged: false, message: MSG.noChange, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+    if (rid) cachePut(cacheKey(code, rid), body);
+    return json(200, body);
+  }
+
   // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
   let committed;
   for (let attempt = 0; attempt < 2 && !committed; attempt++) {
@@ -232,15 +259,12 @@ exports.handler = async function(event) {
   if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
-  // A paid polish that changed nothing is not an error, but it must be visible: the counts (never any resume text or code)
-  // go to the function log so a support check can tell "the AI returned the same wording" from a display problem.
-  if (changes) console.warn(changes.reworded === 0 ? 'polish-resume: charged result had NO wording changes' : 'polish-resume: charged result', { ref: changes.reworded === 0 ? 'P201' : undefined, reservation: reservation.reservationId, ...changes });
-
-  const body = { result: JSON.stringify(polished), unverified, changes, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
+  const body = { result: JSON.stringify(polished), unverified, changes, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
   if (rid) cachePut(cacheKey(code, rid), body);
   return json(200, body);
 };
 
 exports._recent = recent;     // for tests
+exports._nochange = nochange;
 exports._buildPrompt = buildPrompt;
 exports._chooseProfile = chooseProfile;

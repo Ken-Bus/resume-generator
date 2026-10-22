@@ -89,7 +89,7 @@ const Wiz = {
   go(i) { if (Wiz.busy()) return; state.wizard.step = Math.max(0, Math.min(WIZ_STEPS.length - 1, i)); Wiz.render(); document.getElementById('panel-guide').scrollTop = 0; },
   next() { if (Wiz.busy()) return; if (state.wizard.step >= WIZ_STEPS.length - 1) return Wiz.finish(); Wiz.go(state.wizard.step + 1); },
   back() { if (Wiz.busy()) return; Wiz.go(state.wizard.step - 1); },
-  finish() { renderEditFields(); switchPanel('edit'); document.getElementById('panel-edit').scrollTop = 0; renderEditPolish(); },   // start at the top, where AI polish is offered
+  finish() { renderEditFields(); switchPanel('edit'); document.getElementById('panel-edit').scrollTop = 0; renderEditPolish(); const card = document.getElementById('edit-polish'); if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' }); },   // start at the top, where AI polish is offered (and on screen even if the page itself was scrolled to reach this button)
 
   // ── small data helpers (all write to state.data) ───────────────────────────
   set(path, v) { updateField(path, v); },
@@ -169,10 +169,10 @@ const Wiz = {
   // ── AI polish (paid: exactly ONE of the code's included generations per successful polish) ──────────────
   // Nothing here runs on navigation, typing or preview. A charge needs two deliberate clicks: the button, then
   // an explicit confirmation that states the cost. The server charges only after a validated result.
-  polishState() { return state.polish || (state.polish = { confirm: false, busy: false, requestId: null, msg: '', kind: '', done: null }); },
+  polishState() { return state.polish || (state.polish = { confirm: false, busy: false, requestId: null, msg: '', kind: '', done: null, noChange: null }); },
   // Polish is offered both on the Review step and at the top of the regular editor; both views read the same state.
   refreshPolish() { if (state.wizard) Wiz.render(); renderEditPolish(); },
-  askPolish() { const p = Wiz.polishState(); if (p.busy) return; p.confirm = true; p.msg = ''; Wiz.refreshPolish(); },
+  askPolish() { const p = Wiz.polishState(); if (p.busy) return; p.confirm = true; p.msg = ''; p.noChange = null; Wiz.refreshPolish(); },
   cancelPolish() { const p = Wiz.polishState(); p.confirm = false; Wiz.refreshPolish(); },
   newRequestId() {
     if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -184,7 +184,7 @@ const Wiz = {
     if (p.busy) return;                                                    // double-click: one request only
     if (!state.license.verified || !state.license.code) { showGate('Enter your access code to use AI polish.'); return; }
     if (!ResumeCore.hasWritableText(ResumeCore.clean(state.data))) return;
-    p.busy = true; p.confirm = false; p.msg = ''; p.kind = '';
+    p.busy = true; p.confirm = false; p.msg = ''; p.kind = ''; p.noChange = null;
     if (!p.requestId) p.requestId = Wiz.newRequestId();                     // reused on a manual retry, so a lost reply is never charged twice
     Wiz.refreshPolish();
     try {
@@ -194,7 +194,14 @@ const Wiz = {
       });
       let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
       let parsed = null;
-      if (res.ok && json && json.result) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
+      if (res.ok && json && json.noChange === true) {
+        // Nothing meaningful to improve: the server released the reservation (no charge). Leave the resume, flags and
+        // tailoring token exactly as they were.
+        if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
+        if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+        p.requestId = null; p.msg = ''; p.kind = ''; p.noChange = { at: Date.now() };
+        renderLicenseBadge();
+      } else if (res.ok && json && json.result) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
       if (parsed) {
         state.polishOriginal = ResumeCore.clean(state.data);               // the customer's own wording, for Restore
         state.data = parsed;
@@ -287,25 +294,28 @@ const Wiz = {
     } else if (!writable) {
       body = '<div class="wiz-example">Add a few answers first (what you did in a job, a project, or your skills), then come back.</div>';
     } else if (p.confirm) {
-      body = `<div class="wiz-confirm"><strong>This will use 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}.</strong>
-          You are only charged if the polish completes. If it fails, nothing is used.
+      body = `<div class="wiz-confirm"><strong>The AI will review your resume. A generation is charged only if it makes meaningful improvements to your wording.</strong>
+          If it succeeds, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds nothing meaningful to improve, or anything goes wrong, nothing is used.
           <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="${prefix}polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
     } else {
       body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="${prefix}polish-btn">✨ Polish My Resume with AI</button>
-        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''}. Typing, previewing, editing and downloading never use one.</div>`;
+        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI makes meaningful improvements. Typing, previewing, editing and downloading never use one.</div>`;
     }
     let result = '';
     if (p.done && state.polishOriginal) {
       const parts = Wiz.changedParts(); const unv = p.done.unverified || [];
       const used = `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
-        result = `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
+        result = `<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
       } else
       result = `<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
         ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
         ${unv.length ? `<div class="notice-box"><strong>Please check ${unv.length} line${unv.length === 1 ? '' : 's'}.</strong> The AI added something that wasn’t in your answers (marked yellow in Edit Fields). Keep only what is true.
           <ul style="margin:6px 0 0 16px;">${unv.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
         <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
+    }
+    if (p.noChange) {
+      result += `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged. <strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}. If you add or change some answers, you can try again.</div>`;
     }
     const msg = p.msg ? `<div class="${p.kind === 'err' ? 'wiz-err' : 'wiz-ok'}" role="status">${esc(p.msg)}</div>` : '';
     const help = compact

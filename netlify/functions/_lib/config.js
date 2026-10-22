@@ -32,7 +32,12 @@ function get() {
     FAIL_WINDOW_MAX: 6,
     FAIL_DAY_MAX: 30,
     // Costly tailoring failures given back per paid generation; further ones stay used.
-    TAILOR_FORGIVEN_FAILURES: 2
+    TAILOR_FORGIVEN_FAILURES: 2,
+    // AI Polish that finds nothing meaningful to improve is released uncharged AND uncounted above, so it has its own cap
+    // (see _lib/nochange.js): per code, per instance.
+    NOCHANGE_WINDOW_SECONDS: 15 * 60,
+    NOCHANGE_WINDOW_MAX: 3,
+    NOCHANGE_DAY_MAX: 10
   };
 }
 

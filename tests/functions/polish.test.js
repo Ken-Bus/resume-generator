@@ -327,51 +327,127 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     restore(); assert.deepEqual([...seen], ['Server error, please try again. (ref P10x)']);
   });
 
-  // ── Taylor Rivera regression: a polish can succeed, be charged, and change nothing ─────────────────────────────────
-  // The mock AI hands the customer's own resume straight back by default, which is exactly what happened in the real-browser
-  // test (credit used, no visible improvement). Until this was observable, every "success" test above could not tell the
-  // difference. These pin the detection; the charging rule itself is deliberately NOT changed here (see the todo below).
+  // ── No-charge rule: a polish is charged ONLY when it meaningfully improves the wording ───────────────────────────
+  // Found in a real-browser test (fictional first-time applicant Taylor Rivera): success, one credit gone, nothing changed.
+  // Meaningful = at least one line actually reworded. Capitals, punctuation and spacing alone do not count. Everything else
+  // (reserve -> AI -> commit / release, throttle, one-at-a-time, Tailor tokens) is unchanged.
+  const { ECHO } = require('./harness');
   const improved = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays']; return o; };
+  const cosmetic = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate cans.', '  Sorted and counted the cans  ']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays.']; o.summary.tagline = 'Seeking a Customer Service position.'; return o; };
+  const rows = async (c) => (await db.admin('select status, failure_counted fc from license_reservations where code=$1 order by created_at', [c])).rows;
+  const watchWarn = () => { const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); return { logs, stop: () => { console.warn = orig; } }; };
+  const clearCap = () => hs.polishModule._nochange._events.clear();
 
-  await t.test('a chargeable polish reports how much wording changed: unchanged result -> reworded 0 and a content-free warning in the log', async () => {
-    reset(); const c = await seed(); const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
-    try { const b = parseBody(await polish(c));                              // default mock AI: returns the customer's answers untouched
-      assert.equal(b.usesRemaining, 4);                                       // charged exactly once (current rule, unchanged by this fix)
-      assert.equal(b.changes.reworded, 0); assert.equal(JSON.parse(b.result).projects[0].bullets[0], ANSWERS.projects[0].bullets[0]);
-      assert.ok(logs.some((l) => /NO wording changes/.test(l) && /P201/.test(l)), logs.join('\n'));
-      assert.equal(logs.join('\n').includes(c), false); assert.equal(logs.join('\n').includes('Taylor'), false); assert.equal(logs.join('\n').includes('canned'), false);   // no code, name or resume text in logs
-    } finally { console.warn = orig; }
+  await t.test('UNCHANGED (the Taylor case): released, charges ZERO, resume text not sent back, P201 logged with counts only', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = ECHO; const w = watchWarn();
+    try {
+      const r = await polish(c); const b = parseBody(r);
+      assert.equal(r.statusCode, 200); assert.equal(b.noChange, true); assert.equal(b.charged, false);
+      assert.equal(b.usesRemaining, 5); assert.equal(b.maxUses, 5); assert.equal(b.changes.reworded, 0);
+      assert.equal(b.result, undefined); assert.equal(b.tailorToken, undefined);                              // nothing to apply, no new tailoring authorisation
+      assert.equal(await uses(c), 5); assert.deepEqual(await rows(c), [{ status: 'released', fc: false }]);   // released, and NOT a counted failure
+      const log = w.logs.join('\n'); assert.match(log, /NO wording changes/); assert.match(log, /P201/); assert.match(log, /"reworded":0/);
+      for (const secret of [c, 'Taylor', 'canned', 'classmates']) assert.equal(log.includes(secret), false, `log must not contain ${secret}`);
+    } finally { w.stop(); }
   });
 
-  await t.test('a genuine improvement reports reworded > 0, reaches the customer intact, and raises no warning', async () => {
-    reset(); const c = await seed(); ai.polishPayload = improved; const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.join(' '));
-    try { const b = parseBody(await polish(c)); const out = JSON.parse(b.result);
-      assert.deepEqual([b.changes.reworded, b.changes.cosmetic], [2, 1], JSON.stringify(b.changes));        // 2 bullets reworded; the volunteer line only gained capitals
-      assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']);   // integrity checks did not revert it
-      assert.deepEqual(out.volunteer[0].bullets, ['Packed grocery boxes on Saturdays']);
-      assert.equal(b.usesRemaining, 4); assert.equal(logs.some((l) => /NO wording changes/.test(l)), false);
-    } finally { console.warn = orig; }
+  await t.test('COSMETIC ONLY (capitals, punctuation, spacing): treated as no improvement, charges ZERO, the customer\'s own wording is untouched', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = cosmetic;
+    const b = parseBody(await polish(c));
+    assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.changes.reworded, 0); assert.ok(b.changes.cosmetic >= 3, JSON.stringify(b.changes));
+    assert.equal(JSON.stringify(b).includes('Asked classmates'), false);                                     // the cosmetic edit is not handed back
+    assert.equal(await uses(c), 5); assert.deepEqual(await rows(c), [{ status: 'released', fc: false }]);
   });
 
-  await t.test('a reply that blanks the customer\'s own project description cannot erase it (still one charge, text intact)', async () => {
-    reset(); const c = await seed(); ai.polishPayload = (r) => { const o = clone(r); o.projects[0].description = ''; delete o.volunteer[0].bullets; return o; };
+  await t.test('MEANINGFUL: charges exactly ONE, result and token returned, customer facts intact, no P201 warning', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = improved; const w = watchWarn();
+    try {
+      const r = await polish(c); const b = parseBody(r); const out = JSON.parse(b.result);
+      assert.equal(r.statusCode, 200); assert.equal(b.charged, true); assert.notEqual(b.noChange, true);
+      assert.deepEqual([b.changes.reworded, b.changes.cosmetic], [2, 1], JSON.stringify(b.changes));
+      assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']);   // integrity did not revert it
+      assert.equal(b.usesRemaining, 4); assert.ok(b.tailorToken); assert.equal(await uses(c), 4); assert.deepEqual(await rows(c), [{ status: 'committed', fc: false }]);
+      assert.equal(out.name, 'Taylor Rivera'); assert.equal(out.contact.email, ANSWERS.contact.email); assert.equal(out.education[0].school, 'Oakwood High School');
+      assert.equal(w.logs.some((l) => /P201/.test(l)), false);
+    } finally { w.stop(); }
+  });
+
+  await t.test('a meaningful change next to restored customer facts: invented employer/dates/school are still put back, and the charge is still exactly one', async () => {
+    reset(); clearCap(); const c = await seed();
+    ai.polishPayload = (r) => { const o = improved(r); o.name = 'Someone Else'; o.education[0].school = 'Invented University'; o.volunteer[0].organization = 'Invented Org'; o.volunteer[0].start = '1999'; return o; };
     const b = parseBody(await polish(c)); const out = JSON.parse(b.result);
-    assert.equal(out.projects[0].description, ANSWERS.projects[0].description); assert.deepEqual(out.volunteer[0].bullets, ANSWERS.volunteer[0].bullets);
-    assert.equal(b.changes.reworded, 0); assert.equal(await uses(c), 4);
+    assert.equal(out.name, 'Taylor Rivera'); assert.equal(out.education[0].school, 'Oakwood High School');
+    assert.equal(out.volunteer[0].organization, 'Community Food Pantry'); assert.equal(out.volunteer[0].start, '2025'); assert.equal(await uses(c), 4);
   });
 
-  await t.test('accounting is untouched by the observation: unchanged and improved results each commit exactly one reservation, a failure still releases', async () => {
-    reset(); const a = await seed(); await polish(a); assert.deepEqual((await rsv(a)).map((x) => x.status), ['committed']); assert.equal(await uses(a), 4);
-    reset(); const b = await seed(); ai.polishPayload = improved; await polish(b); assert.deepEqual((await rsv(b)).map((x) => x.status), ['committed']); assert.equal(await uses(b), 4);
-    reset(); const f = await seed(); ai.mode = 'badshape'; assert.equal((await polish(f)).statusCode, 502); assert.equal(await uses(f), 5); assert.deepEqual((await rsv(f)).map((x) => x.status), ['released']);
+  await t.test('a reply that blanks the customer\'s own description/bullets cannot erase them; with nothing else reworded it is a no-change release', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = (r) => { const o = clone(r); o.projects[0].description = ''; delete o.volunteer[0].bullets; return o; };
+    const b = parseBody(await polish(c)); assert.equal(b.noChange, true); assert.equal(b.changes.reworded, 0); assert.equal(await uses(c), 5);
+    // and when it blanks one thing but meaningfully rewords another, the blanked text is restored while the rewording is charged once
+    reset(); clearCap(); const d = await seed(); ai.polishPayload = (r) => { const o = improved(r); o.projects[0].description = ''; return o; };
+    const out = JSON.parse(parseBody(await polish(d)).result); assert.equal(out.projects[0].description, ANSWERS.projects[0].description); assert.equal(await uses(d), 4);
   });
 
-  // PENDING OWNER DECISION (docs/AI_POLISH_NO_CHANGE_PROPOSAL.md). This states the rule the owner asked for: do not charge for an
-  // unchanged result. It fails today by design and is marked todo, so it is reported on every run without blocking the suite.
-  // When the owner approves the proposal, remove `todo` (and the "current rule" assertion in the first test above).
-  await t.test('DESIRED: a polish whose result has no wording changes is released, not charged', { todo: 'owner decision pending: see docs/AI_POLISH_NO_CHANGE_PROPOSAL.md' }, async () => {
-    reset(); const c = await seed(); const r = await polish(c);
-    assert.equal(await uses(c), 5, 'an unchanged polish must not use a generation'); assert.deepEqual((await rsv(c)).map((x) => x.status), ['released']); assert.notEqual(r.statusCode, 200);
+  await t.test('FAILED operations still charge zero and keep their existing counted/uncounted release flags (the no-change rule does not disturb them)', async () => {
+    for (const [mode, counted] of [['http500', false], ['throw', false], ['hang', true], ['truncated', true], ['empty', true], ['notjson', true], ['badshape', true]]) {
+      reset(); clearCap(); const c = await seed(); ai.mode = mode; const r = await polish(c);
+      assert.equal(r.statusCode, 502, mode); assert.equal(await uses(c), 5, mode); assert.deepEqual(await rows(c), [{ status: 'released', fc: counted }], mode);
+    }
+  });
+
+  await t.test('REPEATED no-change requests: each is free and uncounted; a separate cap stops the loop BEFORE any reservation or AI call; other codes are unaffected', async () => {
+    reset(); clearCap(); const c = await seed(); const other = await seed(); ai.polishPayload = ECHO;
+    for (let i = 0; i < 3; i++) { const b = parseBody(await polish(c)); assert.equal(b.noChange, true, `request ${i + 1}`); }
+    assert.equal(ai.calls, 3); assert.equal(await uses(c), 5);
+    const r4 = await polish(c); const b4 = parseBody(r4);                                                    // 4th inside the window
+    assert.equal(r4.statusCode, 429); assert.ok(Number(r4.headers['Retry-After']) >= 1); assert.match(b4.error, /haven’t been charged/);
+    assert.equal(ai.calls, 3, 'no AI call for a capped request'); assert.equal((await rows(c)).length, 3, 'no reservation for a capped request'); assert.equal(await uses(c), 5);
+    assert.equal(JSON.stringify(b4).includes(c), false);
+    assert.equal(parseBody(await polish(other)).noChange, true);                                             // a different code is not affected
+    ai.polishPayload = improved; assert.equal((await polish(c)).statusCode, 429);                            // the cap covers every polish on that code until it clears
+    clearCap(); assert.equal(parseBody(await polish(c)).usesRemaining, 4);                                   // after the window, normal service resumes
+  });
+
+  await t.test('no-change releases never consume the database failure budget: 12 in a row, then a real polish and a real failure behave normally', async () => {
+    reset(); const c = await seed(); ai.polishPayload = ECHO;
+    for (let i = 0; i < 12; i++) { clearCap(); assert.equal(parseBody(await polish(c)).noChange, true); }
+    assert.equal((await rows(c)).filter((x) => x.fc).length, 0);                                             // DB throttle is 6 counted failures per 15 minutes
+    clearCap(); ai.polishPayload = improved; assert.equal((await polish(c)).statusCode, 200); assert.equal(await uses(c), 4);
+    ai.mode = 'badshape'; assert.equal((await polish(c)).statusCode, 502); assert.equal((await rows(c)).filter((x) => x.fc).length, 1);   // failures still count exactly as before
+  });
+
+  await t.test('CONCURRENT no-change requests on one code: one runs, the other is refused as busy; both free; nothing leaks', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = ECHO; ai.delayMs = 150;
+    const rs = await Promise.all([polish(c), polish(c), polish(c)]);
+    const codes = rs.map((r) => r.statusCode).sort(); assert.deepEqual(codes, [200, 409, 409]); assert.equal(ai.maxInflight, 1);
+    assert.equal(parseBody(rs.find((r) => r.statusCode === 200)).noChange, true); assert.equal(await uses(c), 5);
+    assert.ok((await rows(c)).every((x) => x.status === 'released' && x.fc === false));
+  });
+
+  await t.test('CONCURRENT meaningful requests with ONE generation left: exactly one charge, never over-charged', async () => {
+    reset(); clearCap(); const c = await seed(1); ai.polishPayload = improved; ai.delayMs = 100;
+    const rs = await Promise.all([polish(c), polish(c)]);
+    assert.deepEqual(rs.map((r) => r.statusCode).sort(), [200, 409]); assert.equal(await uses(c), 0);
+    assert.deepEqual((await rows(c)).map((x) => x.status), ['committed']);                                  // the loser was refused at reserve time: no row, nothing held
+  });
+
+  await t.test('a retry with the same requestId after a no-change result returns the same answer without another AI call, charge or cap hit', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = ECHO;
+    const a = parseBody(await polish(c, ANSWERS, { requestId: 'req-nochange-0001' })); const calls = ai.calls;
+    const b = parseBody(await polish(c, ANSWERS, { requestId: 'req-nochange-0001' }));
+    assert.deepEqual(b, a); assert.equal(ai.calls, calls); assert.equal(await uses(c), 5); assert.equal((await rows(c)).length, 1);
+  });
+
+  await t.test('charges, exactly: meaningful x2 = 2 used; no-change and failed in between = 0 used; Analyze still costs 1; Tailor still 0', async () => {
+    reset(); clearCap(); const c = await seed();
+    ai.polishPayload = improved; const first = parseBody(await polish(c)); assert.equal(await uses(c), 4);
+    ai.polishPayload = ECHO; await polish(c); assert.equal(await uses(c), 4);
+    ai.polishPayload = cosmetic; await polish(c); assert.equal(await uses(c), 4);
+    ai.polishPayload = improved; ai.mode = 'empty'; await polish(c); ai.mode = 'ok'; assert.equal(await uses(c), 4);
+    await polish(c); assert.equal(await uses(c), 3);
+    const tailored = await hs.tailor(post({ resumeData: ANSWERS, jobDescription: 'Cashier: friendly service', tailorToken: first.tailorToken })); assert.equal(tailored.statusCode, 200); assert.equal(await uses(c), 3);
+    assert.equal((await parse(c)).statusCode, 200); assert.equal(await uses(c), 2);
+    assert.equal((await rsv(c)).filter((x) => x.status === 'committed').length, 3);
   });
 
   await db.drop?.();

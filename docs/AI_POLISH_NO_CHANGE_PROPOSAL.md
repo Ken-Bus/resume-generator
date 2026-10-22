@@ -1,6 +1,6 @@
 # Proposal: do not charge for an AI Polish that changes nothing
 
-**Status:** PROPOSAL, awaiting the owner's decision. Nothing in this document is implemented. Charging is exactly as before: one generation per validated polish, via reserve -> AI -> commit / release.
+**Status:** APPROVED by the owner and IMPLEMENTED on `feature/guided-resume-and-export-fixes` (not merged, not deployed). See `docs/AI_POLISH.md`, "The no-charge rule", for the behaviour as built. The text below is the original proposal, kept as the record of the investigation. Where it differs, the approved decisions are: cosmetic-only edits are NOT meaningful (A1); no-change releases are NOT counted against the database failure limits, and are instead capped separately and in memory per instance (`_lib/nochange.js`); the confirmation wording and an Etsy FAQ draft (`docs/ETSY_FAQ_AI_POLISH.md`) were prepared.
 
 ## What happened
 In the real-browser test (fictional first-time applicant "Taylor Rivera", branch `feature/guided-resume-and-export-fixes`, commit `38fdf04`), AI Polish returned success, used one generation (5 -> 4 at the time), and the resume showed no visible improvement.

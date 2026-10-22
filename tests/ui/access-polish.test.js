@@ -185,7 +185,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.match(await s.page.innerText('.wiz-polish'), /Uses 1 of your 5 generations \(of 5\)/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);
     await s.page.click('#polish-btn');                                                                          // first click only asks
-    assert.match(await s.page.innerText('.wiz-confirm'), /This will use 1 of your 5 generations remaining/);
+    assert.match(await s.page.innerText('.wiz-confirm'), /The AI will review your resume\. A generation is charged only if it makes meaningful improvements[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds nothing meaningful to improve[\s\S]*nothing is used/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);
     await s.page.click('.wiz-confirm .wiz-back');                                                               // cancel: still nothing
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0); assert.match(await s.page.innerText('#license-badge'), /5 of 5/);
@@ -222,17 +222,29 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.equal(await s.page.evaluate(() => state.polishOriginal), null); await s.close();
   });
 
-  await t.test('REGRESSION (Taylor Rivera): a charged polish that changes nothing is NOT shown as "Polished" and says so plainly; the resume is untouched', async () => {
-    const same = () => ({ status: 200, json: { result: JSON.stringify(ANSWERS), unverified: [], changes: { reworded: 0, cosmetic: 0, unchanged: 4 }, usesRemaining: 4, maxUses: 5, tailorToken: 'tok-pol' } });
+  await t.test('REGRESSION (Taylor Rivera): the AI finds nothing meaningful -> the page says so, NO generation is used, and the resume, flags and tailoring token are untouched', async () => {
+    const same = () => ({ status: 200, json: { noChange: true, charged: false, changes: { reworded: 0, cosmetic: 2, unchanged: 3 }, usesRemaining: 5, maxUses: 5 } });
     const s = await open({ 'polish-resume': same }); await toReview(s);
+    await s.page.evaluate(() => { state.tailorToken = 'tok-from-earlier'; });
+    const before = await s.page.evaluate(() => JSON.stringify(state.data));
     await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('#polish-nochange');
     const box = await s.page.innerText('#polish-nochange');
-    assert.match(box, /No wording changes were made/); assert.match(box, /That used 1 generation \(4 of 5 left\)/);       // honest about the charge
-    assert.equal(await s.page.locator('.wiz-polish .wiz-ok').count(), 0);                                                 // no green "✓ Polished" success banner
-    assert.doesNotMatch(await s.page.innerText('.wiz-polish'), /✓ Polished|AI reworded/);
-    assert.deepEqual(await s.page.evaluate(() => state.data.projects[0].bullets), ['asked classmates to donate cans', 'sorted and counted the cans']);
-    assert.match(await s.page.innerText('#license-badge'), /4 of 5/);
+    assert.match(box, /No meaningful improvements were found/); assert.match(box, /No generation was used/); assert.match(box, /5 of 5 left/);
+    assert.equal(await s.page.locator('.wiz-polish .wiz-ok').count(), 0);                                                 // no green success banner
+    assert.doesNotMatch(await s.page.innerText('.wiz-polish'), /✓ Polished|AI reworded|used 1 generation/);
+    assert.equal(await s.page.evaluate(() => JSON.stringify(state.data)), before);                                         // resume byte-for-byte unchanged
+    assert.equal(await s.page.evaluate(() => state.tailorToken), 'tok-from-earlier'); assert.equal(await s.page.evaluate(() => state.polishOriginal), null);
+    assert.match(await s.page.innerText('#license-badge'), /5 of 5/);
+    assert.equal(await s.page.isEnabled('#polish-btn'), true);                                                             // can try again after changing answers
     await s.close();
+  });
+
+  await t.test('capped / failed no-change attempts: the cap message is shown uncharged, the counter does not move, and the button comes back', async () => {
+    const s = await open({ 'polish-resume': () => ({ status: 429, json: { error: 'The AI has already reviewed this resume several times and found nothing meaningful to improve. Please add or change some of your answers, or try again in about 9 minutes. You haven’t been charged.', retryAfterSeconds: 540 } }) }); await toReview(s);
+    await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-polish .wiz-err');
+    assert.match(await s.page.innerText('.wiz-polish .wiz-err'), /nothing meaningful to improve[\s\S]*haven’t been charged/);
+    assert.match(await s.page.innerText('#license-badge'), /5 of 5/); assert.equal(await s.page.evaluate(() => state.license.verified), true);
+    assert.equal(await s.page.isEnabled('#polish-btn'), true); await s.close();
   });
 
   await t.test('a polish that does reword shows the success banner and lists what changed (preview shows the new wording)', async () => {
@@ -330,7 +342,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     await s.page.fill('input[placeholder^="e.g. customer service"]', 'customer support');
     await s.page.click('.wiz-dot:has-text("Review")'); await s.page.click('button:has-text("Open in Editor")');
     await s.page.click('#edit-polish-btn');
-    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /This will use 1 of your 5 generations remaining/);
+    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /The AI will review your resume\. A generation is charged only if it makes meaningful improvements[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds nothing meaningful to improve[\s\S]*nothing is used/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);                                                 // the first click only asks
     await s.page.dblclick('#edit-polish-confirm'); await s.page.waitForSelector('#edit-polish .wiz-ok');
     const calls = s.calls.filter((c) => c.name === 'polish-resume'); assert.equal(calls.length, 1);
