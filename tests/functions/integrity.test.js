@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
-const { reconcile } = require(path.join('..', '..', 'netlify', 'functions', '_lib', 'integrity'));
+const { reconcile, assessChange } = require(path.join('..', '..', 'netlify', 'functions', '_lib', 'integrity'));
 const { H, loadHandlers, post, parseBody, installAi, GOOD_RESUME } = require('./harness');
 
 const ORIGINAL = {
@@ -123,4 +123,42 @@ test('tailor-resume: facts restored, unverified lines returned, accounting ident
   assert.equal((await db.admin('select uses_remaining u from licenses where code=$1', [code])).rows[0].u, 4);
   assert.equal((await db.admin("select tailor_count c from license_reservations where code=$1 and status='committed'", [code])).rows[0].c, 1);
   await db.drop?.();
+});
+
+// ── AI Polish: did the result actually change the customer's wording? (observation only, no accounting) ──────────────
+const TAYLOR = {
+  name: 'Taylor Rivera', contact: { email: 'taylor.rivera@example.com' }, summary: { tagline: 'Seeking a customer service position', bullets: [], skills: ['Teamwork'] },
+  experience: [], education: [{ degree: 'High School Diploma', school: 'Oakwood High School', date: '2026' }], certifications: [], volunteer: [], awards: [],
+  projects: [{ name: 'School food drive', description: 'collected cans for the pantry', bullets: ['asked classmates to donate cans', 'sorted and counted the cans'] }]
+};
+
+test('assessChange: an unchanged result reports nothing reworded; real rewording, cosmetic-only edits and added/removed lines are told apart', () => {
+  assert.deepEqual(assessChange(TAYLOR, clone(TAYLOR)), { reworded: 0, cosmetic: 0, unchanged: 5 });
+  const better = clone(TAYLOR); better.projects[0].bullets[0] = 'Asked classmates to donate canned food';
+  assert.deepEqual(assessChange(TAYLOR, better), { reworded: 1, cosmetic: 0, unchanged: 4 });
+  const cosmetic = clone(TAYLOR); cosmetic.projects[0].bullets = ['Asked classmates to donate cans.', '  sorted and counted the cans '];
+  assert.deepEqual(assessChange(TAYLOR, cosmetic), { reworded: 0, cosmetic: 1, unchanged: 4 });          // capital + full stop only; the 2nd line differs by spaces alone
+  const added = clone(TAYLOR); added.projects[0].bullets.push('Delivered the cans to the pantry');
+  assert.equal(assessChange(TAYLOR, added).reworded, 1);
+  const dropped = clone(TAYLOR); dropped.projects[0].bullets.pop();
+  assert.equal(assessChange(TAYLOR, dropped).reworded, 1);
+  assert.deepEqual(assessChange(null, undefined), { reworded: 0, cosmetic: 0, unchanged: 0 });            // junk in, no crash
+});
+
+test('assessChange ignores facts the guard restores (name, schools, dates): only wording the customer can see counts', () => {
+  const out = clone(TAYLOR); out.name = 'Someone Else'; out.education[0].school = 'Invented University';
+  assert.equal(assessChange(TAYLOR, out).reworded, 0);
+});
+
+test('polish only (keepBlankedText): a reply that blanks an entry\'s description or bullets cannot erase the customer\'s own text; Tailor is unchanged', () => {
+  const out = clone(TAYLOR); out.projects[0].description = ''; out.projects[0].bullets = [];
+  const polished = reconcile(TAYLOR, out, { keepBlankedText: true }).resume;
+  assert.equal(polished.projects[0].description, 'collected cans for the pantry');
+  assert.deepEqual(polished.projects[0].bullets, ['asked classmates to donate cans', 'sorted and counted the cans']);
+  const omitted = clone(TAYLOR); delete omitted.projects[0].description; delete omitted.projects[0].bullets;
+  assert.equal(reconcile(TAYLOR, omitted, { keepBlankedText: true }).resume.projects[0].description, 'collected cans for the pantry');
+  const tailored = reconcile(TAYLOR, out).resume;                                                           // Tailor passes no option: behaviour as before
+  assert.equal(tailored.projects[0].description, ''); assert.deepEqual(tailored.projects[0].bullets, []);
+  const rewritten = clone(TAYLOR); rewritten.projects[0].description = 'Collected canned food for the pantry.';
+  assert.equal(reconcile(TAYLOR, rewritten, { keepBlankedText: true }).resume.projects[0].description, 'Collected canned food for the pantry.');   // real rewording is kept
 });

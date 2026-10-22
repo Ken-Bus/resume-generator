@@ -222,6 +222,27 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.equal(await s.page.evaluate(() => state.polishOriginal), null); await s.close();
   });
 
+  await t.test('REGRESSION (Taylor Rivera): a charged polish that changes nothing is NOT shown as "Polished" and says so plainly; the resume is untouched', async () => {
+    const same = () => ({ status: 200, json: { result: JSON.stringify(ANSWERS), unverified: [], changes: { reworded: 0, cosmetic: 0, unchanged: 4 }, usesRemaining: 4, maxUses: 5, tailorToken: 'tok-pol' } });
+    const s = await open({ 'polish-resume': same }); await toReview(s);
+    await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('#polish-nochange');
+    const box = await s.page.innerText('#polish-nochange');
+    assert.match(box, /No wording changes were made/); assert.match(box, /That used 1 generation \(4 of 5 left\)/);       // honest about the charge
+    assert.equal(await s.page.locator('.wiz-polish .wiz-ok').count(), 0);                                                 // no green "✓ Polished" success banner
+    assert.doesNotMatch(await s.page.innerText('.wiz-polish'), /✓ Polished|AI reworded/);
+    assert.deepEqual(await s.page.evaluate(() => state.data.projects[0].bullets), ['asked classmates to donate cans', 'sorted and counted the cans']);
+    assert.match(await s.page.innerText('#license-badge'), /4 of 5/);
+    await s.close();
+  });
+
+  await t.test('a polish that does reword shows the success banner and lists what changed (preview shows the new wording)', async () => {
+    const s = await open({ 'polish-resume': polishOk({ unverified: [] }) }); await toReview(s);
+    await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-ok');
+    assert.match(await s.page.innerText('.wiz-ok'), /✓ Polished/); assert.match(await s.page.innerText('.wiz-ok'), /Project: School food drive/);
+    assert.equal(await s.page.locator('#polish-nochange').count(), 0); assert.match(await s.page.innerText('#resume-preview'), /Sorted and counted donated cans/);
+    await s.close();
+  });
+
   await t.test('after a polish, Tailor works with the issued token (free, token-gated) and the usual unverified flags', async () => {
     const tailored = { resume: POLISHED, matchSummary: { matchedKeywords: ['service'], missingKeywords: [], notes: 'ok' } };
     const s = await open({ 'polish-resume': polishOk(), 'tailor-resume': () => ({ status: 200, json: { result: JSON.stringify(tailored), unverified: [], tailorRunsRemaining: 4 } }) }); await toReview(s);
@@ -330,7 +351,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     const analyzed = { name: 'Michael Johnson', contact: { email: 'mj@example.com' }, summary: { tagline: '', bullets: [], skills: ['Teamwork'] },
       experience: [{ title: 'Warehouse Associate', company: 'Fictional Freight Co', start: '2016', end: 'Present', bullets: ['loaded trucks'] }], education: [], certifications: [], projects: [], volunteer: [], awards: [] };
     const s = await open({ 'parse-resume': () => ({ status: 200, json: { result: JSON.stringify(analyzed), usesRemaining: 4, maxUses: 5, tailorToken: 'tok' } }),
-      'polish-resume': () => ({ status: 200, json: { result: JSON.stringify(analyzed), usesRemaining: 3, maxUses: 5, tailorToken: 'tok2', unverified: [] } }) });
+      'polish-resume': () => ({ status: 200, json: { result: JSON.stringify({ ...analyzed, experience: [{ ...analyzed.experience[0], bullets: ['Loaded trucks at the dock'] }] }), usesRemaining: 3, maxUses: 5, tailorToken: 'tok2', unverified: [] } }) });   // reworded, so the success banner is the right outcome
     await unlock(s); await s.page.fill('#resume-input', 'Michael Johnson, warehouse'); await s.page.click('#parse-btn'); await s.page.waitForSelector('#resume-preview');
     assert.equal(await s.page.evaluate(() => state.wizard), null);
     assert.match(await s.page.innerText('#edit-polish'), /Uses 1 of your 4 generations \(of 5\)/);                              // honest about what is left after the Analyze

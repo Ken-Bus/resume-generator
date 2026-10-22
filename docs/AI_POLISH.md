@@ -18,6 +18,12 @@
 - **Duplicates:** (a) the button is single-flight; (b) only one paid operation runs at a time per code (an Analyze or polish already in flight makes a second request return 409, uncharged); (c) a retry that reuses the `requestId` of a finished polish returns the same result without a second charge (best-effort: kept in memory on the serving instance for 5 minutes). A persistent idempotency key would need a database column; it was not added (no migration).
 - No SQL migration. No new environment variable.
 
+**Unchanged results (observation only, charging unchanged)**
+- After the integrity step, `assessChange` counts reworded / cosmetic / unchanged lines. The response carries `changes`, and a result with nothing reworded logs `polish-resume: charged result had NO wording changes (ref P201)` with counts only (never resume text or the code).
+- The page shows "No wording changes were made" instead of "✓ Polished" when the returned resume matches the customer's answers, and says one generation was used.
+- A reply that blanks an entry's description or bullets cannot erase the customer's text (polish only; Tailor is unchanged).
+- Whether such a polish should be charged is a **pending owner decision**: see `docs/AI_POLISH_NO_CHANGE_PROPOSAL.md`.
+
 **Writing quality (`polish-resume.js` prompt)**
 - **Audience.** The customer says which fits them on step 1 (first resume / I've worked before / changing to different work); otherwise it follows from the answers (no jobs = first resume). The prompt sends only the matching guidance: *first resume* draws on school, volunteering, projects and training without making them sound like paid work; *experienced* makes duties specific and scannable, keeps long tenure and dates, and never turns routine duties into achievements; *career changer* words real duties so what carries over is clear, and never claims experience in the new field. Unknown values are ignored, and a choice that makes no sense (e.g. "experienced" with no jobs) falls back to the answers.
 - **Style.** Natural, modest, professional language; real improvement (say what was done, with what, using the customer's own words and meaning) rather than added adjectives; a named list of generic AI phrases to avoid unless the customer wrote them; concrete good/bad examples in the prompt. The goal text is length-limited and stripped of quotes so it cannot alter the instructions.

@@ -327,5 +327,52 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     restore(); assert.deepEqual([...seen], ['Server error, please try again. (ref P10x)']);
   });
 
+  // ── Taylor Rivera regression: a polish can succeed, be charged, and change nothing ─────────────────────────────────
+  // The mock AI hands the customer's own resume straight back by default, which is exactly what happened in the real-browser
+  // test (credit used, no visible improvement). Until this was observable, every "success" test above could not tell the
+  // difference. These pin the detection; the charging rule itself is deliberately NOT changed here (see the todo below).
+  const improved = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays']; return o; };
+
+  await t.test('a chargeable polish reports how much wording changed: unchanged result -> reworded 0 and a content-free warning in the log', async () => {
+    reset(); const c = await seed(); const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' '));
+    try { const b = parseBody(await polish(c));                              // default mock AI: returns the customer's answers untouched
+      assert.equal(b.usesRemaining, 4);                                       // charged exactly once (current rule, unchanged by this fix)
+      assert.equal(b.changes.reworded, 0); assert.equal(JSON.parse(b.result).projects[0].bullets[0], ANSWERS.projects[0].bullets[0]);
+      assert.ok(logs.some((l) => /NO wording changes/.test(l) && /P201/.test(l)), logs.join('\n'));
+      assert.equal(logs.join('\n').includes(c), false); assert.equal(logs.join('\n').includes('Taylor'), false); assert.equal(logs.join('\n').includes('canned'), false);   // no code, name or resume text in logs
+    } finally { console.warn = orig; }
+  });
+
+  await t.test('a genuine improvement reports reworded > 0, reaches the customer intact, and raises no warning', async () => {
+    reset(); const c = await seed(); ai.polishPayload = improved; const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.join(' '));
+    try { const b = parseBody(await polish(c)); const out = JSON.parse(b.result);
+      assert.deepEqual([b.changes.reworded, b.changes.cosmetic], [2, 1], JSON.stringify(b.changes));        // 2 bullets reworded; the volunteer line only gained capitals
+      assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']);   // integrity checks did not revert it
+      assert.deepEqual(out.volunteer[0].bullets, ['Packed grocery boxes on Saturdays']);
+      assert.equal(b.usesRemaining, 4); assert.equal(logs.some((l) => /NO wording changes/.test(l)), false);
+    } finally { console.warn = orig; }
+  });
+
+  await t.test('a reply that blanks the customer\'s own project description cannot erase it (still one charge, text intact)', async () => {
+    reset(); const c = await seed(); ai.polishPayload = (r) => { const o = clone(r); o.projects[0].description = ''; delete o.volunteer[0].bullets; return o; };
+    const b = parseBody(await polish(c)); const out = JSON.parse(b.result);
+    assert.equal(out.projects[0].description, ANSWERS.projects[0].description); assert.deepEqual(out.volunteer[0].bullets, ANSWERS.volunteer[0].bullets);
+    assert.equal(b.changes.reworded, 0); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('accounting is untouched by the observation: unchanged and improved results each commit exactly one reservation, a failure still releases', async () => {
+    reset(); const a = await seed(); await polish(a); assert.deepEqual((await rsv(a)).map((x) => x.status), ['committed']); assert.equal(await uses(a), 4);
+    reset(); const b = await seed(); ai.polishPayload = improved; await polish(b); assert.deepEqual((await rsv(b)).map((x) => x.status), ['committed']); assert.equal(await uses(b), 4);
+    reset(); const f = await seed(); ai.mode = 'badshape'; assert.equal((await polish(f)).statusCode, 502); assert.equal(await uses(f), 5); assert.deepEqual((await rsv(f)).map((x) => x.status), ['released']);
+  });
+
+  // PENDING OWNER DECISION (docs/AI_POLISH_NO_CHANGE_PROPOSAL.md). This states the rule the owner asked for: do not charge for an
+  // unchanged result. It fails today by design and is marked todo, so it is reported on every run without blocking the suite.
+  // When the owner approves the proposal, remove `todo` (and the "current rule" assertion in the first test above).
+  await t.test('DESIRED: a polish whose result has no wording changes is released, not charged', { todo: 'owner decision pending: see docs/AI_POLISH_NO_CHANGE_PROPOSAL.md' }, async () => {
+    reset(); const c = await seed(); const r = await polish(c);
+    assert.equal(await uses(c), 5, 'an unchanged polish must not use a generation'); assert.deepEqual((await rsv(c)).map((x) => x.status), ['released']); assert.notEqual(r.statusCode, 200);
+  });
+
   await db.drop?.();
 });

@@ -189,17 +189,19 @@ exports.handler = async function(event) {
   // 2. Run the AI. ANY failure releases the reservation and the customer is not charged.
   let polished;
   let unverified = [];
+  let changes = null;                                             // observation only: how much of the wording the AI actually changed
   try {
     const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
     const shaped = assertResumeShape(extractJson(text));
     try {
-      const checked = integrity.reconcile(source, shaped, { vocabulary: target });
+      const checked = integrity.reconcile(source, shaped, { vocabulary: target, keepBlankedText: true });
       polished = checked.resume; unverified = checked.unverified;
     } catch (e) {
       console.error('polish-resume: integrity check failed', { reason: safeReason(e) });
       polished = shaped;
       unverified = [{ where: 'resume', text: '', reasons: ['Automatic check unavailable: please review every line before using this resume.'] }];
     }
+    try { changes = integrity.assessChange(source, polished); } catch (e) { changes = null; }
   } catch (err) {
     const providerFault = isProviderFault(err);
     await license.safeRelease(supabase, reservation.reservationId, !providerFault);
@@ -230,7 +232,11 @@ exports.handler = async function(event) {
   if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
-  const body = { result: JSON.stringify(polished), unverified, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
+  // A paid polish that changed nothing is not an error, but it must be visible: the counts (never any resume text or code)
+  // go to the function log so a support check can tell "the AI returned the same wording" from a display problem.
+  if (changes) console.warn(changes.reworded === 0 ? 'polish-resume: charged result had NO wording changes' : 'polish-resume: charged result', { ref: changes.reworded === 0 ? 'P201' : undefined, reservation: reservation.reservationId, ...changes });
+
+  const body = { result: JSON.stringify(polished), unverified, changes, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
   if (rid) cachePut(cacheKey(code, rid), body);
   return json(200, body);
 };

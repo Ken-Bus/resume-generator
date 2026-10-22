@@ -128,6 +128,12 @@ function reconcile(original, output, options = {}) {
       const merged = { ...t[i] };
       FACT_FIELDS[k].forEach((f) => { merged[f] = entry[f]; });
       if (!Array.isArray(merged.bullets) && Array.isArray(entry.bullets)) merged.bullets = entry.bullets;
+      if (options.keepBlankedText) {
+        // Polish only (Tailor may legitimately condense an entry): a reply that blanks out text the customer wrote must
+        // never erase it. Anything the AI actually wrote is kept as it is.
+        ['summary', 'description'].forEach((f) => { if (s(entry[f]).trim() && !s(merged[f]).trim()) merged[f] = entry[f]; });
+        if (arr(entry.bullets).some((b) => s(b).trim()) && !arr(merged.bullets).some((b) => s(b).trim())) merged.bullets = entry.bullets;
+      }
       return merged;
     });                                                                  // entries the AI invented are dropped
   });
@@ -163,4 +169,39 @@ function reconcile(original, output, options = {}) {
   return { resume: out, unverified };
 }
 
-module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn };
+// ── did the AI change anything the customer can see? ───────────────────────────────────────────────────────────────
+// Compares the customer's answers with the result, line by line, and reports how many lines were
+//   reworded  a real change in wording (different words, or a line added or removed),
+//   cosmetic  only capitals, punctuation or spacing differ,
+//   unchanged identical.
+// Observation only: it touches no license state, and what counts as "meaningful" is decided by the caller. Pure.
+const textLines = (r) => {
+  const c = isObj(r) ? r : {};
+  const sm = isObj(c.summary) ? c.summary : {};
+  const out = [{ where: 'summary.tagline', text: s(sm.tagline) }];
+  arr(sm.bullets).forEach((b, i) => out.push({ where: `summary.bullets.${i}`, text: s(b) }));
+  arr(sm.skills).forEach((b, i) => out.push({ where: `summary.skills.${i}`, text: s(b) }));
+  ['experience', 'volunteer', 'projects'].forEach((k) => arr(c[k]).forEach((e, i) => {
+    if (!isObj(e)) return;
+    ['summary', 'description'].forEach((f) => { if (f in e) out.push({ where: `${k}.${i}.${f}`, text: s(e[f]) }); });
+    arr(e.bullets).forEach((b, j) => out.push({ where: `${k}.${i}.bullets.${j}`, text: s(b) }));
+  }));
+  return out.filter((l) => l.text.trim());
+};
+const lineKey = (t) => s(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+function assessChange(before, after) {
+  const a = new Map(textLines(before).map((l) => [l.where, l.text.trim()]));
+  const b = new Map(textLines(after).map((l) => [l.where, l.text.trim()]));
+  const res = { reworded: 0, cosmetic: 0, unchanged: 0 };
+  new Set([...a.keys(), ...b.keys()]).forEach((where) => {
+    const x = a.get(where); const y = b.get(where);
+    if (x === undefined || y === undefined) res.reworded++;                      // a line was added or removed
+    else if (x === y) res.unchanged++;
+    else if (lineKey(x) === lineKey(y)) res.cosmetic++;
+    else res.reworded++;
+  });
+  return res;
+}
+
+module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange };

@@ -297,7 +297,11 @@ const Wiz = {
     let result = '';
     if (p.done && state.polishOriginal) {
       const parts = Wiz.changedParts(); const unv = p.done.unverified || [];
-      result = `<div class="wiz-ok"><strong>✓ Polished.</strong> That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}. Read it over: it’s your resume, so edit anything.
+      const used = `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
+      if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
+        result = `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
+      } else
+      result = `<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
         ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
         ${unv.length ? `<div class="notice-box"><strong>Please check ${unv.length} line${unv.length === 1 ? '' : 's'}.</strong> The AI added something that wasn’t in your answers (marked yellow in Edit Fields). Keep only what is true.
           <ul style="margin:6px 0 0 16px;">${unv.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
