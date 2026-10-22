@@ -59,7 +59,7 @@ test('the prompt demands natural, faithful writing: real improvement, no generic
   for (const must of [
     'Improve what is actually said, not how impressive it sounds', 'a reworded line must say the same thing as the original', 'natural, modest, professional language',
     'Never add numbers, percentages', 'attendance or punctuality records', 'Never add a skill the person did not list', 'If a section is empty, leave it empty: having no work history is normal',
-    'Copy those fields exactly', 'Keep the person\'s own distinctive words', 'If a line is already clear, leave it as it is']) assert.ok(text.includes(must), must);
+    'Copy those fields exactly', 'Keep the person\'s own distinctive words', 'If a line is already clear and specific, leave it as it is']) assert.ok(text.includes(must), must);
   for (const banned of ['motivated', 'passionate', 'results-driven', 'hard-working', 'team player', 'spearheaded', 'leveraged', 'utilized', 'fast-paced environment', 'exceptional'])
     assert.ok(text.includes(banned), `the avoid-list should name "${banned}"`);
   assert.match(text, /Good: "Helped customers find products and restocked shelves\."/);          // concrete good/bad examples
@@ -164,4 +164,64 @@ test('flagging never deletes or rewrites the AI’s line: the customer decides',
   const out = answer(ENTRY, (o) => { o.projects[0].bullets = ['Led the food drive', 'Sorted and counted the donations']; });
   const r = reconcile(ENTRY, out);
   assert.deepEqual(r.resume.projects[0].bullets, ['Led the food drive', 'Sorted and counted the donations']);
+});
+
+// ═══ AI Polish returned "no wording changes" on a plainly written first-time resume (real run, Sonnet 5.5, Oct 22 2026) ═══
+// Finding: the guardrails do not revert or hide improvements (below), but the prompt gave a clean, grammatical line no reason to change
+// (one escape clause, examples that only show rough fragments). Rule 5 now says WHAT can still be improved, using only the person's own
+// details, and still says never to reword a line just to change it. The FACT RULES are byte-for-byte unchanged (hash pinned).
+const crypto = require('crypto');
+const { assessChange } = require(path.join('..', '..', 'netlify', 'functions', '_lib', 'integrity'));
+
+// A plainly written, already-clean first-time resume (what the guided builder typically produces): 9 text lines.
+const PLAIN = Core.clean({
+  name: 'Taylor Rivera', contact: { email: 'taylor.rivera@example.com', location: 'Dayton, OH' },
+  summary: { tagline: 'Seeking a customer service position', bullets: [], skills: ['Teamwork', 'Customer service', 'Following directions'] },
+  education: [{ degree: 'High School Diploma', school: 'Oakwood High School', date: '2026' }],
+  projects: [{ name: 'School food drive', description: 'Collected canned food for a local pantry', bullets: ['Asked classmates to donate cans', 'Sorted and counted the cans'] }],
+  volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }]
+});
+
+test('the FACT RULES block is byte-for-byte what it was before the instruction change (nothing weakened)', () => {
+  const text = polish._buildPrompt(PLAIN, 'customer service', 'first');
+  const block = text.slice(text.indexOf('FACT RULES (never break these)'), text.indexOf('HOW TO WRITE')).trimEnd();
+  assert.equal(crypto.createHash('sha256').update(block).digest('hex'), 'c9e5459bfb4de75e2a59beea2d248980600c2ac1d0465410f635b5fc1dd7ee4d');
+  assert.ok(text.indexOf('FACT RULES') < text.indexOf('HOW TO WRITE'), 'the fact rules still come first');
+  for (const rule of ['Never invent or change employers', 'Never add numbers, percentages', 'Never add leadership, supervision', 'Do not add any job, project, volunteer entry']) assert.ok(text.includes(rule), rule);
+});
+
+test('the prompt tells the model what can still be improved in a clean, plain line, and also not to change a line just to change it', () => {
+  const text = polish._buildPrompt(PLAIN, 'customer service', 'first');
+  for (const must of ['Read EVERY line', 'including details given elsewhere in the same entry', 'capitalization and punctuation', 'wordy, repeats another line',
+    'vague verb such as "did", "helped with" or "worked on"', 'never reword a line just to change it', 'do not skip a line that can honestly be made clearer']) assert.ok(text.includes(must), must);
+  assert.match(text, /Good: "Asked classmates to donate canned food for a local pantry\."/);                    // a clean line improved from the entry's own details
+  assert.match(text, /Bad: "Led a school-wide drive that fed 200 families\."/);
+  assert.match(text, /Good: leave this line exactly as written/);                                                 // and one that is correctly left alone
+  assert.ok(text.endsWith(JSON.stringify(PLAIN)), 'the customer’s own answers are still sent last, unchanged');
+  assert.ok(text.includes('Do not add praise or personality words') && text.includes('Avoid these generic phrases'), 'style limits unchanged');
+});
+
+test('guardrails keep an honest improvement of a plain line exactly as the AI wrote it: counted as meaningful, not reverted, not flagged', () => {
+  const edits = {
+    'detail from the same entry':  (o) => { o.projects[0].bullets[0] = 'Asked classmates to donate canned food for a local pantry'; },
+    'more specific object':        (o) => { o.projects[0].bullets[1] = 'Sorted and counted the donated cans'; },
+    'merged short bullets':        (o) => { o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays and greeted families as they arrived']; },
+    'tightened wording':           (o) => { o.volunteer[0].bullets[1] = 'Greeted arriving families'; },
+    'description as a sentence':   (o) => { o.projects[0].description = 'Collected canned food for a local pantry through a school drive'; }
+  };
+  for (const [name, edit] of Object.entries(edits)) {
+    const out = clone(PLAIN); edit(out);
+    const r = reconcile(PLAIN, out, { vocabulary: 'customer service', keepBlankedText: true });
+    assert.deepEqual(Core.clean(r.resume), Core.clean(out), `${name}: reverted or altered`);
+    assert.ok(assessChange(PLAIN, r.resume).reworded >= 1, `${name}: not counted as meaningful`);
+    assert.deepEqual(r.unverified, [], `${name}: wrongly flagged`);
+  }
+});
+
+test('the same guardrails still catch embellishment of those plain lines, and capitals-only edits stay "no improvement"', () => {
+  const bad = { 'invented number': (o) => { o.projects[0].bullets[0] = 'Asked classmates to donate 500 cans'; }, 'invented leadership': (o) => { o.projects[0].bullets[0] = 'Led classmates in a donation drive'; },
+    'praise': (o) => { o.volunteer[0].bullets[1] = 'Warmly greeted families with dedication'; } };
+  for (const [name, edit] of Object.entries(bad)) { const out = clone(PLAIN); edit(out); assert.ok(reconcile(PLAIN, out, { keepBlankedText: true }).unverified.length >= 1, `${name} must be flagged`); }
+  const caps = clone(PLAIN); caps.volunteer[0].bullets[0] = 'packed grocery boxes on saturdays.';
+  const r = reconcile(PLAIN, caps, { keepBlankedText: true }); assert.deepEqual(assessChange(PLAIN, r.resume), { reworded: 0, cosmetic: 1, unchanged: 8 });
 });

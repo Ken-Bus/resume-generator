@@ -28,6 +28,16 @@
 - **Page:** "No meaningful improvements were found ... No generation was used" notice; resume, flags and token untouched. The editor scrolls the polish card into view when opened.
 - Decision record: `docs/AI_POLISH_NO_CHANGE_PROPOSAL.md`. Etsy FAQ draft (not published): `docs/ETSY_FAQ_AI_POLISH.md`.
 
+**One attempt, one outcome (page)**
+- Every polish attempt ends in exactly one of: improved (green, with Restore controls), no meaningful improvement (yellow, no generation used) or an error (red). All three go through `Wiz.setOutcome`, and a new attempt clears the last one's result. If an earlier polish is still in the resume and the latest attempt was not an improvement, a "Restore all my original wording" link stays available.
+- Bug fixed here: a no-change reply used to fall through to the failure handler and show the generic red "Something went wrong while polishing" next to the yellow notice (found in a real-browser test on f7ef615). No-change is a success path and never reaches `polishFailed`.
+
+**Why a clean resume can come back unchanged (Sonnet 5.5 run, Oct 22 2026: reworded 0 / cosmetic 0 / unchanged 9)**
+- Guardrails are not the cause: honest rewordings of plain lines are kept exactly as written, counted as meaningful and not flagged; embellishments are still flagged (`writing-quality.test.js`).
+- The input was already clean (rough text would have produced at least capitalization changes), so returning it unchanged is partly correct behavior.
+- The prompt also gave a clean line no reason to change: one escape clause and examples that only showed rough fragments. Rule 5 now names what can still be improved using the person's own details (grammar and punctuation, vague verbs, wordy or repeated lines, details from the same entry), says never to reword a line just to change it, and adds two examples (one improved from the entry's own details, one correctly left alone). FACT RULES are byte-identical (hash pinned in a test).
+- Effect on real model output is **not yet verified** (no paid call was made). The no-change protection still applies if the model changes nothing.
+
 **Writing quality (`polish-resume.js` prompt)**
 - **Audience.** The customer says which fits them on step 1 (first resume / I've worked before / changing to different work); otherwise it follows from the answers (no jobs = first resume). The prompt sends only the matching guidance: *first resume* draws on school, volunteering, projects and training without making them sound like paid work; *experienced* makes duties specific and scannable, keeps long tenure and dates, and never turns routine duties into achievements; *career changer* words real duties so what carries over is clear, and never claims experience in the new field. Unknown values are ignored, and a choice that makes no sense (e.g. "experienced" with no jobs) falls back to the answers.
 - **Style.** Natural, modest, professional language; real improvement (say what was done, with what, using the customer's own words and meaning) rather than added adjectives; a named list of generic AI phrases to avoid unless the customer wrote them; concrete good/bad examples in the prompt. The goal text is length-limited and stripped of quotes so it cannot alter the instructions.

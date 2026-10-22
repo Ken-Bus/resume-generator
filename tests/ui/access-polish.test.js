@@ -247,6 +247,62 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.equal(await s.page.isEnabled('#polish-btn'), true); await s.close();
   });
 
+  // One attempt, one outcome. The card must show exactly ONE of: improved (green), no-change (yellow), error (red), and never a leftover
+  // from an earlier attempt. (Found in a real-browser test: a no-change reply also raised the generic red error, because the
+  // no-change branch fell through to the failure handler.)
+  const outcomeOf = (s, prefix = '') => s.page.evaluate((pre) => {
+    const root = document.querySelector(pre ? '#edit-polish' : '#panel-guide .wiz-polish') || document.querySelector('.wiz-polish');
+    const q = (sel) => [...root.querySelectorAll(sel)].map((e) => e.innerText.trim());
+    return { improved: q('.wiz-ok').filter((x) => /Polished/.test(x)).length, noChange: q('.notice-box[id$="polish-nochange"]').length, unchanged: q('.notice-box[id$="polish-unchanged"]').length,
+      error: q('.wiz-err').length, errorText: q('.wiz-err').join('|'), restoreAll: [...root.querySelectorAll('button')].filter((b) => /Restore all my original wording/.test(b.innerText)).length };
+  }, prefix);
+  const GENERIC = /Something went wrong while polishing/;
+
+  await t.test('REGRESSION: each polish attempt shows exactly one outcome (improved / no-change / error) and clears the previous one', async () => {
+    const script = [
+      () => ({ status: 502, json: { error: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.' } }),
+      () => ({ status: 200, json: { noChange: true, charged: false, changes: { reworded: 0, cosmetic: 0, unchanged: 9 }, usesRemaining: 5, maxUses: 5 } }),
+      () => ({ status: 200, json: { result: JSON.stringify(POLISHED), unverified: [], changes: { reworded: 2, cosmetic: 0, unchanged: 7 }, charged: true, usesRemaining: 4, maxUses: 5, tailorToken: 'tok-1' } }),
+      () => ({ status: 200, json: { noChange: true, charged: false, changes: { reworded: 0, cosmetic: 1, unchanged: 8 }, usesRemaining: 4, maxUses: 5 } }),
+      () => ({ raw: true, status: 502, headers: { 'content-type': 'text/html' }, body: '<html>Bad gateway</html>' }),
+      () => ({ status: 200, json: { result: JSON.stringify({ ...POLISHED, projects: [{ ...POLISHED.projects[0], bullets: ['Asked classmates to donate canned food', 'Counted and sorted every donated can'] }] }), unverified: [], changes: { reworded: 1, cosmetic: 0, unchanged: 8 }, charged: true, usesRemaining: 3, maxUses: 5, tailorToken: 'tok-2' } })
+    ];
+    const s = await open({ 'polish-resume': (b, i) => script[i - 1]() }); await toReview(s);
+    const attempt = async () => { await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(150); };
+    const expectOnly = async (kind, label) => {
+      const o = await outcomeOf(s); const shown = { improved: o.improved, noChange: o.noChange, unchanged: o.unchanged, error: o.error };
+      for (const k of Object.keys(shown)) assert.equal(shown[k], k === kind ? 1 : 0, `${label}: expected only "${kind}" but saw ${JSON.stringify(shown)} ${o.errorText}`);
+      return o;
+    };
+    await attempt(); const o1 = await expectOnly('error', '1 server error'); assert.doesNotMatch(o1.errorText, GENERIC);
+    await attempt(); await expectOnly('noChange', '2 no-change after an error');                                                       // the reported bug: red + yellow together
+    assert.match(await s.page.innerText('#license-badge'), /5 of 5/);
+    await attempt(); await expectOnly('improved', '3 improved after a no-change'); assert.match(await s.page.innerText('#license-badge'), /4 of 5/);
+    assert.equal(await s.page.evaluate(() => state.tailorToken), 'tok-1');
+    await attempt(); const o4 = await expectOnly('noChange', '4 no-change after an improved polish');
+    assert.equal(o4.restoreAll, 1, 'the earlier polish can still be undone');                                                         // no green "Polished" banner, but Restore is not lost
+    assert.equal(await s.page.evaluate(() => state.tailorToken), 'tok-1'); assert.match(await s.page.innerText('#license-badge'), /4 of 5/);
+    await attempt(); const o5 = await expectOnly('error', '5 gateway error after a no-change'); assert.match(o5.errorText, GENERIC);   // generic text is right here: there is no server message
+    await attempt(); await expectOnly('improved', '6 improved after an error'); assert.match(await s.page.innerText('#license-badge'), /3 of 5/);
+    assert.equal(await s.page.evaluate(() => state.tailorToken), 'tok-2');
+    await s.close();
+  });
+
+  await t.test('REGRESSION: the editor card and the Review step never disagree, and a no-change reply never raises an error there either', async () => {
+    const calls = [
+      () => ({ status: 200, json: { noChange: true, charged: false, changes: { reworded: 0, cosmetic: 0, unchanged: 9 }, usesRemaining: 5, maxUses: 5 } }),
+      () => ({ status: 403, json: { error: 'You’ve used all generations on this code.', usesRemaining: 0, maxUses: 5 } })
+    ];
+    const s = await open({ 'polish-resume': (b, i) => calls[i - 1]() }); await toReview(s);
+    await s.page.click('button:has-text("Open in Editor")'); await s.page.waitForSelector('#edit-polish-btn');
+    await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(150);
+    const o = await outcomeOf(s, 'edit-'); assert.deepEqual([o.noChange, o.error, o.improved], [1, 0, 0], JSON.stringify(o));
+    assert.equal(await s.page.locator('#edit-polish .wiz-err').count(), 0);
+    await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(150);
+    const o2 = await outcomeOf(s, 'edit-'); assert.deepEqual([o2.noChange, o2.improved], [0, 0], 'the old no-change notice is gone once the next attempt fails');
+    await s.close();
+  });
+
   await t.test('a polish that does reword shows the success banner and lists what changed (preview shows the new wording)', async () => {
     const s = await open({ 'polish-resume': polishOk({ unverified: [] }) }); await toReview(s);
     await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-ok');

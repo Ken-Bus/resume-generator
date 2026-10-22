@@ -170,6 +170,14 @@ const Wiz = {
   // Nothing here runs on navigation, typing or preview. A charge needs two deliberate clicks: the button, then
   // an explicit confirmation that states the cost. The server charges only after a validated result.
   polishState() { return state.polish || (state.polish = { confirm: false, busy: false, requestId: null, msg: '', kind: '', done: null, noChange: null }); },
+  // One attempt, one outcome: the card shows exactly ONE of improved (p.done), no meaningful improvement (p.noChange) or an error
+  // (p.msg), and starting a new attempt clears whatever the last one left behind. Every result goes through here.
+  setOutcome(type, data) {
+    const p = Wiz.polishState();
+    p.done = type === 'improved' ? data : null;
+    p.noChange = type === 'nochange' ? { at: Date.now() } : null;
+    p.msg = type === 'error' ? data : ''; p.kind = type === 'error' ? 'err' : '';
+  },
   // Polish is offered both on the Review step and at the top of the regular editor; both views read the same state.
   refreshPolish() { if (state.wizard) Wiz.render(); renderEditPolish(); },
   askPolish() { const p = Wiz.polishState(); if (p.busy) return; p.confirm = true; p.msg = ''; p.noChange = null; Wiz.refreshPolish(); },
@@ -184,7 +192,7 @@ const Wiz = {
     if (p.busy) return;                                                    // double-click: one request only
     if (!state.license.verified || !state.license.code) { showGate('Enter your access code to use AI polish.'); return; }
     if (!ResumeCore.hasWritableText(ResumeCore.clean(state.data))) return;
-    p.busy = true; p.confirm = false; p.msg = ''; p.kind = ''; p.noChange = null;
+    p.busy = true; p.confirm = false; Wiz.setOutcome(null);                // forget the previous attempt's result
     if (!p.requestId) p.requestId = Wiz.newRequestId();                     // reused on a manual retry, so a lost reply is never charged twice
     Wiz.refreshPolish();
     try {
@@ -194,15 +202,15 @@ const Wiz = {
       });
       let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
       let parsed = null;
+      if (res.ok && json && json.result && json.noChange !== true) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
       if (res.ok && json && json.noChange === true) {
         // Nothing meaningful to improve: the server released the reservation (no charge). Leave the resume, flags and
-        // tailoring token exactly as they were.
+        // tailoring token exactly as they were. This is a success, not a failure: it must never reach polishFailed.
         if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
         if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
-        p.requestId = null; p.msg = ''; p.kind = ''; p.noChange = { at: Date.now() };
+        p.requestId = null; Wiz.setOutcome('nochange');
         renderLicenseBadge();
-      } else if (res.ok && json && json.result) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
-      if (parsed) {
+      } else if (parsed) {
         state.polishOriginal = ResumeCore.clean(state.data);               // the customer's own wording, for Restore
         state.data = parsed;
         state.tailorToken = json.tailorToken || null;
@@ -212,16 +220,14 @@ const Wiz = {
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
-        p.done = { unverified };
-        p.msg = ''; p.kind = '';
+        Wiz.setOutcome('improved', { unverified });
         renderLicenseBadge(); renderEditFields(); renderPreview();
       } else {
         await Wiz.polishFailed(res.status, json);
       }
     } catch (e) {
       // The request may or may not have finished. Keep the request id so a manual retry cannot be charged twice.
-      p.msg = 'We couldn’t confirm whether that finished. Your resume is unchanged. Please check the generations counter above, then try again.';
-      p.kind = 'err';
+      Wiz.setOutcome('error', 'We couldn’t confirm whether that finished. Your resume is unchanged. Please check the generations counter above, then try again.');
       refreshLicenseCounter();
     } finally {
       p.busy = false;
@@ -232,7 +238,7 @@ const Wiz = {
   async polishFailed(status, json) {
     const p = Wiz.polishState();
     const message = (json && json.error) || 'Something went wrong while polishing. You haven’t been charged. Please try again.';
-    p.kind = 'err'; p.msg = message;
+    Wiz.setOutcome('error', message);
     if (status === 401 || (status === 403 && !(json && json.usesRemaining === 0))) {
       state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
       sessionStorage.removeItem(LICENSE_STORAGE_KEY);
@@ -315,7 +321,10 @@ const Wiz = {
         <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
     }
     if (p.noChange) {
-      result += `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged. <strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}. If you add or change some answers, you can try again.</div>`;
+      result += `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged, which often means your answers are already clear. <strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}. If you add or change some answers, you can try again.</div>`;
+    }
+    if (state.polishOriginal && !p.done && !p.busy) {                    // an earlier polish is still in the resume: keep Restore reachable
+      result += `<div style="margin-top:6px;"><button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
     }
     const msg = p.msg ? `<div class="${p.kind === 'err' ? 'wiz-err' : 'wiz-ok'}" role="status">${esc(p.msg)}</div>` : '';
     const help = compact

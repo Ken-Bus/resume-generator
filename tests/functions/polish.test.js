@@ -351,6 +351,19 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     } finally { w.stop(); }
   });
 
+  await t.test('OBSERVED (Sonnet 5.5, Oct 22): a clean first-time resume handed back identically = reworded 0 / cosmetic 0 / unchanged 9: P201, zero charge, nothing applied', async () => {
+    reset(); clearCap(); const c = await seed(); ai.polishPayload = ECHO; const w = watchWarn();
+    const plain = { name: 'Taylor Rivera', contact: { email: 'taylor.rivera@example.com', location: 'Dayton, OH' }, summary: { tagline: 'Seeking a customer service position', bullets: [], skills: ['Teamwork', 'Customer service', 'Following directions'] },
+      experience: [], education: [{ degree: 'High School Diploma', school: 'Oakwood High School', date: '2026' }], certifications: [],
+      projects: [{ name: 'School food drive', description: 'Collected canned food for a local pantry', bullets: ['Asked classmates to donate cans', 'Sorted and counted the cans'] }],
+      volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }], awards: [] };
+    try {
+      const b = parseBody(await polish(c, plain));
+      assert.deepEqual(b.changes, { reworded: 0, cosmetic: 0, unchanged: 9 }); assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.error, undefined);
+      assert.equal(b.usesRemaining, 5); assert.equal(await uses(c), 5); assert.ok(w.logs.some((l) => /P201/.test(l) && /"unchanged":9/.test(l)));
+    } finally { w.stop(); }
+  });
+
   await t.test('COSMETIC ONLY (capitals, punctuation, spacing): treated as no improvement, charges ZERO, the customer\'s own wording is untouched', async () => {
     reset(); clearCap(); const c = await seed(); ai.polishPayload = cosmetic;
     const b = parseBody(await polish(c));

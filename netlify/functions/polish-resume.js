@@ -87,7 +87,7 @@ FACT RULES (never break these)
 4. Do not add any job, project, volunteer entry, school or skill the person did not list. If a section is empty, leave it empty: having no work history is normal.
 
 HOW TO WRITE
-5. Improve what is actually said, not how impressive it sounds. Say who or what the person worked with and what they did, using only the words and details they gave. Fix grammar, join fragments, start each bullet with a plain action verb, keep each bullet to one idea, and drop filler. If a line is already clear, leave it as it is.
+5. Improve what is actually said, not how impressive it sounds. Read EVERY line and ask whether an employer could understand it faster or more exactly. Say who or what the person worked with and what they did, using only the words and details they gave, including details given elsewhere in the same entry (a project's description, another bullet, the organization's name). Fix grammar, capitalization and punctuation, join fragments, start each bullet with a plain action verb, keep each bullet to one idea, and drop filler. Also tighten a line that is wordy, repeats another line, or uses a vague verb such as "did", "helped with" or "worked on" when the person's own words name the specific action. If a line is already clear and specific, leave it as it is: never reword a line just to change it. But do not skip a line that can honestly be made clearer.
 6. Keep the person's own distinctive words (names of tools, equipment, places, subjects). Keep their meaning exactly; a reworded line must say the same thing as the original, only more clearly.
 7. Use natural, modest, professional language. Do not add praise or personality words. Avoid these generic phrases unless the person wrote them themselves: ${AVOID_WORDS}. Do not add quality adjectives such as "excellent", "strong" or "effective".
 8. Write in the first-person-omitted resume style ("Helped customers find products", not "I helped customers find products").
@@ -104,6 +104,11 @@ EXAMPLES of the difference (fictional)
 - Answer: "asked classmates to donate cans, sorted them"
   Good: "Asked classmates to donate canned food and sorted the donations."
   Bad: "Spearheaded a school-wide food drive, leading a team of volunteers." (adds leadership and scale)
+- Answer: project description "Collected canned food for a local pantry" with the bullet "Asked classmates to donate cans" (already grammatical, but plainer than the entry's own details)
+  Good: "Asked classmates to donate canned food for a local pantry." (uses a detail from the same entry; same meaning)
+  Bad: "Led a school-wide drive that fed 200 families." (adds leadership, scale and a metric)
+- Answer: "Operated the register and counted the cash drawer at closing."
+  Good: leave this line exactly as written (already specific, active and clear)
 
 Keep exactly the same JSON schema and keys as the input. Return ONLY valid JSON, no markdown fences, no commentary.
 

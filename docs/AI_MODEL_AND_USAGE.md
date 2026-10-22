@@ -50,3 +50,4 @@ Use the personal test license and fictional data on the branch deploy; each Anal
 3. **Polish with nothing to improve** (already-clear answers): "No meaningful improvements were found", counter unchanged, P201 in the log.
 4. **Tailor**: works with the token, counter unchanged, one `ai-usage` line with `fn":"tailor"`.
 5. **A long fictional resume** (about 3-4 pages): confirm it finishes inside the 50-second limit and does not truncate. Longer outputs from the new tokenizer make this the most likely place for a surprise.
+6. **Re-test the clean Taylor Rivera resume** after the prompt change (Oct 22). If the model still returns nothing meaningful, that costs nothing (P201). If it improves the wording, it costs one generation: read every changed line against the original and confirm no invented fact, number, title or praise word.
