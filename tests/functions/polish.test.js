@@ -228,5 +228,84 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     assert.equal(ai.calls, before); assert.equal(await uses(c), 5); assert.equal((await rsv(c)).length, 0);
   });
 
+
+  // ───────── server-error paths: the reported "Server error, please try again." and every sibling ─────────
+  // Each must hold nothing, charge nothing, never count against the customer's failure budget, and leak nothing.
+  const outage = (match) => {                                     // a database that fails only for statements matching `match`
+    const real = db.pool('service_role', 10);
+    return { query: (sql, params) => match.test(sql) ? Promise.reject(Object.assign(new Error('simulated outage for FG-SECRET-LEAK'), { code: 'XX000' })) : real.query(sql, params) };
+  };
+  const withOutage = (match) => loadHandlers(outage(match));
+  const restore = () => { Object.assign(hs, loadHandlers(db.pool('service_role', 40))); };
+  const reservationRows = async (c) => (await db.admin('select status, failure_counted from license_reservations where code=$1 order by created_at', [c])).rows;
+
+  await t.test('REPORTED FAILURE: AI key missing on a deploy => 500 "Server error (ref P101)", before any reservation, nothing charged, nothing held, no AI call', async () => {
+    reset(); const c = await seed(); const logs = captureLogs(); const saved = process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_API_KEY;
+    try {
+      for (const body of [{ code: c, resume: ANSWERS }, {}, { code: 'nope' }]) {                   // even an empty request answers 500 first, which is how a missing key can be spotted for free
+        const r = await hs.polish(post(body)); assert.equal(r.statusCode, 500);
+        assert.match(parseBody(r).error, /^Server error, please try again\. \(ref P101\)$/); assert.equal(parseBody(r).ref, 'P101');
+        assert.ok(!/anthropic|api key|secret|env/i.test(r.body), 'the reference must not reveal configuration');
+      }
+      assert.equal((await rsv(c)).length, 0); assert.equal(await uses(c), 5); assert.equal(ai.calls, 0);
+      assert.match(logs.lines.join('\n'), /polish-resume: AI key not configured.*P101/); assert.ok(!logs.lines.join('\n').includes(c));
+      assert.equal((await hs.exportResume.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ code: c, format: 'pdf', template: 'boardroom', resume: ANSWERS }) })).statusCode, 200);   // downloads do not need the AI key
+    } finally { process.env.ANTHROPIC_API_KEY = saved; logs.restore(); }
+    assert.equal((await polish(c)).statusCode, 200); assert.equal(await uses(c), 4);               // fixing the setting is all it takes
+  });
+
+  await t.test('database fails while reserving => 503 (ref P103): nothing reserved, nothing charged, no AI call', async () => {
+    reset(); const c = await seed(); const logs = captureLogs();
+    try {
+      const h = withOutage(/reserve_license_use/); const r = await h.polish(post({ code: c, resume: ANSWERS }));
+      assert.equal(r.statusCode, 503); assert.match(parseBody(r).error, /ref P103/);
+      assert.equal((await rsv(c)).length, 0); assert.equal(await uses(c), 5); assert.equal(ai.calls, 0);
+      const all = logs.lines.join('\n') + r.body; assert.ok(!all.includes('FG-SECRET-LEAK') && !all.includes(c), 'database error text and codes never reach logs or responses');
+    } finally { logs.restore(); restore(); }
+  });
+
+  await t.test('duplicate-check query fails => 503 (ref P105): the reservation is RELEASED (not held, not committed), nothing charged, no AI call, not counted as a failure', async () => {
+    reset(); const c = await seed();
+    for (let i = 0; i < 8; i++) {                                                                  // more attempts than the failure budget allows
+      const h = withOutage(/from public\.license_reservations/); const r = await h.polish(post({ code: c, resume: ANSWERS }));
+      assert.equal(r.statusCode, 503, `attempt ${i + 1}`); assert.match(parseBody(r).error, /ref P105/);
+    }
+    restore();
+    const rows = await reservationRows(c);
+    assert.equal(rows.length, 8); assert.ok(rows.every((x) => x.status === 'released' && x.failure_counted === false));
+    assert.equal(await uses(c), 5); assert.equal(ai.calls, 0);
+    assert.equal((await polish(c)).statusCode, 200);                                               // our own fault never throttles the customer
+    assert.equal(await uses(c), 4);
+  });
+
+  await t.test('charge cannot be recorded after the AI succeeded => 503 (ref P106, "check the counter"): released uncounted, balance unchanged, never throttled', async () => {
+    reset(); const c = await seed();
+    for (let i = 0; i < 8; i++) {
+      const h = withOutage(/commit_license_use/); const r = await h.polish(post({ code: c, resume: ANSWERS }));
+      assert.equal(r.statusCode, 503, `attempt ${i + 1}`); assert.match(parseBody(r).error, /check the counter above.*ref P106/); assert.equal(parseBody(r).result, undefined);
+    }
+    restore();
+    const rows = await reservationRows(c);
+    assert.ok(rows.every((x) => x.status === 'released' && x.failure_counted === false));
+    assert.equal(await uses(c), 5); assert.equal(ai.calls, 8);                                     // the AI ran, the customer was not charged, and nothing is stuck
+    assert.equal((await polish(c)).statusCode, 200); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('database client unavailable (database settings missing) => 503 (ref P102) before anything is reserved', async () => {
+    reset(); const c = await seed(); const saved = process.env.SUPABASE_URL; delete process.env.SUPABASE_URL;
+    try {
+      const h = loadHandlers(db.pool('service_role', 5)); const r = await h.polish(post({ code: c, resume: ANSWERS }));
+      assert.equal(r.statusCode, 503); assert.match(parseBody(r).error, /ref P102/); assert.equal((await rsv(c)).length, 0); assert.equal(await uses(c), 5); assert.equal(ai.calls, 0);
+    } finally { process.env.SUPABASE_URL = saved; restore(); }
+  });
+
+  await t.test('the reference is the only difference customers see: every server-error response is the same friendly sentence plus ref', async () => {
+    reset(); const c = await seed(); const seen = new Set();
+    for (const [match, key] of [[/reserve_license_use/, 'P103'], [/from public\.license_reservations/, 'P105']]) {
+      const r = await withOutage(match).polish(post({ code: c, resume: ANSWERS })); seen.add(parseBody(r).error.replace(/P10\d/, 'P10x'));
+    }
+    restore(); assert.deepEqual([...seen], ['Server error, please try again. (ref P10x)']);
+  });
+
   await db.drop?.();
 });

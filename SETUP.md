@@ -243,6 +243,14 @@ A **branch deploy** builds a pushed branch at its own URL (`<branch>--<site-name
 - Keep production auto-publishing locked.
 - Scheduled functions (`check-code-supply`) run only on the published production deploy.
 
+**Variables are read when the deploy is BUILT.** Adding or fixing one afterwards changes nothing until you redeploy that branch ("Trigger deploy", "Clear cache and deploy site"). A missing `ANTHROPIC_API_KEY` is the commonest cause of "Server error, please try again. (ref P101)" on a branch deploy: the function stops before it reserves anything, so nothing is charged.
+
+**Free configuration check from the browser console on the branch site** (spends nothing, reads no data, shows no secrets):
+```js
+fetch('/.netlify/functions/polish-resume',{method:'POST',body:'{}'}).then(r=>r.status)   // 500 = AI key missing for this deploy; 401 = present
+fetch('/.netlify/functions/tailor-resume',{method:'POST',body:'{}'}).then(r=>r.status)  // 500 = AI key missing; 503 = TAILOR_TOKEN_SECRET missing/short; 401 = both present
+```
+
 **Zero-cost checks right after the build (no generation spent):**
 1. Enter `FG-ZZZZ-9999` at the gate: "We couldn't find that code." (proves the Supabase variables work).
 2. Open `/.netlify/functions/export-resume` and `/.netlify/functions/polish-resume` in the browser: each answers "Method Not Allowed" (proves the functions deployed).
@@ -251,6 +259,23 @@ A **branch deploy** builds a pushed branch at its own URL (`<branch>--<site-name
 **Then, with your personal code:** download a PDF and a Word file (counter unchanged); run one Polish (counter drops by exactly 1; AI-added lines are yellow); run one Tailor (works, counter unchanged); repeat a build and a download on a phone.
 
 **Cleanup:** remove the branch from the branch-deploy list, delete the branch-only `TAILOR_TOKEN_SECRET`, and revoke any test API key.
+
+### Reading a "Server error ... (ref XXXX)" message
+
+Customers see a friendly message with a short reference. The same reference is written to the Netlify function log next to the reason (never a code, a secret or resume text), so you can tell what happened without guessing. In every case below **nothing is charged and no reservation is left held**.
+
+| Ref | Function | Meaning | Usual fix |
+|---|---|---|---|
+| P101 | polish-resume | `ANTHROPIC_API_KEY` is not set for this deploy's context | Add it for that context, then redeploy |
+| P102 | polish-resume | Database settings (`SUPABASE_URL` / key) missing | Add them for that context, then redeploy |
+| P103 | polish-resume | The reservation call to the database failed | Check Supabase status; confirm migration 01 is applied |
+| P104 | polish-resume | The database returned an unexpected reservation answer | Check the function log; report it |
+| P105 | polish-resume | The duplicate-request check failed (the reservation is released) | Check Supabase status / table access for `service_role` |
+| P106 | polish-resume | The AI finished but the charge could not be recorded (released, uncharged) | Check the counter, then try again |
+| E101 | export-resume | The license lookup failed | Check Supabase status and the database settings |
+| E102 | export-resume | The file could not be rendered | Check the function log; report it |
+
+Where to look: Netlify, Logs & metrics, Functions, the function name, the latest invocation. Lines start with `polish-resume:` or `export-resume:`.
 
 ## 6. Tests
 

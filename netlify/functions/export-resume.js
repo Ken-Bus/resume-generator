@@ -25,6 +25,7 @@ const render = require('./_lib/export-render');
 // Error messages from the database can echo query values (such as the license code), so only a code or name is logged.
 const safeReason = (e) => String((e && (e.code || e.name)) || 'error').slice(0, 40);
 
+// References for support (same idea as polish-resume): E101 license lookup failed, E102 file could not be rendered.
 const MSG = {
   refresh: 'Please refresh the page and enter your access code again.',
   badFormat: 'That code doesn’t look right. Check the format: FG-XXXX-XXXX.',
@@ -66,8 +67,8 @@ exports.handler = async function(event) {
   try {
     row = await license.readLicense(getSupabaseClient(), code);
   } catch (err) {
-    console.error('export-resume: license lookup failed', { reason: safeReason(err) });
-    return reply(503, MSG.server);
+    console.error('export-resume: license lookup failed', { ref: 'E101', reason: safeReason(err) });
+    return reply(503, `${MSG.server} (ref E101)`);
   }
   if (!row) { failedLookups.hit(ip); return reply(403, MSG.notFound); }
   const key = codeKey(code);
@@ -88,8 +89,8 @@ exports.handler = async function(event) {
     perCode.hit(key);
     out = format === 'pdf' ? render.renderPDF(resume, template, alt === true) : await render.renderWord(resume, template, alt === true);
   } catch (err) {
-    console.error('export-resume: render failed', { format, template: template.id, reason: safeReason(err) });
-    return reply(500, MSG.server);
+    console.error('export-resume: render failed', { ref: 'E102', format, template: template.id, reason: safeReason(err) });
+    return reply(500, `${MSG.server} (ref E102)`);
   }
   const ascii = out.filename.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
   return {

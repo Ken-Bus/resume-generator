@@ -175,7 +175,7 @@ test('export-resume: server-enforced authorization (real SQL, no AI)', async (t)
     try {
       const broken = loadHandlers({ query: async () => { throw new Error('connection refused for FG-LEAK-TEST'); } }).exportResume;
       const r = await broken.handler({ httpMethod: 'POST', ...ip(30), body: JSON.stringify(req('FG-LEAK-TEST')) });
-      assert.equal(r.statusCode, 503); assert.ok(!r.body.includes('FG-LEAK-TEST')); assert.ok(!r.body.includes('connection refused'));
+      assert.equal(r.statusCode, 503); assert.match(parseBody(r).error, /ref E101/); assert.ok(!r.body.includes('FG-LEAK-TEST')); assert.ok(!r.body.includes('connection refused'));
       const c = await seed(); await call(req(c, { template: 'nope' })); await call(req('FG-ZZZZ-9999'));
       const all = logs.lines.join('\n'); assert.ok(!all.includes('FG-LEAK-TEST')); assert.ok(!all.includes(c)); assert.ok(!all.includes('Emma Larsen'));
     } finally { logs.restore(); loadHandlers(db.pool('service_role', 10)); }

@@ -23,6 +23,13 @@ const Core = require('../../resume-core.js');
 // Error messages from the database can echo query values (such as the license code), so only a code or name is logged.
 const safeReason = (e) => String((e && (e.code || e.name)) || 'error').slice(0, 40);
 
+// Every server-side failure answers with the same friendly text plus a short reference (for example "ref P101").
+// The reference reveals nothing about configuration, but the same code is written to the function log with the
+// reason, so a support check can tell a missing setting from a database problem at a glance.
+//   P101 AI provider key not set for this deploy     P102 database client unavailable     P103 reservation failed
+//   P104 unexpected reservation outcome              P105 duplicate-request check failed  P106 charge could not be recorded
+const refMsg = (ref) => `Server error, please try again. (ref ${ref})`;
+
 const MSG = {
   refresh: 'Please refresh the page and enter your access code again.',
   badFormat: 'That code doesn’t look right. Check the format: FG-XXXX-XXXX.',
@@ -64,8 +71,8 @@ exports.handler = async function(event) {
 
   const cfg = get();
   if (!process.env.ANTHROPIC_API_KEY) {
-    console.error('polish-resume: AI key not configured');
-    return json(500, { error: MSG.server });
+    console.error('polish-resume: AI key not configured', { ref: 'P101' });
+    return json(500, { error: refMsg('P101'), ref: 'P101' });
   }
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
@@ -85,8 +92,8 @@ exports.handler = async function(event) {
 
   let supabase;
   try { supabase = getSupabaseClient(); } catch (err) {
-    console.error('polish-resume: database client unavailable');
-    return json(503, { error: MSG.server });
+    console.error('polish-resume: database client unavailable', { ref: 'P102' });
+    return json(503, { error: refMsg('P102'), ref: 'P102' });
   }
 
   // A repeat of a polish that already finished returns the same result, uncharged.
@@ -104,8 +111,8 @@ exports.handler = async function(event) {
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
     console.error(missing
       ? 'polish-resume: reserve_license_use is missing. Apply supabase/migrations/20261020_01_license_reservations.sql BEFORE deploying this code.'
-      : 'polish-resume: reservation failed', { reason: safeReason(err) });
-    return json(503, { error: MSG.server });
+      : 'polish-resume: reservation failed', { ref: 'P103', reason: safeReason(err) });
+    return json(503, { error: refMsg('P103'), ref: 'P103' });
   }
 
   if (reservation.outcome === 'not_found') return json(403, { error: MSG.notFound });
@@ -120,8 +127,8 @@ exports.handler = async function(event) {
   }
   if (reservation.outcome === 'busy') return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
   if (reservation.outcome !== 'reserved') {
-    console.error('polish-resume: unexpected reservation outcome', { outcome: reservation.outcome });
-    return json(503, { error: MSG.server });
+    console.error('polish-resume: unexpected reservation outcome', { ref: 'P104', outcome: reservation.outcome });
+    return json(503, { error: refMsg('P104'), ref: 'P104' });
   }
 
   // One paid operation at a time per code: only the earliest live reservation proceeds.
@@ -131,9 +138,9 @@ exports.handler = async function(event) {
       return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
     }
   } catch (err) {
-    console.error('polish-resume: in-flight check failed', { reason: safeReason(err) });
-    await license.safeRelease(supabase, reservation.reservationId, false);
-    return json(503, { error: MSG.server });
+    console.error('polish-resume: in-flight check failed', { ref: 'P105', reason: safeReason(err) });
+    await license.safeRelease(supabase, reservation.reservationId, false);          // never leave a reservation held
+    return json(503, { error: refMsg('P105'), ref: 'P105' });
   }
 
   // 2. Run the AI. ANY failure releases the reservation and the customer is not charged.
@@ -164,8 +171,9 @@ exports.handler = async function(event) {
     catch (err) { console.error('polish-resume: commit attempt failed', { reservation: reservation.reservationId, attempt }); }
   }
   if (!committed) {
+    console.error('polish-resume: charge could not be recorded', { ref: 'P106', reservation: reservation.reservationId });
     await license.safeRelease(supabase, reservation.reservationId, false);
-    return json(503, { error: MSG.notCharged });
+    return json(503, { error: `${MSG.notCharged} (ref P106)`, ref: 'P106' });
   }
   if (committed.outcome === 'exhausted') return json(403, { error: MSG.exhausted, usesRemaining: 0, maxUses: committed.maximum });
   if (committed.outcome !== 'committed' && committed.outcome !== 'already_committed') {
