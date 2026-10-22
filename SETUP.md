@@ -224,6 +224,34 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 | **After the old AI key has been revoked** | Do **not** "Publish deploy" an older deploy expecting AI to work: it holds the revoked key. Fix forward, or set the new key and redeploy from Git. | This is why the old key is revoked last. |
 | **Data** | There is no data migration. Balances are only written by `commit_license_use` (new) and `consume_license_use` (old) on the same column, and reservations are disposable. If a customer reports a lost use, confirm it in `license_reservations`, then: `update licenses set uses_remaining = least(uses_remaining + 1, max_uses) where code = '<CODE>';` | |
 
+## 5b. Branch-deploy acceptance test (before merging a feature branch)
+
+A **branch deploy** builds a pushed branch at its own URL (`<branch>--<site-name>.netlify.app`) without publishing it to production. It uses the **"Branch deploys"** environment-variable context and, here, the **production database**, so treat it as production data with a non-production URL.
+
+**Before the first build** (variables apply at deploy time):
+
+| Variable (Branch deploys context) | Value |
+|---|---|
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Same as production (server-only; mark as secrets). Without them every function fails. |
+| `ANTHROPIC_API_KEY` | Same as production, or a separate key with its own spend limit that you revoke afterwards. Without it Analyze, Polish and Tailor return "Server error". |
+| `AI_TIMEOUT_MS` | `50000` |
+| `TAILOR_TOKEN_SECRET` | A **new** random value (32+ characters), **not** the production one. Both environments share one database, so a shared secret would let a token from the branch be honored on production. Without it Polish still charges but issues no Tailor token. |
+
+**Safety:**
+- Enable branch deploys for **individual branches only** (the one under test), not "All".
+- Use only your personal code; never a customer's. Polish spends 1 of its 5 generations, so confirm it has at least 3 left first.
+- Keep production auto-publishing locked.
+- Scheduled functions (`check-code-supply`) run only on the published production deploy.
+
+**Zero-cost checks right after the build (no generation spent):**
+1. Enter `FG-ZZZZ-9999` at the gate: "We couldn't find that code." (proves the Supabase variables work).
+2. Open `/.netlify/functions/export-resume` and `/.netlify/functions/polish-resume` in the browser: each answers "Method Not Allowed" (proves the functions deployed).
+3. Click Try Sample, then PDF: the access-code gate appears and nothing downloads.
+
+**Then, with your personal code:** download a PDF and a Word file (counter unchanged); run one Polish (counter drops by exactly 1; AI-added lines are yellow); run one Tailor (works, counter unchanged); repeat a build and a download on a phone.
+
+**Cleanup:** remove the branch from the branch-deploy list, delete the branch-only `TAILOR_TOKEN_SECRET`, and revoke any test API key.
+
 ## 6. Tests
 
 Run `npm install` at the repo root first (the export function's `jspdf` and `docx` are real dependencies, installed by Netlify at build time) and again in `tests/`. `tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`. Run them before every release.
