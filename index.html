@@ -751,7 +751,7 @@ function renderEditFields() {
           <div class="field-group"><div class="field-label">End</div><input class="field-input" value="${esc(exp.end)}" oninput="updateArrayItem('experience',${i},'end',this.value)"></div>
         </div>
         <div class="field-group"><div class="field-label">Location (optional)</div><input class="field-input" value="${esc(exp.location)}" oninput="updateArrayItem('experience',${i},'location',this.value)"></div>
-        <div class="field-group"><div class="field-label">Summary (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('experience',${i},'summary',this.value)">${esc(exp.summary)}</textarea></div>
+        <div class="field-group"><div class="field-label">Summary (optional)</div><textarea class="field-input${flagClass(exp.summary)}" rows="2" oninput="updateArrayItem('experience',${i},'summary',this.value)">${esc(exp.summary)}</textarea>${flagNote(exp.summary)}</div>
         <div class="field-label">Bullets</div>
         ${(exp.bullets||[]).map((b,j)=>`
           <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateExpBullet(${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeExpBullet(${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
@@ -766,7 +766,7 @@ function renderEditFields() {
       <div class="card">
         <div class="card-header"><span class="card-title">Project ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('projects',${i});renderEditFields();renderPreview()">Remove</button></div>
         <div class="field-group"><div class="field-label">Project name</div><input class="field-input" placeholder="e.g. School food drive" value="${esc(pr.name)}" oninput="updateArrayItem('projects',${i},'name',this.value)"></div>
-        <div class="field-group"><div class="field-label">What was it about? (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea></div>
+        <div class="field-group"><div class="field-label">What was it about? (optional)</div><textarea class="field-input${flagClass(pr.description)}" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea>${flagNote(pr.description)}</div>
         <div class="field-label">Bullets</div>
         ${(pr.bullets||[]).map((b,j)=>`
           <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateNested('projects',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('projects',${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}

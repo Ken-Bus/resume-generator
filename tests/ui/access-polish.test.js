@@ -303,6 +303,28 @@ test('access control and AI polish (Chromium)', async (t) => {
     await s.close();
   });
 
+  await t.test('REGRESSION: Edit Fields marks every flagged line, including a project DESCRIPTION and a job SUMMARY, with the yellow style and the "Added by AI" note', async () => {
+    const answers = { ...ANSWERS, experience: [{ title: 'Cashier', company: 'Fictional Market', location: '', start: '2024', end: '2025', summary: '', bullets: ['Helped customers at the register'] }],
+      projects: [{ name: 'School Food Drive', description: '', bullets: ['Asked classmates to donate canned food', 'Helped organize food for pickup'] }] };
+    const polished = { ...answers, experience: [{ ...answers.experience[0], summary: 'Ran the register for a busy store.', bullets: ['Helped customers at the register'] }],
+      projects: [{ name: 'School Food Drive', description: 'Collected donated food for families in the community.', bullets: ['Asked classmates to donate canned food for families in the community.', 'Organized donated food for pickup.'] }] };
+    const unverified = [
+      { where: 'projects.0.description', text: polished.projects[0].description, kind: 'claim', reasons: ['added where you wrote nothing: this part was blank in your answers'] },
+      { where: 'projects.0.bullets.0', text: polished.projects[0].bullets[0], kind: 'claim', reasons: ['who benefited is not in this entry: “families”'] },
+      { where: 'projects.0.bullets.1', text: polished.projects[0].bullets[1], kind: 'claim', reasons: ['your role changed: you wrote that you helped with this, but it now says “organized”'] },
+      { where: 'experience.0.summary', text: polished.experience[0].summary, kind: 'claim', reasons: ['added where you wrote nothing: this part was blank in your answers'] }];
+    const s = await open({ 'polish-resume': () => ({ status: 200, json: { result: JSON.stringify(polished), unverified, changes: { reworded: 4, cosmetic: 0, unchanged: 5 }, charged: true, usesRemaining: 4, maxUses: 5, tailorToken: 'tok-f' } }) }); await toReview(s);
+    await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); }, answers);
+    await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-ok');
+    const card = await s.page.innerText('.wiz-ok'); assert.match(card, /Please check 4 lines/); assert.match(card, /who benefited is not in this entry/); assert.match(card, /your role changed/);
+    await s.page.click('button:has-text("Open in Editor")'); await s.page.waitForSelector('#edit-fields');
+    const warned = await s.page.locator('#edit-fields textarea.flag-warn').evaluateAll((els) => els.map((e) => e.value));
+    assert.deepEqual(warned.sort(), [polished.experience[0].summary, ...polished.projects[0].bullets, polished.projects[0].description].sort());   // description and summary included
+    assert.equal(await s.page.locator('#edit-fields .flag-note').count(), 4);
+    assert.equal(await s.page.locator('#edit-fields textarea.field-input:not(.flag-warn)').filter({ hasText: 'Helped customers at the register' }).count(), 1);   // untouched lines are not marked
+    await s.close();
+  });
+
   await t.test('a polish that does reword shows the success banner and lists what changed (preview shows the new wording)', async () => {
     const s = await open({ 'polish-resume': polishOk({ unverified: [] }) }); await toReview(s);
     await s.page.click('#polish-btn'); await s.page.click('#polish-confirm'); await s.page.waitForSelector('.wiz-ok');

@@ -85,9 +85,12 @@ FACT RULES (never break these)
 2. Never add numbers, percentages, dollar amounts, team sizes, frequencies or any metric that is not already in the answers.
 3. Never add leadership, supervision, training of others, attendance or punctuality records, awards, accomplishments or responsibilities that the answers do not state. Never add a skill the person did not list or clearly describe doing.
 4. Do not add any job, project, volunteer entry, school or skill the person did not list. If a section is empty, leave it empty: having no work history is normal.
+5. Keep the person's level of involvement. If they wrote "helped", "assisted", "was part of" or "worked with", keep that level; never turn it into "organized", "planned", "ran", "created", "built" or "led" (so "helped organize food" must not become "organized food").
+6. Never add who benefited or what resulted ("for families", "in the community", "to help people", "resulting in", "ensuring", "improving") unless that same beneficiary or result is stated in THIS entry. A word that appears only in a different entry, or in another organization's name, does not count for this entry.
+7. If a description, summary or an entry's bullets are blank, leave them blank. Do not write new text for something the person left empty.
 
 HOW TO WRITE
-5. Improve what is actually said, not how impressive it sounds. Read EVERY line and ask whether an employer could understand it faster or more exactly. Say who or what the person worked with and what they did, using only the words and details they gave, including details given elsewhere in the same entry (a project's description, another bullet, the organization's name). Fix grammar, capitalization and punctuation, join fragments, start each bullet with a plain action verb, keep each bullet to one idea, and drop filler. Also tighten a line that is wordy, repeats another line, or uses a vague verb such as "did", "helped with" or "worked on" when the person's own words name the specific action. If a line is already clear and specific, leave it as it is: never reword a line just to change it. But do not skip a line that can honestly be made clearer.
+5. Improve what is actually said, not how impressive it sounds. Read EVERY line and ask whether an employer could understand it faster or more exactly. Say who or what the person worked with and what they did, using only the words and details they gave, including details the person gave in other fields of the SAME entry (for example that entry's description or another of its bullets), never details from a different entry. Fix grammar, capitalization and punctuation, join fragments, start each bullet with a plain action verb, keep each bullet to one idea, and drop filler. Also tighten a line that is wordy, repeats another line, or uses a vague verb such as "did", "helped with" or "worked on" when the person's own words name the specific action. If a line is already clear and specific, leave it as it is: never reword a line just to change it. But do not skip a line that can honestly be made clearer.
 6. Keep the person's own distinctive words (names of tools, equipment, places, subjects). Keep their meaning exactly; a reworded line must say the same thing as the original, only more clearly.
 7. Use natural, modest, professional language. Do not add praise or personality words. Avoid these generic phrases unless the person wrote them themselves: ${AVOID_WORDS}. Do not add quality adjectives such as "excellent", "strong" or "effective".
 8. Write in the first-person-omitted resume style ("Helped customers find products", not "I helped customers find products").
@@ -214,7 +217,7 @@ exports.handler = async function(event) {
     const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'polish', ref: reservation.reservationId });
     const shaped = assertResumeShape(extractJson(text));
     try {
-      const checked = integrity.reconcile(source, shaped, { vocabulary: target, keepBlankedText: true });
+      const checked = integrity.reconcile(source, shaped, { vocabulary: target, keepBlankedText: true, entryScope: true });
       polished = checked.resume; unverified = checked.unverified;
     } catch (e) {
       console.error('polish-resume: integrity check failed', { reason: safeReason(e) });

@@ -104,6 +104,54 @@ const FACT_FIELDS = {
   projects: ['name']
 };
 
+// ── entry-scoped checks (AI Polish) ────────────────────────────────────────────────────────────────────────────────
+// The checks above compare a line with the WHOLE resume, so a word that appears anywhere (an organization's name, a line in a
+// different entry) counts as "the customer's own". That lets an AI move a detail from one entry into another unnoticed: a project
+// that never mentioned families can gain "for families in the community" because a volunteer entry does. These checks compare a line
+// only with the entry it belongs to. They add warnings only: nothing is reverted, deleted or charged differently, and Tailor does not
+// use them (they run only when reconcile gets options.entryScope).
+const PEOPLE = 'families|family|children|kids|students|seniors|elderly|patients|customers|clients|residents|neighbors|neighbours|community|public|veterans|homeless|shoppers|guests|visitors|parents|people in need|those in need|people';
+const BENEFICIARY_RES = [
+  new RegExp(`\\b(?:for|to|serv\\w*|support\\w*|benefit\\w*|help\\w*|feed\\w*|assist\\w*|aid\\w*)\\s+(?:(?:the|local|our|many|needy|hungry|low-income|underserved|neighborhood|their|his|her)\\s+)*(${PEOPLE})\\b`, 'gi'),
+  /\b(?:in|within|across)\s+(?:the|our|their|a)\s+(?:local\s+)?(community|neighborhood|neighbourhood|city|town|area)\b/gi,
+  /\b(?:community|neighborhood)\s+(members|residents|families)\b/gi
+];
+const OUTCOME_RE = /\b(resulting in|resulted in|leading to|led to|which (?:helped|allowed|ensured|made)|ensur(?:ing|ed)|so that|improv(?:ing|ed)|increas(?:ing|ed)|reduc(?:ing|ed)|sav(?:ing|ed)|boost(?:ing|ed)|streamlin\w*|enabl(?:ing|ed)|making a difference|made a difference|impact\w*|benefit(?:ing|ed|s)?)\b/gi;
+// Verbs that claim ownership of a task, and verbs that keep the person in a supporting role.
+const OWN_RE = /\b(organi[sz]\w*|plann(?:ed|ing)|plan|coordinat\w*|creat(?:ed|ing)|built|build(?:ing)?|design(?:ed|ing)?|develop(?:ed|ing)?|launch(?:ed|ing)?|establish(?:ed|ing)?|implement(?:ed|ing)?|initiat(?:ed|ing)|arrang(?:ed|ing)|orchestrat\w*|spearhead\w*|ran)\b/gi;
+const HEDGE_RE = /\b(help(?:ed|ing|s)?|assist(?:ed|ing|s)?|support(?:ed|ing|s)?|participat\w*|contribut\w*|join(?:ed|ing)?|took part|take part|part of|worked (?:with|alongside)|pitched in|aided)\b/i;
+const rootKey = (w) => { const x = w.toLowerCase(); if (/^plan/.test(x)) return 'plan'; if (/^buil/.test(x)) return 'build'; return x === 'ran' ? 'ran' : x.slice(0, 5); };
+const hasRoot = (text, root) => new RegExp(`\\b${root.replace(/[^a-z]/g, '')}`, 'i').test(text);
+
+// scope = { text: the entry's own original text, lines: its original lines, blank: the field was empty in the customer's answers }
+function scopedReasons(line, scope) {
+  const reasons = [];
+  if (!scope) return reasons;
+  if (scope.blank) reasons.push('added where you wrote nothing: this part was blank in your answers');
+  const seen = new Set();
+  BENEFICIARY_RES.forEach((re) => { for (const m of s(line).matchAll(re)) {
+    const who = m[1].toLowerCase(); const root = who.split(' ')[0].slice(0, 5);
+    if (seen.has(root) || hasRoot(scope.text, root)) continue;
+    seen.add(root); reasons.push(`who benefited is not in this entry: “${who}”`);
+  } });
+  for (const m of s(line).matchAll(OUTCOME_RE)) {
+    const root = m[1].toLowerCase().split(' ')[0].slice(0, 5);
+    if (seen.has(root) || hasRoot(scope.text, root)) continue;
+    seen.add(root); reasons.push(`a result or impact that is not in this entry: “${m[1].toLowerCase()}”`);
+  }
+  if (!HEDGE_RE.test(line)) {
+    for (const m of s(line).matchAll(OWN_RE)) {
+      const key = rootKey(m[1]); if (seen.has(key)) continue;
+      const withKey = scope.lines.filter((o) => [...o.matchAll(OWN_RE)].some((x) => rootKey(x[1]) === key));
+      if (withKey.some((o) => !HEDGE_RE.test(o))) continue;              // the customer owns this task in their own words
+      seen.add(key);
+      reasons.push(withKey.length ? `your role changed: you wrote that you helped with this, but it now says “${m[1].toLowerCase()}”`
+                                  : `a responsibility that is not in this entry: “${m[1].toLowerCase()}”`);
+    }
+  }
+  return reasons;
+}
+
 // original = the resume the customer sent; output = the AI's tailored resume object.
 // options.vocabulary: extra words the customer supplied (their stated goal). They count as the customer's own words for the
 // "new details" test only; they never make a claim (leadership, credential, praise, number) count as supported.
@@ -143,16 +191,19 @@ function reconcile(original, output, options = {}) {
   const unverified = [];
   // A line is flagged for a CLAIM (something the customer must confirm is true) or for NEW DETAILS (two or more
   // content words the customer never used). A faithful paraphrase has neither, so it passes without a warning.
-  const check = (text, where) => {
+  const check = (text, where, scope) => {
     const t = s(text).trim();
     if (!t || originalLines.has(t) || unverified.length >= 40) return;
     const { claims, details } = analyse(t, originalText, originalNumbers, originalStems);
     const reasons = claims.slice();
     if (details.length >= 2) reasons.push(`new details not in your answers: ${details.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
-    if (reasons.length) unverified.push({ where, text: t, kind: claims.length ? 'claim' : 'details', reasons });
+    const scoped = options.entryScope ? scopedReasons(t, scope) : [];       // AI Polish only
+    scoped.forEach((r) => reasons.push(r));
+    if (reasons.length) unverified.push({ where, text: t, kind: claims.length || scoped.length ? 'claim' : 'details', reasons });
   };
-  check(out.summary.tagline, 'summary.tagline');
-  arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`));
+  const wholeScope = { text: originalText, lines: allText(orig).map((x) => s(x).trim()).filter(Boolean), blank: false };
+  check(out.summary.tagline, 'summary.tagline', wholeScope);
+  arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`, wholeScope));
   const origSkills = new Set(arr(orig.summary && orig.summary.skills).map((x) => s(x).trim().toLowerCase()));
   arr(out.summary.skills).forEach((sk, i) => {
     const t = s(sk).trim();
@@ -161,9 +212,13 @@ function reconcile(original, output, options = {}) {
   });
   ['experience', 'volunteer', 'projects'].forEach((k) => arr(out[k]).forEach((e, i) => {
     if (!isObj(e)) return;
-    arr(e.bullets).forEach((b, j) => check(b, `${k}.${i}.bullets.${j}`));
-    check(e.summary, `${k}.${i}.summary`);
-    check(e.description, `${k}.${i}.description`);
+    const o0 = isObj(arr(orig[k])[i]) ? arr(orig[k])[i] : {};
+    const lines = allText(o0).map((x) => s(x).trim()).filter(Boolean);
+    const scope = (blank) => ({ text: lines.join('\n'), lines, blank });
+    const hadBullets = arr(o0.bullets).some((b) => s(b).trim());
+    arr(e.bullets).forEach((b, j) => check(b, `${k}.${i}.bullets.${j}`, scope(!hadBullets)));
+    check(e.summary, `${k}.${i}.summary`, scope(!s(o0.summary).trim()));
+    check(e.description, `${k}.${i}.description`, scope(!s(o0.description).trim()));
   }));
 
   return { resume: out, unverified };
@@ -204,4 +259,4 @@ function assessChange(before, after) {
   return res;
 }
 
-module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange };
+module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons };

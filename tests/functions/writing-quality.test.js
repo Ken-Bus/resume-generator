@@ -182,17 +182,22 @@ const PLAIN = Core.clean({
   volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }]
 });
 
-test('the FACT RULES block is byte-for-byte what it was before the instruction change (nothing weakened)', () => {
+test('the original four FACT RULES are byte-for-byte unchanged (a pinned prefix); the new rules only ADD limits', () => {
   const text = polish._buildPrompt(PLAIN, 'customer service', 'first');
-  const block = text.slice(text.indexOf('FACT RULES (never break these)'), text.indexOf('HOW TO WRITE')).trimEnd();
-  assert.equal(crypto.createHash('sha256').update(block).digest('hex'), 'c9e5459bfb4de75e2a59beea2d248980600c2ac1d0465410f635b5fc1dd7ee4d');
+  const block = text.slice(text.indexOf('FACT RULES (never break these)'), text.indexOf('HOW TO WRITE'));
+  const original = block.slice(0, block.indexOf('\n5. ')).trimEnd();                                   // rules 1-4 exactly as first shipped
+  assert.equal(crypto.createHash('sha256').update(original).digest('hex'), 'c9e5459bfb4de75e2a59beea2d248980600c2ac1d0465410f635b5fc1dd7ee4d');
   assert.ok(text.indexOf('FACT RULES') < text.indexOf('HOW TO WRITE'), 'the fact rules still come first');
-  for (const rule of ['Never invent or change employers', 'Never add numbers, percentages', 'Never add leadership, supervision', 'Do not add any job, project, volunteer entry']) assert.ok(text.includes(rule), rule);
+  for (const rule of ['Never invent or change employers', 'Never add numbers, percentages', 'Never add leadership, supervision', 'Do not add any job, project, volunteer entry']) assert.ok(original.includes(rule), rule);
+  // added after the Sonnet 5.5 acceptance run (fictional Taylor Rivera): involvement level, beneficiaries/results, blank fields
+  for (const must of ['5. Keep the person\'s level of involvement', 'never turn it into "organized", "planned", "ran", "created", "built" or "led"', '"helped organize food" must not become "organized food"',
+    '6. Never add who benefited or what resulted', 'unless that same beneficiary or result is stated in THIS entry', 'does not count for this entry',
+    '7. If a description, summary or an entry\'s bullets are blank, leave them blank']) assert.ok(block.includes(must), must);
 });
 
 test('the prompt tells the model what can still be improved in a clean, plain line, and also not to change a line just to change it', () => {
   const text = polish._buildPrompt(PLAIN, 'customer service', 'first');
-  for (const must of ['Read EVERY line', 'including details given elsewhere in the same entry', 'capitalization and punctuation', 'wordy, repeats another line',
+  for (const must of ['Read EVERY line', 'including details the person gave in other fields of the SAME entry', 'never details from a different entry', 'capitalization and punctuation', 'wordy, repeats another line',
     'vague verb such as "did", "helped with" or "worked on"', 'never reword a line just to change it', 'do not skip a line that can honestly be made clearer']) assert.ok(text.includes(must), must);
   assert.match(text, /Good: "Asked classmates to donate canned food for a local pantry\."/);                    // a clean line improved from the entry's own details
   assert.match(text, /Bad: "Led a school-wide drive that fed 200 families\."/);
@@ -211,7 +216,7 @@ test('guardrails keep an honest improvement of a plain line exactly as the AI wr
   };
   for (const [name, edit] of Object.entries(edits)) {
     const out = clone(PLAIN); edit(out);
-    const r = reconcile(PLAIN, out, { vocabulary: 'customer service', keepBlankedText: true });
+    const r = reconcile(PLAIN, out, { vocabulary: 'customer service', keepBlankedText: true, entryScope: true });      // exactly what AI Polish runs
     assert.deepEqual(Core.clean(r.resume), Core.clean(out), `${name}: reverted or altered`);
     assert.ok(assessChange(PLAIN, r.resume).reworded >= 1, `${name}: not counted as meaningful`);
     assert.deepEqual(r.unverified, [], `${name}: wrongly flagged`);

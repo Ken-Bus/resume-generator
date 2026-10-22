@@ -364,6 +364,36 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     } finally { w.stop(); }
   });
 
+  // ── Sonnet 5.5 acceptance run on 9121379 (fictional Taylor Rivera): an unsupported beneficiary, an implied outcome and "helped" -> "organized" ──
+  const TAYLOR_ENTRY = { name: 'Taylor Rivera', contact: { email: 'taylor.rivera@example.com', location: 'Dayton, OH' }, summary: { tagline: 'Seeking a customer service position', bullets: [], skills: ['Teamwork'] },
+    experience: [], education: [{ degree: 'High School Diploma', school: 'Oakwood High School', date: '2026' }], certifications: [],
+    projects: [{ name: 'School Food Drive', description: '', bullets: ['Asked classmates to donate canned food', 'Helped organize food for pickup'] }],
+    volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }], awards: [] };
+
+  await t.test('REPORTED CASE end to end: blank description filled, beneficiary from another entry, helper -> organizer: all three come back FLAGGED; wording kept; credit rules unchanged (one charge)', async () => {
+    reset(); clearCap(); const c = await seed();
+    ai.polishPayload = (r) => { const o = clone(r); o.projects[0].description = 'Collected donated food for families in the community.';
+      o.projects[0].bullets = ['Asked classmates to donate canned food for families in the community.', 'Organized donated food for pickup.']; return o; };
+    const b = parseBody(await polish(c, TAYLOR_ENTRY)); const out = JSON.parse(b.result);
+    assert.equal(b.charged, true); assert.equal(b.usesRemaining, 4); assert.equal(await uses(c), 4);             // unchanged accounting: meaningful change = one charge
+    const by = Object.fromEntries(b.unverified.map((u) => [u.where, u.reasons.join(' | ')]));
+    assert.match(by['projects.0.description'], /added where you wrote nothing/);
+    assert.match(by['projects.0.bullets.0'], /who benefited is not in this entry: “families”/);
+    assert.match(by['projects.0.bullets.1'], /your role changed/);
+    assert.equal(b.unverified.length, 3);
+    assert.equal(out.projects[0].bullets[1], 'Organized donated food for pickup.');                               // warned, never silently reverted or deleted
+    assert.equal(out.volunteer[0].organization, 'Community Food Pantry'); assert.equal(out.projects[0].name, 'School Food Drive');
+    const log = JSON.stringify(b.unverified); assert.equal(log.includes(c), false);
+  });
+
+  await t.test('a faithful improvement of the same entry returns NO warnings and is charged once (useful wording is preserved)', async () => {
+    reset(); clearCap(); const c = await seed();
+    ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food for the food drive', 'Helped organize the food pickup']; o.volunteer[0].bullets[1] = 'Greeted arriving families'; return o; };
+    const b = parseBody(await polish(c, TAYLOR_ENTRY));
+    assert.deepEqual(b.unverified, []); assert.ok(b.changes.reworded >= 3); assert.equal(b.usesRemaining, 4);
+    assert.deepEqual(JSON.parse(b.result).projects[0].bullets, ['Asked classmates to donate canned food for the food drive', 'Helped organize the food pickup']);
+  });
+
   await t.test('COSMETIC ONLY (capitals, punctuation, spacing): treated as no improvement, charges ZERO, the customer\'s own wording is untouched', async () => {
     reset(); clearCap(); const c = await seed(); ai.polishPayload = cosmetic;
     const b = parseBody(await polish(c));
