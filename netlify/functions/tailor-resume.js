@@ -86,7 +86,7 @@ ${jobDescription}`;
   let resultText;
   let unverified = [];
   try {
-    const text = await callClaude({ prompt, maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
+    const text = await callClaude({ prompt, maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'tailor', ref: auth.reservationId });
     const shaped = assertTailorShape(extractJson(text));
     // Restore facts and flag anything the customer never provided. Pure post-processing: it cannot fail the
     // paid operation, and it never touches license or credit state.

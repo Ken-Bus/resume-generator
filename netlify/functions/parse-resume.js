@@ -83,7 +83,7 @@ exports.handler = async function(event) {
   // 2. Run the AI. ANY failure releases the reservation and the customer is not charged.
   let resultText;
   try {
-    const text = await callClaude({ prompt, maxTokens: cfg.PARSE_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
+    const text = await callClaude({ prompt, maxTokens: cfg.PARSE_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'analyze', ref: reservation.reservationId });
     resultText = JSON.stringify(assertResumeShape(extractJson(text)));
   } catch (err) {
     // Provider outages are released uncounted; anything that may have cost money counts toward the per-code budget.

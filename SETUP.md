@@ -46,6 +46,8 @@ _No new variables are needed for downloads or AI Polish._ They use the existing 
 
 Set in Site configuration → Environment variables. `SUPABASE_*` and `ANTHROPIC_API_KEY` must be set in **all four deploy contexts** (Production, Deploy Previews, Branch deploys, Local development), or some code paths will keep running on a stale or missing value. Netlify applies a variable **at deploy time**, so redeploy after changing any of them.
 
+_AI model, thinking setting, caps and the privacy-safe `ai-usage` log: see `docs/AI_MODEL_AND_USAGE.md`. The model is `claude-sonnet-5-5`; no new environment variable is needed._
+
 | Variable | Required | Purpose |
 |---|---|---|
 | `SUPABASE_URL` | yes | Project URL |

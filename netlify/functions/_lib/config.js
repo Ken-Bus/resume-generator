@@ -9,15 +9,25 @@ function get() {
   // Set AI_TIMEOUT_MS explicitly in Netlify as well (runbook §2.3); this fallback only protects against it being forgotten.
   const aiTimeoutMs = int(process.env.AI_TIMEOUT_MS, 50000, 1000);
   return {
-    MODEL: 'claude-sonnet-4-5-20250929',
+    // Sonnet 4.5 is deprecated and retires November 30, 2026; Anthropic's named replacement is Sonnet 5.5.
+    MODEL: 'claude-sonnet-5-5',
+    // Sonnet 5.5 thinks before answering unless told otherwise, and thinking tokens are billed as output and count toward
+    // max_tokens. These are plain rewrite/extract jobs with no tools, so use the documented lowest setting (no up-front
+    // thinking; the reply is text only). 'disabled' is rejected by this model with a 400.
+    THINKING: { type: 'between_tools' },
+    // USD per million tokens for MODEL, used ONLY for the cost estimate written to the usage log (never for charging).
+    // Source: Anthropic pricing page, Oct 2026. Update together with MODEL.
+    PRICE_PER_MTOK: { input: 2, output: 10 },
     // Input limits (characters). A 5-page resume is roughly 15k characters.
     RESUME_MAX_CHARS: 30000,
     JOB_DESC_MAX_CHARS: 10000,
     RESUME_JSON_MAX_CHARS: 60000,
     MAX_BODY_BYTES: 262144,
     // Output caps. The old 2000/3000 caps truncated long resumes into unparseable JSON.
-    PARSE_MAX_TOKENS: 4000,
-    TAILOR_MAX_TOKENS: 6000,
+    // Sonnet 5.5's tokenizer produces about 30% more tokens for the same text, so the caps are raised by the same factor
+    // (was 4000 / 6000) to keep long resumes working instead of truncating. Worst-case spend per call stays about the same.
+    PARSE_MAX_TOKENS: 5200,
+    TAILOR_MAX_TOKENS: 8000,
     AI_TIMEOUT_MS: aiTimeoutMs,
     // A reservation must outlive the AI call, so a request that is still running is never double-booked.
     // If the function dies mid-call the lease simply lapses and the use is never charged.

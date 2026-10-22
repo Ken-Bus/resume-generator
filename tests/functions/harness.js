@@ -107,6 +107,13 @@ function installAi(state) {
     if (mode === 'throw') throw new Error('socket hang up');
     if (mode === 'http500') return { ok: false, status: 500, json: async () => ({ error: { type: 'overloaded_error' } }) };
     const body = JSON.parse(opts.body);
+    (state.bodies = state.bodies || []).push(body);
+    // Reject what the real Sonnet 5.5 API rejects, so a regression in the request shape fails the suite instead of production.
+    const bad = (message) => ({ ok: false, status: 400, json: async () => ({ type: 'error', error: { type: 'invalid_request_error', message } }) });
+    if (body.model !== 'claude-sonnet-5-5') return { ok: false, status: 404, json: async () => ({ type: 'error', error: { type: 'not_found_error', message: `model: ${body.model}` } }) };
+    if (['temperature', 'top_p', 'top_k'].some((k) => k in body)) return bad('sampling parameters are not supported');
+    if (body.thinking && body.thinking.type === 'disabled') return bad('To turn thinking off on this model, send "thinking": {"type": "between_tools"}');
+    if (body.messages[body.messages.length - 1].role !== 'user') return bad('This model does not support assistant message prefill.');
     const prompt = body.messages[0].content;
     state.lastPrompt = prompt;
     const isTailor = /tailoring assistant/.test(prompt);
@@ -121,7 +128,14 @@ function installAi(state) {
     if (mode === 'notjson') text = 'Sorry, I cannot parse that.';
     if (mode === 'badshape') text = JSON.stringify([1, 2, 3]);
     if (mode === 'empty') text = '';
-    return { ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text }], stop_reason: stop }) };
+    if (mode === 'prose') text = `Here is the polished resume:\n${text}\nLet me know if you want changes.`;
+    let content = [{ type: 'thinking', thinking: '', signature: 'sig-test' }, { type: 'text', text }];   // 5.5 can lead with a thinking block
+    if (mode === 'multitext') content = [{ type: 'thinking', thinking: '', signature: 's' }, { type: 'text', text: text.slice(0, 30) }, { type: 'text', text: text.slice(30) }];
+    if (mode === 'thinkingonly') content = [{ type: 'thinking', thinking: '', signature: 's' }];
+    if (mode === 'refusal') { content = [{ type: 'text', text: '' }]; stop = 'refusal'; }
+    if (mode === 'contextexceeded') stop = 'model_context_window_exceeded';
+    const usage = state.usage || { input_tokens: Math.ceil(prompt.length / 3.8), output_tokens: Math.ceil(text.length / 3.6) };
+    return { ok: true, status: 200, json: async () => ({ id: 'msg_test', type: 'message', role: 'assistant', model: body.model, content, stop_reason: stop, usage }) };
   };
   return state;
 }
@@ -133,4 +147,4 @@ function captureLogs() {
   return { lines, restore: () => { console.error = orig; } };
 }
 
-module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS, ECHO };
+module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS, ECHO, REWORD_FIRST_BULLET };

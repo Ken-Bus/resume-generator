@@ -206,7 +206,7 @@ exports.handler = async function(event) {
   let unverified = [];
   let changes = null;                                             // observation only: how much of the wording the AI actually changed
   try {
-    const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
+    const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'polish', ref: reservation.reservationId });
     const shaped = assertResumeShape(extractJson(text));
     try {
       const checked = integrity.reconcile(source, shaped, { vocabulary: target, keepBlankedText: true });
