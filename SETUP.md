@@ -243,6 +243,8 @@ A **branch deploy** builds a pushed branch at its own URL (`<branch>--<site-name
 - Keep production auto-publishing locked.
 - Scheduled functions (`check-code-supply`) run only on the published production deploy.
 
+**If Netlify offers no Retry/Redeploy for a branch deploy,** push a documentation-only commit to the branch: any push builds it again, with the environment variables as they are at that moment.
+
 **Variables are read when the deploy is BUILT.** Adding or fixing one afterwards changes nothing until you redeploy that branch ("Trigger deploy", "Clear cache and deploy site"). A missing `ANTHROPIC_API_KEY` is the commonest cause of "Server error, please try again. (ref P101)" on a branch deploy: the function stops before it reserves anything, so nothing is charged.
 
 **Free configuration check from the browser console on the branch site** (spends nothing, reads no data, shows no secrets):
