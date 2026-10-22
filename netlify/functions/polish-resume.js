@@ -49,16 +49,58 @@ const cacheKey = (code, id) => crypto.createHash('sha256').update(`${code}:${id}
 function cacheGet(k) { const v = recent.get(k); if (v && Date.now() - v.at < RECENT_MS) return v.body; recent.delete(k); return null; }
 function cachePut(k, body) { recent.set(k, { at: Date.now(), body }); if (recent.size > 200) recent.delete(recent.keys().next().value); }
 
-function buildPrompt(source, target) {
-  return `You are a resume-writing assistant helping a first-time or returning job seeker. You will receive the person's OWN answers as structured JSON. Rewrite them into clear, professional, job-relevant resume wording.
+// Who is this resume for? The customer can say (first resume / worked before / changing to different work); otherwise it
+// follows from the answers. Only these three values are ever used, so the field cannot inject text into the prompt.
+const PROFILES = ['first', 'experienced', 'changer'];
+function chooseProfile(requested, source) {
+  const hasWork = source.experience.length > 0;
+  if (!PROFILES.includes(requested)) return hasWork ? 'experienced' : 'first';
+  if (requested !== 'first' && !hasWork) return 'first';          // nothing to build an "experienced" or "career change" story from
+  return requested;
+}
 
-Strict rules:
-1. Use ONLY facts that appear in the JSON. Never invent or change employers, job titles, dates, schools, degrees, certifications, licenses, awards or locations. Copy those fields exactly as given.
-2. Never add numbers, percentages, dollar amounts, team sizes or any other metric that is not already in the answers. Never imply leadership, supervision, or training others unless the answers say so.
-3. Reword only: summary.tagline, summary.bullets, summary.skills, and the bullets / description / summary of each entry in experience, projects and volunteer. Start bullets with a strong action verb, keep them short, specific and truthful, one idea per bullet. If a line is already clear, leave it as it is. Do not pad.
-4. Do not add any job, project, volunteer entry, school or skill the person did not list. If a section is empty, leave it empty: having no work history is normal. Only write a headline or summary from the goal and skills the person actually gave.
-5. ${target ? `The person is looking for: "${target}". Choose wording relevant to that goal, still using only the facts above.` : 'No target job was given, so keep the wording general.'}
-6. Keep exactly the same JSON schema and keys as the input. Return ONLY valid JSON, no markdown fences, no commentary.
+const AUDIENCE = {
+  first: `AUDIENCE: This is the person's FIRST resume. Employers will look for evidence of reliability, willingness to learn and basic skills, and a first-time applicant has that evidence in school, volunteering, projects, training, hobbies and family or community responsibilities. State plainly and confidently what the person actually did. Do not make school or volunteer activity sound like paid professional work, and do not apologise for having no work history.`,
+  experienced: `AUDIENCE: This person HAS WORK HISTORY. Make each job's bullets specific and easy to scan: what they did, with what (any tools, equipment or systems they named), in plain active verbs. Join fragments and repeated lines, put the most relevant line first, and keep every specific the person gave. Do not turn routine duties into achievements. If the person stayed in one place for years, keep each role and its dates separate and describe the work as it was.`,
+  changer: `AUDIENCE: This person is CHANGING to a different kind of work. Keep their real experience, and word the duties so the parts that carry over are easy to see (for example dealing with customers, keeping accurate records, following safety rules; mention training others only if they said so). Never claim experience in the new field. In the one-line introduction, name the kind of work they are aiming for (from their stated goal) and one strength they actually listed.`
+};
+
+// Words that make a resume sound generated. The model must not use them unless the customer wrote them. (The server
+// also flags any that slip through; see _lib/integrity.js.)
+const AVOID_WORDS = 'motivated, passionate, dynamic, results-driven, proven track record, hard-working, detail-oriented, self-starter, team player, go-getter, ' +
+  'dedicated, committed, exceptional, excellent, outstanding, highly skilled, extensive experience, successfully, spearheaded, leveraged, utilized, synergy, fast-paced environment';
+
+function buildPrompt(source, target, profile) {
+  return `You are a careful resume editor. You will receive a person's OWN answers as structured JSON. Rewrite them so an employer can read them quickly and understand what the person did, in natural, professional, plain English.
+
+${AUDIENCE[profile]}
+
+FACT RULES (never break these)
+1. Use ONLY facts that appear in the JSON. Never invent or change employers, job titles, dates, schools, qualifications, certifications, licenses, awards or locations. Copy those fields exactly as given.
+2. Never add numbers, percentages, dollar amounts, team sizes, frequencies or any metric that is not already in the answers.
+3. Never add leadership, supervision, training of others, attendance or punctuality records, awards, accomplishments or responsibilities that the answers do not state. Never add a skill the person did not list or clearly describe doing.
+4. Do not add any job, project, volunteer entry, school or skill the person did not list. If a section is empty, leave it empty: having no work history is normal.
+
+HOW TO WRITE
+5. Improve what is actually said, not how impressive it sounds. Say who or what the person worked with and what they did, using only the words and details they gave. Fix grammar, join fragments, start each bullet with a plain action verb, keep each bullet to one idea, and drop filler. If a line is already clear, leave it as it is.
+6. Keep the person's own distinctive words (names of tools, equipment, places, subjects). Keep their meaning exactly; a reworded line must say the same thing as the original, only more clearly.
+7. Use natural, modest, professional language. Do not add praise or personality words. Avoid these generic phrases unless the person wrote them themselves: ${AVOID_WORDS}. Do not add quality adjectives such as "excellent", "strong" or "effective".
+8. Write in the first-person-omitted resume style ("Helped customers find products", not "I helped customers find products").
+9. ${target ? `The person is looking for: "${target}". Where it is truthful, put the most relevant facts first and choose wording that fits that kind of work, using only the facts above.` : 'No target job was given, so keep the wording general.'}
+10. The one-line introduction (summary.tagline) may only restate the goal and strengths the person gave; if they gave neither, leave it as it is. Do not write a summary paragraph.
+
+EXAMPLES of the difference (fictional)
+- Answer: "helped customers find stuff, put stuff on shelves"
+  Good: "Helped customers find products and restocked shelves."
+  Bad: "Provided exceptional customer service in a fast-paced retail environment." (adds praise and a setting the person never described)
+- Answer: "ran the register, counted the drawer at night"
+  Good: "Operated the register and counted the cash drawer at closing."
+  Bad: "Managed cash handling operations with 100% accuracy." (adds a claim and a metric)
+- Answer: "asked classmates to donate cans, sorted them"
+  Good: "Asked classmates to donate canned food and sorted the donations."
+  Bad: "Spearheaded a school-wide food drive, leading a team of volunteers." (adds leadership and scale)
+
+Keep exactly the same JSON schema and keys as the input. Return ONLY valid JSON, no markdown fences, no commentary.
 
 Resume JSON:
 ${JSON.stringify(source)}`;
@@ -77,7 +119,7 @@ exports.handler = async function(event) {
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { code: rawCode, resume, target: rawTarget, requestId } = parsed.body;
+  const { code: rawCode, resume, target: rawTarget, requestId, profile: rawProfile } = parsed.body;
 
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
   const code = normalizeCode(rawCode);
@@ -87,7 +129,8 @@ exports.handler = async function(event) {
   if (JSON.stringify(resume).length > cfg.RESUME_JSON_MAX_CHARS) return json(413, { error: 'That resume is too long to polish. Please shorten it and try again.' });
   const source = Core.clean(resume);
   if (!Core.hasWritableText(source)) return json(400, { error: MSG.nothing });
-  const target = typeof rawTarget === 'string' ? rawTarget.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+  const target = typeof rawTarget === 'string' ? rawTarget.replace(/["\\`]/g, "'").replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+  const profile = chooseProfile(typeof rawProfile === 'string' ? rawProfile : '', source);
   const rid = typeof requestId === 'string' && REQUEST_ID_RE.test(requestId) ? requestId : null;
 
   let supabase;
@@ -147,10 +190,10 @@ exports.handler = async function(event) {
   let polished;
   let unverified = [];
   try {
-    const text = await callClaude({ prompt: buildPrompt(source, target), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
+    const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS });
     const shaped = assertResumeShape(extractJson(text));
     try {
-      const checked = integrity.reconcile(source, shaped, { flagNewSummary: true });
+      const checked = integrity.reconcile(source, shaped, { vocabulary: target });
       polished = checked.resume; unverified = checked.unverified;
     } catch (e) {
       console.error('polish-resume: integrity check failed', { reason: safeReason(e) });
@@ -193,3 +236,5 @@ exports.handler = async function(event) {
 };
 
 exports._recent = recent;     // for tests
+exports._buildPrompt = buildPrompt;
+exports._chooseProfile = chooseProfile;

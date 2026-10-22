@@ -97,8 +97,9 @@ function installAi(state) {
     if (mode === 'http500') return { ok: false, status: 500, json: async () => ({ error: { type: 'overloaded_error' } }) };
     const body = JSON.parse(opts.body);
     const prompt = body.messages[0].content;
+    state.lastPrompt = prompt;
     const isTailor = /tailoring assistant/.test(prompt);
-    const isPolish = /resume-writing assistant/.test(prompt);
+    const isPolish = /careful resume editor/.test(prompt);
     // Polish default: hand the customer's own resume back (the prompt embeds it after "Resume JSON:"); tests override with state.polishPayload.
     const polished = isPolish ? (state.polishPayload ? state.polishPayload(JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : JSON.parse(prompt.slice(prompt.indexOf('Resume JSON:') + 13))) : null;
     const payload = isPolish ? polished : isTailor ? { resume: GOOD_RESUME, matchSummary: { matchedKeywords: ['customer service'], missingKeywords: ['Salesforce'], notes: 'ok' } } : GOOD_RESUME;

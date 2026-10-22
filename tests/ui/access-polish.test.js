@@ -281,5 +281,64 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.match(await s.page.innerText('.wiz-ok'), /<script>window\.__xss2=1<\/script>/); await s.close();
   });
 
+
+  // ───────── AI polish is easy to find from the regular editor ─────────
+  await t.test('editor: the polish card sits at the top of Edit Fields with the cost stated; it needs a code and something to polish; it is not a second charge path', async () => {
+    const s = await open({ 'polish-resume': polishOk() }); await toReview(s);
+    await s.page.click('button:has-text("Open in Editor")');
+    assert.equal(await s.page.evaluate(() => state.activePanel), 'edit');
+    assert.equal(await s.page.evaluate(() => document.querySelector('#panel-edit').firstElementChild.id), 'edit-polish');       // first thing in the editor
+    assert.equal(await s.page.evaluate(() => document.querySelector('#panel-edit').scrollTop), 0);                             // and it opens scrolled to the top, so the card is on screen
+    assert.equal(await s.page.locator('#edit-polish-btn').isVisible(), true);
+    assert.ok(await s.page.evaluate(() => { const r = document.querySelector('#edit-polish-btn').getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; }), 'the polish button is within the visible window');
+    assert.match(await s.page.innerText('#edit-polish'), /Improve the wording with AI/); assert.match(await s.page.innerText('#edit-polish'), /Uses 1 of your 5 generations \(of 5\)/);
+    assert.equal(await s.page.isVisible('#edit-polish-btn'), true);
+    assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);                                                 // seeing it charges nothing
+    await s.page.evaluate(() => { state.data = ResumeCore.blank(); renderEditFields(); renderPreview(); });                    // nothing to polish yet
+    assert.equal(await s.page.locator('#edit-polish-btn').count(), 0);
+    await s.page.evaluate(() => { state.data.summary.skills = ['Teamwork']; renderPreview(); });                              // typing something makes it available, live
+    assert.equal(await s.page.locator('#edit-polish-btn').count(), 1);
+    await s.page.evaluate(() => { state.license = { code: null, verified: false, usesRemaining: null, maxUses: null }; renderLicenseBadge(); });
+    assert.equal(await s.page.locator('#edit-polish').innerHTML(), '');                                                        // no code: not offered (downloads and the sample stay as they were)
+    await s.close();
+  });
+
+  await t.test('editor: two deliberate clicks, one request (even on a double-click), the audience choice is sent, and the same result shows in the editor and on the Review step', async () => {
+    const s = await open({ 'polish-resume': async (b) => { await new Promise((x) => setTimeout(x, 200)); return polishOk()(b); } }); await toReview(s);
+    await s.page.click('.wiz-dot:has-text("Goal")'); await s.page.check('input[name="wiz-profile"] >> nth=2');                  // "changing to a different kind of work"
+    await s.page.fill('input[placeholder^="e.g. customer service"]', 'customer support');
+    await s.page.click('.wiz-dot:has-text("Review")'); await s.page.click('button:has-text("Open in Editor")');
+    await s.page.click('#edit-polish-btn');
+    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /This will use 1 of your 5 generations remaining/);
+    assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);                                                 // the first click only asks
+    await s.page.dblclick('#edit-polish-confirm'); await s.page.waitForSelector('#edit-polish .wiz-ok');
+    const calls = s.calls.filter((c) => c.name === 'polish-resume'); assert.equal(calls.length, 1);
+    assert.equal(calls[0].body.profile, 'changer'); assert.equal(calls[0].body.target, 'customer support'); assert.equal(calls[0].body.code, GOOD);
+    assert.match(await s.page.innerText('#license-badge'), /4 of 5/);
+    assert.match(await s.page.innerText('#edit-polish .wiz-ok'), /Please check 1 line/); assert.match(await s.page.innerText('#edit-polish .wiz-ok'), /Project: School food drive/);
+    assert.equal(await s.page.locator('#edit-fields textarea.flag-warn').count(), 1);                                          // the yellow line is right below, in the editor
+    await s.page.click('#edit-polish .wiz-ok button:has-text("Restore my wording")');
+    assert.deepEqual(await s.page.evaluate(() => state.data.projects[0].bullets), ['asked classmates to donate cans', 'sorted and counted the cans']);
+    assert.equal(await s.page.locator('#edit-fields textarea.flag-warn').count(), 0);
+    await s.page.click('#edit-polish button:has-text("Restore all")').catch(() => {});
+    await s.page.click('#tab-guide'); await s.page.waitForSelector('#panel-guide');                                            // the Review step reads the same state
+    assert.equal(await s.page.locator('#panel-guide #polish-btn').count() + await s.page.locator('#panel-guide .wiz-ok').count() >= 1, true);
+    await s.close();
+  });
+
+  await t.test('editor: a pasted-and-analyzed resume also gets the card, and sends no audience (the server decides from the answers)', async () => {
+    const analyzed = { name: 'Michael Johnson', contact: { email: 'mj@example.com' }, summary: { tagline: '', bullets: [], skills: ['Teamwork'] },
+      experience: [{ title: 'Warehouse Associate', company: 'Fictional Freight Co', start: '2016', end: 'Present', bullets: ['loaded trucks'] }], education: [], certifications: [], projects: [], volunteer: [], awards: [] };
+    const s = await open({ 'parse-resume': () => ({ status: 200, json: { result: JSON.stringify(analyzed), usesRemaining: 4, maxUses: 5, tailorToken: 'tok' } }),
+      'polish-resume': () => ({ status: 200, json: { result: JSON.stringify(analyzed), usesRemaining: 3, maxUses: 5, tailorToken: 'tok2', unverified: [] } }) });
+    await unlock(s); await s.page.fill('#resume-input', 'Michael Johnson, warehouse'); await s.page.click('#parse-btn'); await s.page.waitForSelector('#resume-preview');
+    assert.equal(await s.page.evaluate(() => state.wizard), null);
+    assert.match(await s.page.innerText('#edit-polish'), /Uses 1 of your 4 generations \(of 5\)/);                              // honest about what is left after the Analyze
+    await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForSelector('#edit-polish .wiz-ok');
+    const body = s.calls.find((c) => c.name === 'polish-resume').body; assert.equal(body.profile, undefined); assert.equal(body.requestId.length >= 8, true);
+    assert.match(await s.page.innerText('#license-badge'), /3 of 5/);
+    await s.close();
+  });
+
   await browser.close(); server.close();
 });

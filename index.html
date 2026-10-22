@@ -187,6 +187,7 @@
   .wiz-review-row span { color: #666; font-size: 11px; }
   .wiz-preview-link { display: none; font-size: 11px; color: #555; margin-top: 8px; }
   #panel-guide.wiz-busy .wiz-nav, #panel-guide.wiz-busy .wiz-dots { pointer-events: none; opacity: 0.45; }
+  .wiz-polish-compact { margin: 0 0 14px; }
   .wiz-polish { margin-top: 18px; padding: 12px; border: 1px solid #D9D4F0; border-radius: 6px; background: #F8F7FD; }
   .wiz-polish-btn { width: 100%; padding: 11px; border: none; border-radius: 4px; background: #3B2F7F; color: #fff; font-weight: 700; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
   .wiz-polish-btn:disabled { background: #BBB; cursor: not-allowed; }
@@ -255,6 +256,7 @@
       </div>
     </div>
     <div class="panel-content" id="panel-edit" style="display:none;">
+      <div id="edit-polish"></div>
       <div id="edit-fields">
         <p style="font-size:11px;color:#999;line-height:1.5;">Nothing to edit yet. <a href="#" onclick="startGuided('first');return false;" style="color:#555;">Build a resume step by step</a>, paste an existing resume, or load the sample.</p>
       </div>
@@ -403,6 +405,7 @@ let state = {
   flags: new Set(),    // AI-written lines that need the customer's confirmation (see tailorToJob)
   preTailor: null,     // copy of the resume from before the last tailoring run, for Undo
   polishOriginal: null, // the customer's own wording from before the last AI polish, for Restore
+  polish: null,         // AI polish UI state (confirm / busy / result), shared by the Review step and the editor
 };
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -526,6 +529,7 @@ function renderLicenseBadge() {
   document.body.classList.toggle('licensed', !!state.license.verified);
   const pv = document.getElementById('resume-preview');                  // keep the demo watermark in step with the license
   if (pv && pv.classList.contains('demo') === !!state.license.verified) renderPreview();
+  if (typeof renderEditPolish === 'function') renderEditPolish();
   const el = document.getElementById('license-badge');
   if (state.license.verified) {
     el.style.display = 'block';
@@ -630,7 +634,7 @@ async function parseResume() {
     }
     if (parsed) {
       state.data = parsed;
-      state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
+      state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polish = null;
       state.tailorToken = json.tailorToken || null;
       if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
       if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
@@ -706,7 +710,7 @@ function loadSample() {
   document.getElementById('error-box').style.display = 'none';
   state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
   state.tailorToken = null;
-  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
+  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polish = null;
   renderEditFields();
   renderPreview();
   switchPanel('edit');
@@ -728,8 +732,8 @@ function renderEditFields() {
       <div class="field-group"><div class="field-label">LinkedIn</div><input class="field-input" value="${esc(d.contact?.linkedin)}" oninput="updateField('contact.linkedin',this.value)"></div>
       <div class="field-group"><div class="field-label">Website</div><input class="field-input" value="${esc(d.contact?.website)}" oninput="updateField('contact.website',this.value)"></div>
     </div>
-    <div class="section-label">Summary</div>
-    <div class="field-group"><div class="field-label">Tagline</div><input class="field-input${flagClass(d.summary?.tagline)}" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
+    <div class="section-label">Introduction</div>
+    <div class="field-group"><div class="field-label">One-line introduction (shown at the top of your resume)</div><input class="field-input${flagClass(d.summary?.tagline)}" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
     ${(d.summary?.bullets||[]).map((b,i)=>`
       <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateArrayItem('summary.bullets',${i},null,this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeArrayItem('summary.bullets',${i});renderEditFields();renderPreview()">✕</button></div>
     `).join('')}
@@ -761,8 +765,8 @@ function renderEditFields() {
     ${(d.projects||[]).map((pr,i)=>`
       <div class="card">
         <div class="card-header"><span class="card-title">Project ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('projects',${i});renderEditFields();renderPreview()">Remove</button></div>
-        <div class="field-group"><div class="field-label">Name</div><input class="field-input" value="${esc(pr.name)}" oninput="updateArrayItem('projects',${i},'name',this.value)"></div>
-        <div class="field-group"><div class="field-label">Description (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea></div>
+        <div class="field-group"><div class="field-label">Project name</div><input class="field-input" placeholder="e.g. School food drive" value="${esc(pr.name)}" oninput="updateArrayItem('projects',${i},'name',this.value)"></div>
+        <div class="field-group"><div class="field-label">What was it about? (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea></div>
         <div class="field-label">Bullets</div>
         ${(pr.bullets||[]).map((b,j)=>`
           <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateNested('projects',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('projects',${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
@@ -794,17 +798,17 @@ function renderEditFields() {
     <div class="section-label">Education</div>
     ${(d.education||[]).map((edu,i)=>`
       <div class="card">
-        <div class="card-header"><span class="card-title">Degree ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('education',${i});renderEditFields();renderPreview()">Remove</button></div>
+        <div class="card-header"><span class="card-title">School ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('education',${i});renderEditFields();renderPreview()">Remove</button></div>
         <div class="grid-2">
-          <div class="field-group"><div class="field-label">Degree</div><input class="field-input" value="${esc(edu.degree)}" oninput="updateArrayItem('education',${i},'degree',this.value)"></div>
-          <div class="field-group"><div class="field-label">School</div><input class="field-input" value="${esc(edu.school)}" oninput="updateArrayItem('education',${i},'school',this.value)"></div>
-          <div class="field-group"><div class="field-label">Date</div><input class="field-input" value="${esc(edu.date)}" oninput="updateArrayItem('education',${i},'date',this.value)"></div>
-          <div class="field-group"><div class="field-label">Honors</div><input class="field-input" value="${esc(edu.honors)}" oninput="updateArrayItem('education',${i},'honors',this.value)"></div>
+          <div class="field-group"><div class="field-label">Qualification and subject</div><input class="field-input" placeholder="e.g. Associate degree in Nursing" value="${esc(edu.degree)}" oninput="updateArrayItem('education',${i},'degree',this.value)"></div>
+          <div class="field-group"><div class="field-label">School or college</div><input class="field-input" value="${esc(edu.school)}" oninput="updateArrayItem('education',${i},'school',this.value)"></div>
+          <div class="field-group"><div class="field-label">Year (or “Expected 2027” if still studying)</div><input class="field-input" value="${esc(edu.date)}" oninput="updateArrayItem('education',${i},'date',this.value)"></div>
+          <div class="field-group"><div class="field-label">Highlights (optional)</div><input class="field-input" value="${esc(edu.honors)}" oninput="updateArrayItem('education',${i},'honors',this.value)"></div>
         </div>
         <div class="field-group"><div class="field-label">Location (optional)</div><input class="field-input" value="${esc(edu.location)}" oninput="updateArrayItem('education',${i},'location',this.value)"></div>
       </div>
     `).join('')}
-    <button class="btn-add-item" onclick="addArrayItem('education',{degree:'',school:'',location:'',date:'',honors:''});renderEditFields();renderPreview()">+ Add Degree</button>
+    <button class="btn-add-item" onclick="addArrayItem('education',{degree:'',school:'',location:'',date:'',honors:''});renderEditFields();renderPreview()">+ Add School</button>
 
     <div class="section-label">Certifications &amp; Training</div>
     ${(d.certifications||[]).map((c,i)=>`
@@ -882,6 +886,7 @@ function renderPreview() {
   // Without a verified code the preview is a watermarked demo and cannot be printed (see the print rules).
   area.innerHTML = `<div class="resume-page${state.license.verified ? '' : ' demo'}" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
   syncChrome();
+  if (typeof renderEditPolish === 'function') renderEditPolish();
 }
 
 function buildResumeHTML(rawData, t, useAlt) {

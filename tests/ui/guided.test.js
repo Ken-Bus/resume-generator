@@ -189,7 +189,9 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
     await s.page.click('.wiz-next');                                           // → school
     await s.page.click('.wiz-add:has-text("Add a school")');
     await s.page.fill('input[placeholder="e.g. Oakwood High School"]', 'Oakwood High School');
-    await s.page.click('.wiz-chip:has-text("High school diploma")');
+    await s.page.selectOption('select.wiz-input', 'High school diploma');
+    await s.page.fill('input[placeholder="e.g. 2026"]', '2026');
+    assert.deepEqual(await s.page.evaluate(() => [state.data.education[0].degree, state.data.education[0].date]), ['High school diploma', '2026']);
     await s.page.click('.wiz-next');                                           // → projects & more
     await s.page.click('.wiz-add:has-text("Add a project")');
     await s.page.fill('input[placeholder="e.g. School food drive"]', 'School food drive');
@@ -270,6 +272,95 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
       await download(s, '#btn-word', 'partial.docx');
     }
     assert.deepEqual(s.errors, []); await s.close();
+  });
+
+
+  // ───────── plain-language usability pass ─────────
+  await t.test('goal step: no "Headline" jargon; one-line introduction is explained in plain words; the three audiences are offered and the choice is remembered', async () => {
+    const s = await open({}); await unlockViaWizard(s, 'first');
+    const text = await s.page.innerText('#panel-guide');
+    assert.doesNotMatch(text, /headline|tagline/i);
+    assert.match(text, /One-line introduction/); assert.match(text, /short sentence at the top of your resume that tells an employer who you are/);
+    assert.match(text, /Not sure\? Leave it blank/);
+    assert.deepEqual(await s.page.$$eval('input[name="wiz-profile"]', (els) => els.map((e) => e.checked)), [true, false, false]);   // first path starts as "first resume"
+    assert.match(text, /First resume\? That’s okay/);
+    await s.page.check('input[name="wiz-profile"] >> nth=2');
+    assert.equal(await s.page.evaluate(() => state.wizard.profile), 'changer');
+    assert.match(await s.page.innerText('#panel-guide .wiz-note'), /Changing direction\?/);
+    await s.page.click('.wiz-dot:has-text("Review")');
+    assert.doesNotMatch(await s.page.innerText('#panel-guide'), /headline|tagline/i);
+    await s.close();
+    const s2 = await open({}); await unlockViaWizard(s2, 'returning');
+    assert.equal(await s2.page.evaluate(() => state.wizard.profile), 'experienced');
+    assert.equal(await s2.page.locator('input[name="wiz-profile"]').nth(1).isChecked(), true); await s2.close();
+  });
+
+  await t.test('education: qualification, subject and status are separate questions, composed into the resume correctly (completed, ongoing, and not-listed qualifications)', async () => {
+    const s = await open({}); await unlockViaWizard(s, 'first'); await s.page.click('.wiz-dot:has-text("School")');
+    await s.page.click('.wiz-add:has-text("Add a school")');
+    const edu = () => s.page.evaluate(() => [state.data.education[0].degree, state.data.education[0].date]);
+    const text = await s.page.innerText('#panel-guide');
+    for (const label of ['School or college', 'Qualification', 'Where are you with it?', 'I finished this', 'I’m still studying']) assert.ok(text.includes(label), label);
+    assert.equal(await s.page.locator('input[placeholder="e.g. Business, Nursing, Welding"]').count(), 0);                 // no subject question until a qualification needs one
+    await s.page.selectOption('select.wiz-input', 'High school diploma');
+    assert.equal(await s.page.locator('input[placeholder="e.g. Business, Nursing, Welding"]').count(), 0);                 // a diploma has no subject
+    await s.page.selectOption('select.wiz-input', 'Associate degree');
+    await s.page.fill('input[placeholder="e.g. Business, Nursing, Welding"]', 'Nursing');
+    await s.page.fill('input[placeholder="e.g. 2026"]', '2025');
+    assert.deepEqual(await edu(), ['Associate degree in Nursing', '2025']);                                                 // completed: plain year
+    await s.page.check('text=I’m still studying');
+    assert.match(await s.page.innerText('#panel-guide'), /Year you expect to finish/);
+    assert.deepEqual(await edu(), ['Associate degree in Nursing', 'Expected 2025']);                                        // ongoing: clearly marked
+    await s.page.fill('input[placeholder="e.g. 2026"]', '');
+    assert.deepEqual(await edu(), ['Associate degree in Nursing', 'In progress']);                                          // no year is fine
+    await s.page.selectOption('select.wiz-input', 'Other');
+    await s.page.fill('input[placeholder="e.g. Nursing assistant program"]', 'Nursing assistant program');
+    assert.deepEqual(await edu(), ['Nursing assistant program in Nursing', 'In progress']);
+    await s.page.fill('input[placeholder="e.g. Business, Nursing, Welding"]', '');
+    assert.deepEqual(await edu(), ['Nursing assistant program', 'In progress']);
+    // preview and exports show it the way an employer expects
+    assert.match(await s.page.innerText('#resume-preview'), /Nursing assistant program/); assert.match(await s.page.innerText('#resume-preview'), /In progress/);
+    await s.close();
+  });
+
+  await t.test('education edited in the regular editor (or by AI) is read back correctly when returning to the builder; it never wipes what was typed there', async () => {
+    const s = await open({}); await unlockViaWizard(s, 'first'); await s.page.click('.wiz-dot:has-text("School")');
+    await s.page.click('.wiz-add:has-text("Add a school")'); await s.page.selectOption('select.wiz-input', 'High school diploma'); await s.page.fill('input[placeholder="e.g. 2026"]', '2026');
+    await s.page.evaluate(() => { state.data.education[0].degree = 'Bachelor’s degree in Business'; state.data.education[0].date = 'Expected 2027'; renderEditFields(); });
+    await s.page.click('.wiz-dot:has-text("Skills")'); await s.page.click('.wiz-dot:has-text("School")');
+    assert.equal(await s.page.inputValue('select.wiz-input'), 'Bachelor’s degree');
+    assert.equal(await s.page.inputValue('input[placeholder="e.g. Business, Nursing, Welding"]'), 'Business');
+    assert.equal(await s.page.locator('input[name^="wiz-edu-status"] >> nth=1').isChecked(), true);
+    assert.equal(await s.page.inputValue('input[placeholder="e.g. 2026"]'), '2027');
+    assert.deepEqual(await s.page.evaluate(() => [state.data.education[0].degree, state.data.education[0].date]), ['Bachelor’s degree in Business', 'Expected 2027']);
+    await s.page.evaluate(() => { state.data.education[0].degree = 'Diploma of Hospitality (Level 3)'; });             // something the questions cannot express
+    await s.page.click('.wiz-dot:has-text("Skills")'); await s.page.click('.wiz-dot:has-text("School")');
+    assert.equal(await s.page.inputValue('select.wiz-input'), 'Other');
+    assert.equal(await s.page.inputValue('input[placeholder="e.g. Nursing assistant program"]'), 'Diploma of Hospitality (Level 3)');
+    assert.equal(await s.page.evaluate(() => state.data.education[0].degree), 'Diploma of Hospitality (Level 3)');
+    await s.close();
+  });
+
+  await t.test('projects, volunteering, training and skills explain themselves with plain definitions and examples', async () => {
+    const s = await open({}); await unlockViaWizard(s, 'first'); await s.page.click('.wiz-dot:has-text("Projects")');
+    let text = await s.page.innerText('#panel-guide');
+    for (const needle of ['Something you made, organized or worked on, for school, a club, your community, or on your own', 'a school food drive, a science fair project, a family budget spreadsheet',
+      'Unpaid roles and groups you take part in', 'Classes, courses or certificates you finished', 'Only list ones you really completed']) assert.ok(text.includes(needle), needle);
+    await s.page.click('.wiz-add:has-text("Add a project")'); await s.page.click('.wiz-add:has-text("Add volunteering or an activity")'); await s.page.click('.wiz-add:has-text("Add training or a course")');
+    text = await s.page.innerText('#panel-guide');
+    for (const label of ['Project name', 'What was it about?', 'What did you do?', 'Your role or position', 'Name of the group or place', 'Course or certificate name']) assert.ok(text.includes(label), label);
+    await s.page.click('.wiz-dot:has-text("Skills")');
+    text = await s.page.innerText('#panel-guide');
+    assert.match(text, /Skills can come from anywhere: school, volunteering, hobbies, family responsibilities or a job/); assert.match(text, /Only tick things you could show or explain/);
+    await s.close();
+  });
+
+  await t.test('the regular editor uses the same plain words (introduction, qualification, expected year) and no jargon', async () => {
+    const s = await open({}); await unlockViaWizard(s, 'first'); await s.page.click('.wiz-dot:has-text("School")'); await s.page.click('.wiz-add:has-text("Add a school")');
+    await s.page.click('.wiz-dot:has-text("Review")'); await s.page.click('button:has-text("Open in Editor")');
+    const text = (await s.page.innerText('#edit-fields')).toLowerCase();                  // labels are upper-cased by the page style
+    for (const needle of ['Introduction', 'One-line introduction (shown at the top of your resume)', 'Qualification and subject', 'Year (or “Expected 2027” if still studying)', 'Highlights (optional)', '+ Add School'].map((x) => x.toLowerCase())) assert.ok(text.includes(needle), needle);
+    assert.doesNotMatch(text, /tagline|\bhonors\b|\bdegree\b/i); await s.close();
   });
 
   await t.test('PDF has selectable, extractable text in every one of the 12 templates (no page images), in reading order', async () => {

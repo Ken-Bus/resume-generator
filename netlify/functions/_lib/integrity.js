@@ -2,8 +2,11 @@
 // Runs on a tailoring result AFTER the AI call succeeded, and touches no license or credit state.
 //   1. Facts (name, contact, employers, titles, dates, schools, certifications, awards) are restored from the
 //      customer's own resume, so the AI cannot change or add them.
-//   2. Rewritten lines that bring in numbers, leadership wording or credential wording that appear nowhere in the
-//      original resume, and skills that are new, are FLAGGED (not deleted) so the customer must confirm them.
+//   2. Rewritten lines are FLAGGED (never deleted) so the customer must confirm them when they bring in:
+//        claims     numbers, leadership/supervisory wording, credential wording, praise or personality words
+//                   ("exceptional", "motivated", "reliable"), attendance claims, or skills that are new;
+//        details    two or more content words that appear nowhere in the customer's own answers.
+//      A faithful paraphrase (the same facts in clearer words) brings in neither, so it is NOT flagged.
 // Pure functions: unit-tested without a database or the AI provider.
 
 const isObj = (o) => o !== null && typeof o === 'object' && !Array.isArray(o);
@@ -27,21 +30,71 @@ const numbersIn = (text) => {
   return found;
 };
 
-// Wording that claims responsibility or qualification. A match is only suspicious when its root is absent from the original.
+// Wording that claims responsibility, qualification or character. A match is only suspicious when the customer's own
+// text does not already contain it (compared by word root, or by the whole phrase for multi-word claims).
 const CLAIM_WORDS = [
-  { label: 'leadership or supervisory wording', re: /\b(supervis\w*|manag\w*|led|leading|directed|oversaw|oversee\w*|mentor\w*|coach\w*)\b/gi },
-  { label: 'credential or licence wording', re: /\b(certif\w*|licen[sc]\w*|accredit\w*|bachelor\w*|master'?s|mba|ph\.?d|degree|diploma|osha|cpr|cdl)\b/gi }
+  { label: 'leadership or supervisory wording', rootLen: 4, re: /\b(supervis\w*|manag\w*|led|leading|directed|oversaw|oversee\w*|mentor\w*|coach\w*|train(?:ed|ing|er|s)?)\b/gi },
+  { label: 'credential or licence wording', rootLen: 4, re: /\b(certif\w*|licen[sc]\w*|accredit\w*|bachelor\w*|master'?s|mba|ph\.?d|degree|diploma|osha|cpr|cdl)\b/gi },
+  { label: 'praise or personality claim', rootLen: 6, re: /\b(motivated|passionate|dynamic|results?-driven|driven|proven|exceptional\w*|excellen\w*|outstanding|expert\w*|extensive\w*|highly|successful\w*|award-winning|top-performing|seasoned|skilled|strong|dedicated|committed|reliab\w*|dependab\w*|hard-?working|detail-oriented|self-starter|team player|innovative|enthusias\w*|energetic|ambitious|diligent|proactive|accomplished|talented|trustworthy|friendly|punctual)\b/gi },
+  { label: 'attendance claim', rootLen: 0, re: /\b(perfect attendance|never (?:missed|late|absent)|always on time|on-time|consistent attendance)\b/gi }
 ];
-const rootOf = (w) => w.toLowerCase().replace(/[^a-z]/g, '').slice(0, 4);
+const rootOf = (w, len) => w.toLowerCase().replace(/[^a-z]/g, '').slice(0, len);
 
-function reasonsFor(line, originalText, originalNumbers) {
-  const reasons = [];
-  const nums = [...numbersIn(line)].filter((n) => !originalNumbers.has(n));
-  if (nums.length) reasons.push(`number not in your resume: ${nums.slice(0, 3).join(', ')}`);
-  CLAIM_WORDS.forEach(({ label, re }) => {
-    const fresh = (s(line).match(re) || []).filter((w) => !new RegExp(`\\b${rootOf(w)}`, 'i').test(originalText));
-    if (fresh.length) reasons.push(`${label}: “${fresh[0]}”`);
+// ── faithful paraphrase vs new content ─────────────────────────────────────────────────────────────────────────
+// Words that carry no claim of their own, so using them is never "new content": function words, and plain verbs
+// people use when they restate what they did ("helped", "sorted", "greeted").
+const STOP = new Set(('a an and the or but if so than that this these those with without for to of in on at by from as into onto over under about after before ' +
+  'during while when where which who whom whose their our your his her its they them we you i me my it is are was were be been being am do does did done ' +
+  'have has had having not no nor also each every all any some more most other such only own same very can could would should will may might must ' +
+  'one two three four five six seven eight nine ten per daily weekly new old day days week weeks year years time times way ways part parts ' +
+  'applicant candidate skill skills position role job jobs work seeking looking interested entry level moving into').split(' '));
+const PLAIN_VERBS = new Set(('help assist support handle complete prepare organize maintain work operate use keep follow answer greet stock clean sort count pack load ' +
+  'check record communicate collect deliver serve make take give set put get find carry move place arrange review report write read speak talk listen ' +
+  'learn practice attend join visit offer provide show explain describe wipe stack ring process receive send respond ask').split(' '));
+const stem = (w) => {
+  let x = w.toLowerCase();
+  if (x.length > 3) x = x.replace(/(ing|ed|es|ly|er|s)$/, '');
+  x = x.replace(/([bdgmnprt])\1$/, '$1');                      // canned -> can, stopped -> stop
+  return x.length > 4 ? x.replace(/(e|y)$/, '') : x;
+};
+const wordsOf = (text) => s(text).toLowerCase().match(/[a-z]{3,}/g) || [];
+const stemSet = (text) => new Set(wordsOf(text).map(stem));
+
+// Content words in `line` that the customer never used (and that are not plain function words or plain verbs).
+function newContentWords(line, originalStems, skip = new Set()) {
+  const out = [];
+  wordsOf(line).forEach((w) => {
+    const st = stem(w);
+    if (STOP.has(w) || skip.has(w) || PLAIN_VERBS.has(st) || originalStems.has(st) || out.includes(w)) return;
+    out.push(w);
   });
+  return out;
+}
+
+// -> { claims: [reason...], details: [word...] }
+function analyse(line, originalText, originalNumbers, originalStems) {
+  const claims = [];
+  const claimTokens = new Set();                                                                  // words already reported as claims
+  const lower = s(originalText).toLowerCase();
+  const nums = [...numbersIn(line)].filter((n) => !originalNumbers.has(n));
+  if (nums.length) claims.push(`number not in your resume: ${nums.slice(0, 3).join(', ')}`);
+  CLAIM_WORDS.forEach(({ label, rootLen, re }) => {
+    const fresh = (s(line).match(re) || []).filter((w) => {
+      if (!rootLen || /[\s-]/.test(w)) return !lower.includes(w.toLowerCase());                   // phrases: the phrase itself must be there
+      const root = rootOf(w, rootLen);
+      return !new RegExp(`\\b${root}`, 'i').test(originalText);
+    });
+    if (fresh.length) { claims.push(`${label}: “${fresh[0]}”`); fresh.forEach((f) => wordsOf(f).forEach((w) => claimTokens.add(w))); }
+  });
+  return { claims, details: newContentWords(line, originalStems, claimTokens) };
+}
+
+// Kept for callers that only want the list of reasons.
+function reasonsFor(line, originalText, originalNumbers, originalStems) {
+  const stems = originalStems || stemSet(originalText);
+  const { claims, details } = analyse(line, originalText, originalNumbers, stems);
+  const reasons = claims.slice();
+  if (details.length >= 2) reasons.push(`new details not in your answers: ${details.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
   return reasons;
 }
 
@@ -52,12 +105,15 @@ const FACT_FIELDS = {
 };
 
 // original = the resume the customer sent; output = the AI's tailored resume object.
+// options.vocabulary: extra words the customer supplied (their stated goal). They count as the customer's own words for the
+// "new details" test only; they never make a claim (leadership, credential, praise, number) count as supported.
 function reconcile(original, output, options = {}) {
   const orig = isObj(original) ? original : {};
   const out = JSON.parse(JSON.stringify(isObj(output) ? output : {}));
   const originalText = allText(orig).join('\n');
   const originalNumbers = numbersIn(originalText);
   const originalLines = new Set(allText(orig).map((t) => t.trim()));
+  const originalStems = stemSet(`${originalText}\n${s(options.vocabulary)}`);
 
   // 1. Restore facts.
   out.name = orig.name;
@@ -79,22 +135,23 @@ function reconcile(original, output, options = {}) {
 
   // 2. Flag unsupported lines.
   const unverified = [];
-  // `always` (summary lines when the AI wrote the summary): even without a suspicious number or word, an
-  // AI-authored description of the person must be confirmed by them.
-  const check = (text, where, always) => {
+  // A line is flagged for a CLAIM (something the customer must confirm is true) or for NEW DETAILS (two or more
+  // content words the customer never used). A faithful paraphrase has neither, so it passes without a warning.
+  const check = (text, where) => {
     const t = s(text).trim();
     if (!t || originalLines.has(t) || unverified.length >= 40) return;
-    const reasons = reasonsFor(t, originalText, originalNumbers);
-    if (!reasons.length && always) reasons.push('written by AI: confirm this describes you');
-    if (reasons.length) unverified.push({ where, text: t, reasons });
+    const { claims, details } = analyse(t, originalText, originalNumbers, originalStems);
+    const reasons = claims.slice();
+    if (details.length >= 2) reasons.push(`new details not in your answers: ${details.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
+    if (reasons.length) unverified.push({ where, text: t, kind: claims.length ? 'claim' : 'details', reasons });
   };
-  check(out.summary.tagline, 'summary.tagline', options.flagNewSummary);
-  arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`, options.flagNewSummary));
+  check(out.summary.tagline, 'summary.tagline');
+  arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`));
   const origSkills = new Set(arr(orig.summary && orig.summary.skills).map((x) => s(x).trim().toLowerCase()));
   arr(out.summary.skills).forEach((sk, i) => {
     const t = s(sk).trim();
     if (!t || origSkills.has(t.toLowerCase()) || originalText.toLowerCase().includes(t.toLowerCase())) return;
-    if (unverified.length < 40) unverified.push({ where: `summary.skills.${i}`, text: t, reasons: ['skill not found in your resume'] });
+    if (unverified.length < 40) unverified.push({ where: `summary.skills.${i}`, text: t, kind: 'claim', reasons: ['skill not found in your resume'] });
   });
   ['experience', 'volunteer', 'projects'].forEach((k) => arr(out[k]).forEach((e, i) => {
     if (!isObj(e)) return;
@@ -106,4 +163,4 @@ function reconcile(original, output, options = {}) {
   return { resume: out, unverified };
 }
 
-module.exports = { reconcile, reasonsFor, numbersIn };
+module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn };

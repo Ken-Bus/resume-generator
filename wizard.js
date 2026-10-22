@@ -38,7 +38,32 @@ const WIZ_SKILLS = [
   'Cash handling', 'Data entry', 'Basic computer skills', 'Following safety rules', 'Keeping records organized', 'Working under pressure'
 ];
 
-const WIZ_EDU_CHIPS = ['High school diploma', 'GED', 'Some college', 'Currently in school'];
+// Education is asked as separate things (what qualification, what subject, finished or still studying) and stored in the
+// same fields the editor and exports already use: degree = "Associate degree in Nursing", date = "2026" or "Expected 2027".
+const WIZ_QUALS = ['High school diploma', 'GED', 'Some college', 'Certificate', 'Associate degree', 'Bachelor’s degree', 'Master’s degree', 'Doctorate'];
+const WIZ_NO_SUBJECT = ['High school diploma', 'GED'];
+
+function composeEdu(m) {
+  const q = (m.qual === 'Other' ? m.other : m.qual || '').trim();
+  const f = WIZ_NO_SUBJECT.includes(m.qual) ? '' : (m.field || '').trim();
+  const degree = q && f ? `${q} in ${f}` : q || f;
+  const y = (m.year || '').trim();
+  const date = m.status === 'ongoing' ? (y ? `Expected ${y}` : 'In progress') : y;
+  return { degree, date };
+}
+
+// Read an existing entry (typed in the editor, pasted, or written by the AI) back into the question fields.
+function parseEdu(e) {
+  const d = String((e && e.degree) || '').trim();
+  const dt = String((e && e.date) || '').trim();
+  const m = { qual: '', other: '', field: '', status: /^(expected|in progress)/i.test(dt) ? 'ongoing' : 'done', year: dt.replace(/^expected\s*/i, '').replace(/^in progress$/i, '').trim() };
+  if (!d) return m;
+  const q = WIZ_QUALS.find(x => d.toLowerCase().startsWith(x.toLowerCase()));
+  const rest = q ? d.slice(q.length) : '';
+  if (q && (rest.trim() === '' || /^\s+in\s+/i.test(rest))) { m.qual = q; m.field = rest.replace(/^\s+in\s+/i, '').trim(); return m; }
+  m.qual = 'Other'; m.other = d;
+  return m;
+}
 
 const Wiz = {
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -51,7 +76,8 @@ const Wiz = {
     if (state.data && ResumeCore.hasContent(state.data) && !confirm('This will replace the resume currently in the editor. Start a new one?')) return;
     state.data = ResumeCore.blank();
     state.flags = new Set(); state.preTailor = null; state.polishOriginal = null;
-    state.wizard = { path, step: 0, work: null, target: '', autoTagline: '' };
+    state.polish = null;
+    state.wizard = { path, step: 0, work: null, target: '', autoTagline: '', profile: path === 'first' ? 'first' : 'experienced', edu: [] };
     if (state.selectedTemplate.id === 'boardroom') selectTemplate('partner');   // plainest default; customers can change it
     Wiz.render();
     switchPanel('guide');
@@ -59,18 +85,18 @@ const Wiz = {
     renderPreview();
   },
 
-  busy() { return !!(state.wizard && state.wizard.polish && state.wizard.polish.busy); },   // a paid polish is running: stay put
+  busy() { return !!(state.polish && state.polish.busy); },   // a paid polish is running: stay put
   go(i) { if (Wiz.busy()) return; state.wizard.step = Math.max(0, Math.min(WIZ_STEPS.length - 1, i)); Wiz.render(); document.getElementById('panel-guide').scrollTop = 0; },
   next() { if (Wiz.busy()) return; if (state.wizard.step >= WIZ_STEPS.length - 1) return Wiz.finish(); Wiz.go(state.wizard.step + 1); },
   back() { if (Wiz.busy()) return; Wiz.go(state.wizard.step - 1); },
-  finish() { renderEditFields(); switchPanel('edit'); },
+  finish() { renderEditFields(); switchPanel('edit'); document.getElementById('panel-edit').scrollTop = 0; renderEditPolish(); },   // start at the top, where AI polish is offered
 
   // ── small data helpers (all write to state.data) ───────────────────────────
   set(path, v) { updateField(path, v); },
   item(arr, i, field, v) { updateArrayItem(arr, i, field, v); },
   lines(arr, i, v) { state.data[arr][i].bullets = v.split('\n').map(x => x.trim()).filter(Boolean); renderPreview(); },
   add(arr, tpl) { arrayAt(arr).push(tpl); Wiz.render(); renderPreview(); },
-  remove(arr, i) { arrayAt(arr).splice(i, 1); Wiz.render(); renderPreview(); },
+  remove(arr, i) { arrayAt(arr).splice(i, 1); if (arr === 'education' && state.wizard.edu) state.wizard.edu.splice(i, 1); Wiz.render(); renderPreview(); },
   addRoleSameEmployer(i) {
     const e = state.data.experience[i];
     state.data.experience.splice(i + 1, 0, { title: '', company: e.company, location: e.location, start: '', end: '', summary: '', bullets: [] });
@@ -110,7 +136,22 @@ const Wiz = {
     if (!state.data.summary.bullets.includes(line)) state.data.summary.bullets.push(line);
     Wiz.render(); renderPreview();
   },
-  setEdu(i, field, v) { updateArrayItem('education', i, field, v); Wiz.render(); },
+  // Education question model: one entry per school, kept beside the data and re-read if the entry was edited elsewhere.
+  eduModel(i) {
+    const w = state.wizard; w.edu = w.edu || [];
+    const e = state.data.education[i] || {};
+    const c = w.edu[i] && composeEdu(w.edu[i]);
+    if (c && c.degree === String(e.degree || '') && c.date === String(e.date || '')) return w.edu[i];
+    return (w.edu[i] = parseEdu(e));
+  },
+  eduSet(i, key, v) {
+    const m = Wiz.eduModel(i); m[key] = v;
+    if (key === 'qual' && WIZ_NO_SUBJECT.includes(v)) m.field = '';
+    const c = composeEdu(m);
+    updateArrayItem('education', i, 'degree', c.degree); updateArrayItem('education', i, 'date', c.date);
+    if (key === 'qual' || key === 'status') Wiz.render();              // these change which questions are shown
+  },
+  setProfile(v) { state.wizard.profile = v; Wiz.render(); },
   toggleSkill(name, on) {
     const s = state.data.summary.skills;
     const at = s.indexOf(name);
@@ -128,26 +169,28 @@ const Wiz = {
   // ── AI polish (paid: exactly ONE of the code's included generations per successful polish) ──────────────
   // Nothing here runs on navigation, typing or preview. A charge needs two deliberate clicks: the button, then
   // an explicit confirmation that states the cost. The server charges only after a validated result.
-  polishState() { const w = state.wizard; return w.polish || (w.polish = { confirm: false, busy: false, requestId: null, msg: '', kind: '', done: null }); },
-  askPolish() { const p = Wiz.polishState(); if (p.busy) return; p.confirm = true; p.msg = ''; Wiz.render(); },
-  cancelPolish() { const p = Wiz.polishState(); p.confirm = false; Wiz.render(); },
+  polishState() { return state.polish || (state.polish = { confirm: false, busy: false, requestId: null, msg: '', kind: '', done: null }); },
+  // Polish is offered both on the Review step and at the top of the regular editor; both views read the same state.
+  refreshPolish() { if (state.wizard) Wiz.render(); renderEditPolish(); },
+  askPolish() { const p = Wiz.polishState(); if (p.busy) return; p.confirm = true; p.msg = ''; Wiz.refreshPolish(); },
+  cancelPolish() { const p = Wiz.polishState(); p.confirm = false; Wiz.refreshPolish(); },
   newRequestId() {
     if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
     return 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
   },
 
   async doPolish() {
-    const w = state.wizard; const p = Wiz.polishState();
+    const w = state.wizard || {}; const p = Wiz.polishState();
     if (p.busy) return;                                                    // double-click: one request only
     if (!state.license.verified || !state.license.code) { showGate('Enter your access code to use AI polish.'); return; }
     if (!ResumeCore.hasWritableText(ResumeCore.clean(state.data))) return;
     p.busy = true; p.confirm = false; p.msg = ''; p.kind = '';
     if (!p.requestId) p.requestId = Wiz.newRequestId();                     // reused on a manual retry, so a lost reply is never charged twice
-    Wiz.render();
+    Wiz.refreshPolish();
     try {
       const res = await fetch('/.netlify/functions/polish-resume', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', requestId: p.requestId })
+        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId })
       });
       let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
       let parsed = null;
@@ -175,7 +218,7 @@ const Wiz = {
       refreshLicenseCounter();
     } finally {
       p.busy = false;
-      Wiz.render();
+      Wiz.refreshPolish();
     }
   },
 
@@ -222,16 +265,16 @@ const Wiz = {
     const lines = new Set();                                              // keep only flags whose line is still in the resume
     (function walk(v) { if (typeof v === 'string') lines.add(v.trim()); else if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === 'object') Object.values(v).forEach(walk); })(state.data);
     state.flags = new Set([...state.flags].filter(t => lines.has(t)));
-    renderEditFields(); renderPreview(); Wiz.render();
+    renderEditFields(); renderPreview(); Wiz.refreshPolish();
   },
   restoreAll() {
     if (!state.polishOriginal) return;
     state.data = JSON.parse(JSON.stringify(state.polishOriginal));
     state.polishOriginal = null; state.flags = new Set(); Wiz.polishState().done = null;
-    renderEditFields(); renderPreview(); Wiz.render();
+    renderEditFields(); renderPreview(); Wiz.refreshPolish();
   },
 
-  polishBlock() {
+  polishBlock(prefix = '', compact = false) {
     const p = Wiz.polishState();
     const left = state.license.usesRemaining, max = state.license.maxUses;
     const writable = ResumeCore.hasWritableText(ResumeCore.clean(state.data));
@@ -246,9 +289,9 @@ const Wiz = {
     } else if (p.confirm) {
       body = `<div class="wiz-confirm"><strong>This will use 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}.</strong>
           You are only charged if the polish completes. If it fails, nothing is used.
-          <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
+          <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="${prefix}polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
     } else {
-      body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="polish-btn">✨ Polish My Resume with AI</button>
+      body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="${prefix}polish-btn">✨ Polish My Resume with AI</button>
         <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''}. Typing, previewing, editing and downloading never use one.</div>`;
     }
     let result = '';
@@ -261,9 +304,12 @@ const Wiz = {
         <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
     }
     const msg = p.msg ? `<div class="${p.kind === 'err' ? 'wiz-err' : 'wiz-ok'}" role="status">${esc(p.msg)}</div>` : '';
-    return `<div class="wiz-polish">
-      <div class="wiz-title" style="font-size:13px;">Want help with the wording? <span class="wiz-optional">(optional)</span></div>
-      <div class="wiz-help">AI can turn your answers into clear, professional resume wording. It uses only what you told us, flags anything it adds so you can check it, and you can restore your own wording at any time.</div>
+    const help = compact
+      ? 'AI can tidy the wording of your answers. It uses only what you wrote, flags anything it adds, and you can restore your own wording.'
+      : 'AI can turn your answers into clear, professional resume wording. It uses only what you told us, flags anything it adds so you can check it, and you can restore your own wording at any time.';
+    return `<div class="wiz-polish${compact ? ' wiz-polish-compact' : ''}">
+      <div class="wiz-title" style="font-size:13px;">${compact ? 'Improve the wording with AI' : 'Want help with the wording?'} <span class="wiz-optional">(optional)</span></div>
+      <div class="wiz-help">${help}</div>
       ${body}${msg}${result}</div>`;
   },
 
@@ -292,17 +338,28 @@ const Wiz = {
   steps: {
     goal(w) {
       const d = state.data;
+      const profile = w.profile || (w.path === 'first' ? 'first' : 'experienced');
+      const opt = (v, label) => `<label class="wiz-check"><input type="radio" name="wiz-profile" ${profile === v ? 'checked' : ''} onchange="Wiz.setProfile('${v}')"> ${label}</label>`;
+      const notes = {
+        first: 'First resume? That&rsquo;s okay. Everyone starts somewhere. School, projects, volunteering and skills all count.',
+        experienced: 'You&rsquo;ve worked before, so we&rsquo;ll walk through your jobs one at a time, in plain English.',
+        changer: 'Changing direction? Your real experience still counts. List your jobs as they were; the wording can then bring out what carries over to the new work.'
+      };
       return `
-        <div class="wiz-title">What kind of job are you looking for?</div>
+        <div class="wiz-title">What kind of work are you looking for?</div>
         <div class="wiz-help">A rough idea is fine. You can change it any time.</div>
-        <label class="wiz-label">Job you want <span class="wiz-optional">(optional)</span>
+        <label class="wiz-label">Work you&rsquo;re looking for <span class="wiz-optional">(optional)</span>
           <input class="wiz-input" value="${esc(w.target)}" oninput="Wiz.setTarget(this.value)" placeholder="e.g. customer service, warehouse, office assistant"></label>
-        <label class="wiz-label">Headline at the top of your resume <span class="wiz-optional">(optional)</span>
-          <input class="wiz-input" id="wiz-tagline" value="${esc(d.summary.tagline)}" oninput="Wiz.set('summary.tagline', this.value)" placeholder="e.g. Dependable, friendly, and quick to learn"></label>
-        <div class="wiz-example">Write it in your own words. Only say things that are true.</div>
-        ${w.path === 'first'
-          ? '<div class="wiz-note">First resume? That&rsquo;s okay. Everyone starts somewhere. School, projects, volunteering and skills all count.</div>'
-          : '<div class="wiz-note">Starting fresh? We&rsquo;ll walk through your jobs one at a time, in plain English.</div>'}`;
+        <div class="wiz-label">Which sounds most like you? <span class="wiz-optional">(helps match the wording to you)</span></div>
+        <div class="wiz-checks">
+          ${opt('first', 'This is my first resume')}
+          ${opt('experienced', 'I&rsquo;ve worked before')}
+          ${opt('changer', 'I&rsquo;m changing to a different kind of work')}
+        </div>
+        <label class="wiz-label">One-line introduction <span class="wiz-optional">(optional)</span>
+          <input class="wiz-input" id="wiz-tagline" value="${esc(d.summary.tagline)}" oninput="Wiz.set('summary.tagline', this.value)" placeholder="e.g. Friendly student looking for a part-time retail job"></label>
+        <div class="wiz-example">This is a short sentence at the top of your resume that tells an employer who you are and what you want. Not sure? Leave it blank, or keep the one we fill in from your answer above. Only say things that are true.</div>
+        <div class="wiz-note">${notes[profile]}</div>`;
     },
 
     contact() {
@@ -353,17 +410,9 @@ const Wiz = {
     education() {
       const edu = state.data.education;
       return `
-        <div class="wiz-title">What school or training have you completed?</div>
-        <div class="wiz-help">High school, GED, college, trade school, or classes. Skip this if you&rsquo;d rather not list any.</div>
-        ${edu.map((e, i) => `
-          <div class="wiz-card">
-            <div class="wiz-card-head">School ${i + 1}<button class="wiz-link" onclick="Wiz.remove('education', ${i})">Remove</button></div>
-            <label class="wiz-label">School<input class="wiz-input" value="${esc(e.school)}" oninput="Wiz.item('education', ${i}, 'school', this.value)" placeholder="e.g. Oakwood High School"></label>
-            <label class="wiz-label">What you studied or finished<input class="wiz-input" value="${esc(e.degree)}" oninput="Wiz.item('education', ${i}, 'degree', this.value)" placeholder="e.g. High School Diploma"></label>
-            <div class="wiz-chips">${WIZ_EDU_CHIPS.map(c => `<button class="wiz-chip" onclick="Wiz.setEdu(${i}, 'degree', '${c}')">${c}</button>`).join('')}</div>
-            <label class="wiz-label">Year finished, or expected year<input class="wiz-input" value="${esc(e.date)}" oninput="Wiz.item('education', ${i}, 'date', this.value)" placeholder="e.g. 2026"></label>
-            <label class="wiz-label">Anything to highlight <span class="wiz-optional">(optional)</span><input class="wiz-input" value="${esc(e.honors)}" oninput="Wiz.item('education', ${i}, 'honors', this.value)" placeholder="e.g. Honor roll, Student council"></label>
-          </div>`).join('')}
+        <div class="wiz-title">What school or training have you done?</div>
+        <div class="wiz-help">High school, GED, college, trade school or a certificate. Tell us what you finished, or what you&rsquo;re still working on. Skip this if you&rsquo;d rather not list any.</div>
+        ${edu.map((e, i) => Wiz.eduCard(e, i)).join('')}
         <button class="wiz-add" onclick="Wiz.add('education', {degree:'',school:'',location:'',date:'',honors:''})">+ Add ${edu.length ? 'another school' : 'a school'}</button>`;
     },
 
@@ -372,24 +421,26 @@ const Wiz = {
       const lineBox = (arr, i, rows, ph) => `<textarea class="wiz-input" id="wiz-lines-${arr}-${i}" rows="${rows}" oninput="Wiz.lines('${arr}', ${i}, this.value)" placeholder="${esc(ph)}">${esc((d[arr][i].bullets || []).join('\n'))}</textarea>`;
       return `
         <div class="wiz-title">Projects, volunteering, and training</div>
-        <div class="wiz-help">These count as real experience, especially for a first resume. Everything here is optional.</div>
+        <div class="wiz-help">These count as real experience, especially for a first resume. Everything here is optional: skip any part that doesn&rsquo;t apply to you.</div>
 
-        <div class="wiz-label">Projects <span class="wiz-optional">(school, personal, or community)</span></div>
+        <div class="wiz-label">Projects</div>
+        <div class="wiz-example" style="margin-top:0;">Something you made, organized or worked on, for school, a club, your community, or on your own. For example: a school food drive, a science fair project, a family budget spreadsheet.</div>
         ${d.projects.map((p, i) => `
           <div class="wiz-card">
             <div class="wiz-card-head">Project ${i + 1}<button class="wiz-link" onclick="Wiz.remove('projects', ${i})">Remove</button></div>
-            <label class="wiz-label">Name<input class="wiz-input" value="${esc(p.name)}" oninput="Wiz.item('projects', ${i}, 'name', this.value)" placeholder="e.g. School food drive"></label>
-            <label class="wiz-label">What was it? <span class="wiz-optional">(optional)</span><input class="wiz-input" value="${esc(p.description)}" oninput="Wiz.item('projects', ${i}, 'description', this.value)" placeholder="e.g. Collected canned food for a local pantry"></label>
+            <label class="wiz-label">Project name<input class="wiz-input" value="${esc(p.name)}" oninput="Wiz.item('projects', ${i}, 'name', this.value)" placeholder="e.g. School food drive"></label>
+            <label class="wiz-label">What was it about? <span class="wiz-optional">(optional, one short sentence)</span><input class="wiz-input" value="${esc(p.description)}" oninput="Wiz.item('projects', ${i}, 'description', this.value)" placeholder="e.g. Collected canned food for a local pantry"></label>
             <label class="wiz-label">What did you do? <span class="wiz-optional">(one thing per line)</span>${lineBox('projects', i, 3, 'Asked classmates to donate\nSorted and counted the cans')}</label>
           </div>`).join('')}
         <button class="wiz-add" onclick="Wiz.add('projects', {name:'',description:'',bullets:[]})">+ Add a project</button>
 
-        <div class="wiz-label" style="margin-top:16px;">Volunteering and activities <span class="wiz-optional">(clubs, teams, church, community)</span></div>
+        <div class="wiz-label" style="margin-top:16px;">Volunteering and activities</div>
+        <div class="wiz-example" style="margin-top:0;">Unpaid roles and groups you take part in: volunteering, clubs, sports teams, church or community groups.</div>
         ${d.volunteer.map((v, i) => `
           <div class="wiz-card">
             <div class="wiz-card-head">Activity ${i + 1}<button class="wiz-link" onclick="Wiz.remove('volunteer', ${i})">Remove</button></div>
-            <label class="wiz-label">Your role<input class="wiz-input" value="${esc(v.title)}" oninput="Wiz.item('volunteer', ${i}, 'title', this.value)" placeholder="e.g. Volunteer, Team captain"></label>
-            <label class="wiz-label">Group or place<input class="wiz-input" value="${esc(v.organization)}" oninput="Wiz.item('volunteer', ${i}, 'organization', this.value)" placeholder="e.g. Community Food Pantry"></label>
+            <label class="wiz-label">Your role or position<input class="wiz-input" value="${esc(v.title)}" oninput="Wiz.item('volunteer', ${i}, 'title', this.value)" placeholder="e.g. Volunteer, Team captain"></label>
+            <label class="wiz-label">Name of the group or place<input class="wiz-input" value="${esc(v.organization)}" oninput="Wiz.item('volunteer', ${i}, 'organization', this.value)" placeholder="e.g. Community Food Pantry"></label>
             <div class="grid-2">
               <label class="wiz-label">From<input class="wiz-input" value="${esc(v.start)}" oninput="Wiz.item('volunteer', ${i}, 'start', this.value)" placeholder="e.g. 2025"></label>
               <label class="wiz-label">To<input class="wiz-input" value="${esc(v.end)}" oninput="Wiz.item('volunteer', ${i}, 'end', this.value)" placeholder="e.g. Present"></label>
@@ -398,16 +449,17 @@ const Wiz = {
           </div>`).join('')}
         <button class="wiz-add" onclick="Wiz.add('volunteer', {title:'',organization:'',location:'',start:'',end:'',bullets:[]})">+ Add volunteering or an activity</button>
 
-        <div class="wiz-label" style="margin-top:16px;">Training, courses, or certificates you&rsquo;ve completed</div>
+        <div class="wiz-label" style="margin-top:16px;">Training and courses</div>
+        <div class="wiz-example" style="margin-top:0;">Classes, courses or certificates you finished, such as a food handler course or a first-aid class. Only list ones you really completed.</div>
         ${d.certifications.map((c, i) => `
           <div class="wiz-card">
             <div class="wiz-card-head">Training ${i + 1}<button class="wiz-link" onclick="Wiz.remove('certifications', ${i})">Remove</button></div>
-            <label class="wiz-label">Name<input class="wiz-input" value="${esc(c.name)}" oninput="Wiz.item('certifications', ${i}, 'name', this.value)" placeholder="e.g. Food Handler Course"></label>
+            <label class="wiz-label">Course or certificate name<input class="wiz-input" value="${esc(c.name)}" oninput="Wiz.item('certifications', ${i}, 'name', this.value)" placeholder="e.g. Food Handler Course"></label>
             <label class="wiz-label">Who gave it <span class="wiz-optional">(optional)</span><input class="wiz-input" value="${esc(c.org)}" oninput="Wiz.item('certifications', ${i}, 'org', this.value)"></label>
             <label class="wiz-label">Year <span class="wiz-optional">(optional)</span><input class="wiz-input" value="${esc(c.date)}" oninput="Wiz.item('certifications', ${i}, 'date', this.value)" placeholder="e.g. 2026"></label>
           </div>`).join('')}
         <button class="wiz-add" onclick="Wiz.add('certifications', {name:'',org:'',date:''})">+ Add training or a course</button>
-        <div class="wiz-example">Only list certificates you actually earned.</div>`;
+`;
     },
 
     skills() {
@@ -415,11 +467,12 @@ const Wiz = {
       const custom = s.filter(x => !WIZ_SKILLS.includes(x)).join(', ');
       return `
         <div class="wiz-title">What are you good at?</div>
-        <div class="wiz-help">Tick the ones that are true for you.</div>
+        <div class="wiz-help">Skills can come from anywhere: school, volunteering, hobbies, family responsibilities or a job. If you can do it, it counts. Tick the ones that are true for you.</div>
         <div class="wiz-checks">${WIZ_SKILLS.map((k, i) => `
           <label class="wiz-check"><input type="checkbox" ${s.includes(k) ? 'checked' : ''} onchange="Wiz.toggleSkill(WIZ_SKILLS[${i}], this.checked)"> ${esc(k)}</label>`).join('')}</div>
         <label class="wiz-label">Anything else? <span class="wiz-optional">(separate with commas)</span>
-          <input class="wiz-input" value="${esc(custom)}" oninput="Wiz.setCustomSkills(this.value)" placeholder="e.g. Spanish, Microsoft Word, lawn equipment"></label>`;
+          <input class="wiz-input" value="${esc(custom)}" oninput="Wiz.setCustomSkills(this.value)" placeholder="e.g. Spanish, Microsoft Word, lawn equipment"></label>
+        <div class="wiz-example">Only tick things you could show or explain to an employer.</div>`;
     },
 
     review() {
@@ -434,15 +487,42 @@ const Wiz = {
         <div class="wiz-help">Nothing is final. You can change anything here or in Edit Fields.</div>
         ${missing.length ? `<div class="notice-box">Employers need a way to reach you. Add ${missing.join(' and ')}.</div>` : ''}
         ${row('You', d.name ? `${d.name}${d.contact.location ? ', ' + d.contact.location : ''}` : 'Not filled in yet', 1)}
-        ${row('Job you want', d.summary.tagline || 'Skipped', 0)}
+        ${row('Work you want', d.summary.tagline || 'Skipped', 0)}
         ${row('Work', count(d.experience.length, 'job', d.experience.length === 0 ? 'None yet. That\'s okay!' : ''), 2)}
         ${row('School', count(d.education.length, 'school', 'Skipped'), 3)}
         ${row('Projects & activities', [count(d.projects.length, 'project', ''), count(d.volunteer.length, 'activity', ''), count(d.certifications.length, 'training item', '')].filter(Boolean).join(', ') || 'Skipped', 4)}
         ${row('Skills', count(d.summary.skills.length, 'skill', 'Skipped'), 5)}
         ${d.experience.length === 0 ? '<div class="wiz-note">With no work history, your resume leads with education, then projects and activities, then skills.</div>' : ''}
         <div class="wiz-note">Pick a design from the tabs above the preview. Simple styles like The Partner or The Builder work well for most first resumes. Then download a PDF or Word file with the buttons at the bottom right.</div>
-        ${Wiz.polishBlock()}`;
+        ${Wiz.polishBlock('')}`;
     }
+  },
+
+  eduCard(e, i) {
+    const m = Wiz.eduModel(i);
+    const other = m.qual === 'Other';
+    const needsSubject = m.qual && !WIZ_NO_SUBJECT.includes(m.qual);
+    const done = m.status !== 'ongoing';
+    return `
+      <div class="wiz-card">
+        <div class="wiz-card-head">School ${i + 1}<button class="wiz-link" onclick="Wiz.remove('education', ${i})">Remove</button></div>
+        <label class="wiz-label">School or college<input class="wiz-input" value="${esc(e.school)}" oninput="Wiz.item('education', ${i}, 'school', this.value)" placeholder="e.g. Oakwood High School"></label>
+        <label class="wiz-label">Qualification <span class="wiz-optional">(the certificate or degree you earned, or are working toward)</span>
+          <select class="wiz-input" onchange="Wiz.eduSet(${i}, 'qual', this.value)">
+            <option value="" ${m.qual === '' ? 'selected' : ''}>Choose one…</option>
+            ${WIZ_QUALS.map(q => `<option value="${esc(q)}" ${m.qual === q ? 'selected' : ''}>${esc(q)}</option>`).join('')}
+            <option value="Other" ${other ? 'selected' : ''}>Something else (type it)</option>
+          </select></label>
+        ${other ? `<label class="wiz-label">Name of the qualification<input class="wiz-input" value="${esc(m.other)}" oninput="Wiz.eduSet(${i}, 'other', this.value)" placeholder="e.g. Nursing assistant program"></label>` : ''}
+        ${needsSubject || other ? `<label class="wiz-label">Subject or field of study <span class="wiz-optional">(optional)</span><input class="wiz-input" value="${esc(m.field)}" oninput="Wiz.eduSet(${i}, 'field', this.value)" placeholder="e.g. Business, Nursing, Welding"></label>` : ''}
+        <div class="wiz-label">Where are you with it?</div>
+        <div class="wiz-checks">
+          <label class="wiz-check"><input type="radio" name="wiz-edu-status-${i}" ${done ? 'checked' : ''} onchange="Wiz.eduSet(${i}, 'status', 'done')"> I finished this</label>
+          <label class="wiz-check"><input type="radio" name="wiz-edu-status-${i}" ${done ? '' : 'checked'} onchange="Wiz.eduSet(${i}, 'status', 'ongoing')"> I&rsquo;m still studying</label>
+        </div>
+        <label class="wiz-label">${done ? 'Year finished' : 'Year you expect to finish'} ${done ? '' : '<span class="wiz-optional">(optional)</span>'}<input class="wiz-input" value="${esc(m.year)}" oninput="Wiz.eduSet(${i}, 'year', this.value)" placeholder="e.g. 2026"></label>
+        <label class="wiz-label">Anything to highlight <span class="wiz-optional">(optional)</span><input class="wiz-input" value="${esc(e.honors)}" oninput="Wiz.item('education', ${i}, 'honors', this.value)" placeholder="e.g. Honor roll, Student council"></label>
+      </div>`;
   },
 
   jobCard(e, i) {
@@ -473,3 +553,13 @@ const Wiz = {
 };
 
 function startGuided(path) { Wiz.start(path); }
+
+// AI polish, offered at the top of the regular editor (Edit Fields) for any licensed resume with something to polish.
+let lastEditPolish = null;
+function renderEditPolish() {
+  const el = document.getElementById('edit-polish');
+  if (!el) return;
+  const show = !!state.data && state.license.verified && ResumeCore.hasContent(state.data);
+  const html = show ? Wiz.polishBlock('edit-', true) : '';
+  if (html !== lastEditPolish) { el.innerHTML = html; lastEditPolish = html; }
+}
