@@ -10,8 +10,7 @@ const { exportApi } = require('./export-api');
 const { pdfText } = require('../functions/files');
 
 const ROOT = path.join(__dirname, '..', '..');
-const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
-const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { PW, CHROME, unavailable } = require('./browser');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'rg-access-'));
 const GOOD = 'FG-TEST-AAAA';
@@ -35,7 +34,7 @@ const POLISHED = { ...ANSWERS, summary: { tagline: 'Seeking a customer service p
   projects: [{ name: 'School food drive', description: '', bullets: ['Organized a food drive that collected 1,200 cans', 'Sorted and counted donated cans'] }] };
 
 test('access control and AI polish (Chromium)', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   const { chromium } = require(PW);
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });
@@ -185,7 +184,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.match(await s.page.innerText('.wiz-polish'), /Uses 1 of your 5 generations \(of 5\)/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);
     await s.page.click('#polish-btn');                                                                          // first click only asks
-    assert.match(await s.page.innerText('.wiz-confirm'), /The AI will review your resume\. A generation is charged only if it makes meaningful improvements[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds nothing meaningful to improve[\s\S]*nothing is used/);
+    assert.match(await s.page.innerText('.wiz-confirm'), /The AI will review your resume\. A generation is used only if it rewrites some of your wording or corrects three or more mistakes[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds less than that[\s\S]*nothing is used/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);
     await s.page.click('.wiz-confirm .wiz-back');                                                               // cancel: still nothing
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0); assert.match(await s.page.innerText('#license-badge'), /5 of 5/);
@@ -420,7 +419,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     await s.page.fill('input[placeholder^="e.g. customer service"]', 'customer support');
     await s.page.click('.wiz-dot:has-text("Review")'); await s.page.click('button:has-text("Open in Editor")');
     await s.page.click('#edit-polish-btn');
-    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /The AI will review your resume\. A generation is charged only if it makes meaningful improvements[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds nothing meaningful to improve[\s\S]*nothing is used/);
+    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /The AI will review your resume\. A generation is used only if it rewrites some of your wording or corrects three or more mistakes[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds less than that[\s\S]*nothing is used/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);                                                 // the first click only asks
     await s.page.dblclick('#edit-polish-confirm'); await s.page.waitForSelector('#edit-polish .wiz-ok');
     const calls = s.calls.filter((c) => c.name === 'polish-resume'); assert.equal(calls.length, 1);

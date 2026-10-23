@@ -1,6 +1,6 @@
 // SYSTEM STRESS in real Chromium: Paste -> Analyze -> Polish -> Edit Fields -> Restore -> Tailor -> PDF/Word, plus Guided Builder, on a
 // desktop and an Android-sized screen. The "server" behind the page is a simulation built from the REAL integrity guard, the REAL change
-// assessment and the real charging rule (a generation is spent only for a rewrite), and the REAL export renderer. Only the AI answer and the
+// assessment and the real charging rule (a generation is spent only for 3 points of accepted improvements), and the REAL export renderer. Only the AI answer and the
 // database are scripted. A final test sabotages the simulated server and shows these assertions fail, so they cannot pass by accident.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -8,8 +8,7 @@ const fs = require('fs');
 const http = require('http');
 const path = require('path');
 const ROOT = path.join(__dirname, '..', '..');
-const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
-const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { PW, CHROME, unavailable } = require('./browser');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript' };
 const { exportApi } = require('./export-api');
 const { pdfText, docxText } = require('../functions/files');
@@ -31,7 +30,8 @@ function serve() {
 }
 
 // ── the simulated server ────────────────────────────────────────────────────────────────────────────────────────────────
-function simServer({ parsed, polish, tailor, guard = integrity.guardResume, assess = integrity.assessChange }) {
+const scoring = require('../../netlify/functions/_lib/scoring');
+function simServer({ parsed, polish, tailor, guard = integrity.guardResume, score = scoring.score }) {
   const st = { uses: 5, polishCalls: 0, parseCalls: 0, tailorCalls: 0, tailorRuns: 5 };
   const stamp = { version: Core.GUARD_VERSION, withholds: true };
   const api = {
@@ -41,8 +41,8 @@ function simServer({ parsed, polish, tailor, guard = integrity.guardResume, asse
     'polish-resume': (b) => {
       st.polishCalls++;
       if (b.clientGuard !== Core.GUARD_VERSION) return { status: 409, json: { error: 'This page is out of date.', stale: true } };
-      const source = Core.clean(b.resume); const g = guard(source, polish(source, b), { mode: 'polish', vocabulary: b.target }); const changes = assess(source, g.resume);
-      if (changes.reworded === 0) return { status: 200, json: { guard: stamp, noChange: true, charged: false, reason: g.withheld.length ? 'flagged' : changes.minor > 0 ? 'minor' : 'unchanged', withheld: g.withheld, changes, usesRemaining: st.uses, maxUses: 5 } };
+      const source = Core.clean(b.resume); const g = guard(source, polish(source, b), { mode: 'polish', vocabulary: b.target }); const changes = integrity.assessChange(source, g.resume); const sc = score(source, g.resume);
+      if (!sc.charge) return { status: 200, json: { guard: stamp, noChange: true, charged: false, reason: g.withheld.length ? 'flagged' : changes.minor > 0 ? 'minor' : 'unchanged', withheld: g.withheld, changes, usesRemaining: st.uses, maxUses: 5 } };
       st.uses--; return { status: 200, json: { guard: stamp, result: JSON.stringify(g.resume), unverified: [], withheld: g.withheld, changes, charged: true, usesRemaining: st.uses, maxUses: 5, tailorToken: 'tok-p' } };
     },
     'tailor-resume': (b) => {
@@ -60,7 +60,7 @@ const oneWord = (r) => { const o = clone(r); o.projects[0].bullets[2] = 'Helped 
 const tailorSwap = (r) => ({ resume: (() => { const o = clone(r); o.summary.tagline = 'Seeking a customer service position'; return o; })() });
 
 test('SYSTEM STRESS (Chromium, simulated server built from the real guard and charging rule)', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   const { chromium } = require(PW);
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });
@@ -137,7 +137,7 @@ test('SYSTEM STRESS (Chromium, simulated server built from the real guard and ch
     await assert.rejects(() => journey('desktop', sab), /unsupported text|families in the community|flag/i);
   });
   await t.test('META: and against a server that charges for a one-word touch-up', async () => {
-    const sab = simServer({ parsed: parsedTaylor, polish: oneWord, tailor: tailorSwap, assess: (a, b) => { const r = integrity.assessChange(a, b); return { ...r, reworded: r.reworded + r.minor }; } });
+    const sab = simServer({ parsed: parsedTaylor, polish: oneWord, tailor: tailorSwap, score: (a, b) => { const c = integrity.assessChange(a, b); return { ...scoring.score(a, b), charge: c.reworded + c.minor > 0 }; } });   // any visible change is charged
     const s = await open(sab); await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); switchPanel('edit'); }, P.firstDetailed);
     await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy);
     assert.match(await badge(s), /4 of 5/, 'the sabotaged server really charged'); await s.close();
@@ -152,7 +152,7 @@ test('SYSTEM STRESS (Chromium, simulated server built from the real guard and ch
       await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(150);
       assert.match(await badge(s), /5 of 5/); assert.equal(sim.st.uses, 5);
       assert.equal(await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data))), before, 'the resume is untouched');
-      const card = await s.page.innerText('#edit-polish'); assert.match(card, /Only tiny touch-ups were found/); assert.match(card, /No generation was used/); assert.match(card, /5 of 5 left/);
+      const card = await s.page.innerText('#edit-polish'); assert.match(card, /Only a few small fixes were found/); assert.match(card, /No generation was used/); assert.match(card, /5 of 5 left/);
       assert.equal(await s.page.locator('#edit-polish .wiz-err').count(), 0, 'not an error'); assert.doesNotMatch(card, /Restore all/);
       if (layout === 'android') assert.equal(await s.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'no sideways scrolling');
       await s.close();
@@ -224,12 +224,12 @@ test('SYSTEM STRESS (Chromium, simulated server built from the real guard and ch
     assert.equal(sim.st.uses, 5); assert.equal(await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data))), before); assert.match(await s.page.innerText('#polish-nochange, #edit-polish'), /No meaningful improvements/);
     await s.close();
   });
-  await t.test('[quality] CURRENT policy, stated plainly: six spelling fixes and nothing else are "tiny touch-ups" (free, nothing applied). The owner-approval proposal would charge and apply them', async () => {
+  await t.test('[quality] the approved rule, end to end: six spelling fixes and nothing else are worth a generation, are APPLIED on screen, and the card says what was done', async () => {
     const c = QC.spellingOnly; const sim = simServer({ parsed: () => clone(c.before), polish: () => clone(c.after), tailor: tailorSwap }); const s = await open(sim);
     await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); switchPanel('edit'); }, c.before);
     await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(100);
-    assert.equal(sim.st.uses, 5); assert.match(await s.page.innerText('#edit-polish'), /Only tiny touch-ups were found/);
-    assert.match(await s.page.innerText('#resume-preview'), /custmers/i, 'the misspellings are still there: this is the gap the proposal closes');
+    assert.equal(sim.st.uses, 4); assert.match(await s.page.innerText('#edit-polish'), /Polished/);
+    const preview = await s.page.innerText('#resume-preview'); assert.doesNotMatch(preview, /custmers|clossing|registar|entrence|questons|merchandize/i, 'the misspellings are gone'); assert.match(preview, /customers/i);
     await s.close();
   });
 

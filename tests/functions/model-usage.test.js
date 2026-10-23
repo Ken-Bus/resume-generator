@@ -4,7 +4,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path');
-const { H, loadHandlers, post, parseBody, installAi, GOOD_RESUME, ECHO } = require('./harness');
+const { H, loadHandlers, post, parseBody, installAi, GOOD_RESUME, ECHO, realReword } = require('./harness');
 const FUNCS = path.join(__dirname, '..', '..', 'netlify', 'functions');
 const ai = require(path.join(FUNCS, '_lib', 'ai'));
 const usage = require(path.join(FUNCS, '_lib', 'usage'));
@@ -130,12 +130,14 @@ const PRIYA = { name: 'Priya Nair', contact: { email: 'priya.nair@example.com' }
   experience: [{ title: 'Warehouse Associate', company: 'Fictional Supply Co', location: 'Dayton, OH', start: '2018', end: '2026', summary: '', bullets: ['answered customer questions by phone and in person', 'kept accurate records of shipments', 'followed safety procedures'] }],
   education: [{ degree: 'High School Diploma', school: 'Lakeview High', date: '2017' }], certifications: [], projects: [], volunteer: [], awards: [] };
 
+// An honest rewrite of the LAST bullet of the first job: worth a generation by itself under the 3-point rule (the personas' own edits are mostly re-wordings).
+const BOOST = (o) => { const b = o.experience[0].bullets; b[b.length - 1] = realReword(b[b.length - 1]); };
 const PEOPLE = [
   { who: 'first-time applicant (Taylor)', profile: 'first', src: TAYLOR, target: 'customer service', improve: (o) => { o.projects[0].bullets = ['Asked classmates to donate canned food', 'Counted and sorted the donated cans']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays', 'Greeted families on arrival']; },
     facts: (o) => { assert.equal(o.education[0].school, 'Oakwood High School'); assert.equal(o.volunteer[0].organization, 'Community Food Pantry'); assert.equal(o.volunteer[0].start, '2025'); assert.equal(o.experience.length, 0); } },
-  { who: 'experienced worker (Michael)', profile: 'experienced', src: MICHAEL, target: 'warehouse lead', improve: (o) => { o.experience[0].bullets = ['Taught new people to use the pallet jack', 'Order accuracy checks', 'Kept the dock clean and safe']; o.experience[1].bullets = ['Loaded and unloaded trucks', 'Worked with the shipping team']; },
+  { who: 'experienced worker (Michael)', boost: BOOST, profile: 'experienced', src: MICHAEL, target: 'warehouse lead', improve: (o) => { o.experience[0].bullets = ['Taught new people to use the pallet jack', 'Order accuracy checks', 'Kept the dock clean and safe']; o.experience[1].bullets = ['Loaded and unloaded trucks', 'Worked with the shipping team']; },
     facts: (o) => { assert.deepEqual(o.experience.map((e) => [e.title, e.company, e.start, e.end]), [['Shift Lead', 'Fictional Freight Co', '2015', 'Present'], ['Warehouse Associate', 'Fictional Freight Co', '2004', '2015']]); assert.equal(o.education[0].date, '1999'); } },
-  { who: 'career changer (Priya)', profile: 'changer', src: PRIYA, target: 'customer support', improve: (o) => { o.experience[0].bullets = ['Responded to customer questions by phone and in person', 'Kept accurate shipment records', 'Followed safety procedures']; },
+  { who: 'career changer (Priya)', boost: BOOST, profile: 'changer', src: PRIYA, target: 'customer support', improve: (o) => { o.experience[0].bullets = ['Responded to customer questions by phone and in person', 'Kept accurate shipment records', 'Followed safety procedures']; },
     facts: (o) => { assert.equal(o.experience[0].company, 'Fictional Supply Co'); assert.equal(o.experience[0].end, '2026'); assert.equal(o.education[0].school, 'Lakeview High'); } }
 ];
 
@@ -154,7 +156,7 @@ test('migration end to end: every paid feature on the new model with fictional p
 
   for (const p of PEOPLE) {
     await t.test(`${p.who}: a meaningful polish charges exactly one generation; facts, dates, schools and employers are untouched`, async () => {
-      reset(); const c = await seed(); fake.polishPayload = (r) => { const o = clone(r); p.improve(o); return o; }; const w = watchLog();
+      reset(); const c = await seed(); fake.polishPayload = (r) => { const o = clone(r); p.improve(o); if (p.boost) p.boost(o); return o; }; const w = watchLog();
       let b; try { b = parseBody(await polish(c, p)); } finally { w.stop(); }
       assert.equal(b.charged, true); assert.equal(b.usesRemaining, 4); assert.ok(b.tailorToken); assert.ok(b.changes.reworded >= 1, JSON.stringify(b.changes));
       p.facts(JSON.parse(b.result)); assert.equal(await uses(c), 4); assert.deepEqual(await rows(c), [{ status: 'committed', fc: false }]);
@@ -174,7 +176,7 @@ test('migration end to end: every paid feature on the new model with fictional p
 
     await t.test(`${p.who}: invented facts are restored, dropped or WITHHELD whatever the new model writes; honest lines in the same reply are still accepted (one charge)`, async () => {
       reset(); const c = await seed();
-      fake.polishPayload = (r) => { const o = clone(r); p.improve(o); o.name = 'Someone Else'; o.education[0].school = 'Invented University'; o.education[0].date = '2031';
+      fake.polishPayload = (r) => { const o = clone(r); p.improve(o); if (p.boost) p.boost(o); o.name = 'Someone Else'; o.education[0].school = 'Invented University'; o.education[0].date = '2031';
         o.experience.push({ title: 'Store Manager', company: 'Invented Corp', location: '', start: '2020', end: '2024', summary: '', bullets: ['Managed a team of 12 and increased sales by 40%'] });
         o.projects.push({ name: 'Invented project', description: 'Led a campaign', bullets: ['Won a state award'] });
         if (p.src.experience.length) { o.experience[0].company = 'Invented Corp'; o.experience[0].start = '1990'; o.experience[0].bullets[0] = 'Supervised a team of 15 and increased output by 40%'; }

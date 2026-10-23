@@ -6,7 +6,7 @@
 // server withholds them. These tests pin the current behaviour at every layer the result passes through, and make a stale deploy visible.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { H, loadHandlers, post, parseBody, installAi, captureLogs } = require('./harness');
+const { H, loadHandlers, post, parseBody, installAi, captureLogs, realReword } = require('./harness');
 const integrity = require('../../netlify/functions/_lib/integrity');
 const Core = require('../../resume-core.js');
 
@@ -66,7 +66,7 @@ test('Tailor applies the same entry-scoped guard to the same invention', () => {
 
 test('the build stamp: page and functions share one guard version, and it is bumped with the rules', () => {
   assert.match(Core.GUARD_VERSION, /^[a-z0-9-]{1,40}$/);
-  assert.equal(Core.GUARD_VERSION, 'entry-scope-withhold-5');
+  assert.equal(Core.GUARD_VERSION, 'entry-scope-withhold-6');
 });
 
 test('polish-resume against real SQL: the live result is now FREE (only a one-word touch-up survives); a real rewrite beside it is charged once; the invented claim never appears', async (t) => {
@@ -106,15 +106,15 @@ test('polish-resume against real SQL: the live result is now FREE (only a one-wo
   hs.polishModule._nochange._events.clear();
   ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets[2] = 'Helped organize donated food for pickup.'; return o; };
   const solo = parseBody(await hs.polish(post({ code, resume: clone(TAYLOR), target: 'customer service', requestId: 'live-replay-0002' })));
-  assert.equal(solo.noChange, true); assert.equal(solo.reason, 'minor'); assert.equal(solo.charged, false); assert.equal(await uses(), 5); assert.match(solo.message, /small touch-ups/);
+  assert.equal(solo.noChange, true); assert.equal(solo.reason, 'minor'); assert.equal(solo.charged, false); assert.equal(await uses(), 5); assert.match(solo.message, /few small fixes/);
 
   // …but a real rewrite next to the invented claims IS charged once, and the claims are still gone.
   hs.polishModule._nochange._events.clear();
-  ai.polishPayload = (r) => { const o = LIVE(r); o.projects[0].bullets[2] = 'At pickup, helped organize the food'; return o; };
+  ai.polishPayload = (r) => { const o = LIVE(r); o.projects[0].bullets[2] = realReword('Helped organize food for pickup'); return o; };
   const mixed = parseBody(await hs.polish(post({ code, resume: clone(TAYLOR), target: 'customer service', requestId: 'live-replay-0003' })));
   const out = JSON.parse(mixed.result); const p = out.projects[0];
   assert.equal(mixed.charged, true); assert.equal(await uses(), 4);
-  assert.equal(p.description, ''); assert.equal(p.bullets[0], 'Asked classmates to donate canned food.'); assert.equal(p.bullets[2], 'At pickup, helped organize the food');
+  assert.equal(p.description, ''); assert.equal(p.bullets[0], 'Asked classmates to donate canned food.'); assert.equal(p.bullets[2], realReword('Helped organize food for pickup'));
   assert.equal(NOT_ALLOWED.test(JSON.stringify(out.projects)), false);
   assert.equal(out.volunteer[0].bullets[1], 'Greeted families as they arrived', 'the volunteer entry that really says it is untouched');
   assert.deepEqual(mixed.unverified, []);

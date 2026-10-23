@@ -10,8 +10,7 @@ const { exportApi } = require('./export-api');
 const { pdfText } = require('../functions/files');
 
 const ROOT = path.join(__dirname, '..', '..');
-const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
-const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { PW, CHROME, unavailable } = require('./browser');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript' };
 const GOOD = 'FG-TEST-AAAA';
 
@@ -41,7 +40,7 @@ const polishOk = (result, extra = {}) => () => ({ status: 200, json: { result: J
 const tailorOk = (resume, extra = {}) => () => ({ status: 200, json: { result: JSON.stringify({ resume, matchSummary: { matchedKeywords: ['service'], missingKeywords: [], notes: 'ok' } }), unverified: [], withheld: [], tailorRunsRemaining: 4, ...extra } });
 
 test('release hardening (Chromium, production security headers, mocked endpoints)', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   const { chromium } = require(PW);
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });

@@ -16,6 +16,7 @@ const MSG = {
   limit: 'You’ve reached the tailoring limit for this resume.',
   unavailable: 'Tailoring is temporarily unavailable. Please try again later.',
   aiFailed: 'We couldn’t tailor your resume right now. Please try again.',
+  slow: 'The AI took too long to answer. Nothing was used. Please try again in a moment.',
   tooLong: 'This resume (with that job description) is too long to tailor in one go. Please shorten it a little, or paste only the key sections of the job description, and try again.',
   server: 'Server error, please try again.'
 };
@@ -73,7 +74,7 @@ exports.handler = async function(event) {
     supabase = getSupabaseClient();
     grant = await license.tailorAuthorize(supabase, auth.reservationId, cfg.TAILOR_MAX_PER_PAID_OP);
   } catch (err) {
-    console.error('tailor-resume: authorisation failed', { reason: err && err.message });
+    console.error('tailor-resume: authorisation failed', { reason: String((err && (err.code || err.name)) || 'error').slice(0, 40) });
     return json(503, { error: MSG.server });
   }
   if (grant.outcome === 'limit') return json(429, { error: MSG.limit });
@@ -115,8 +116,8 @@ ${jobDescription}`;
     await license.safeTailorRefund(supabase, auth.reservationId, providerFault, cfg.TAILOR_FORGIVEN_FAILURES);
     console.error('tailor-resume: generation failed', { ref: guardFault ? 'T107' : undefined, reservation: auth.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', providerFault });
     usage.outcome({ fn: 'tailor', ref: auth.reservationId, outcome: 'failed' });
-    const long = err && err.name === 'AiError' && (err.reason === 'timeout' || err.reason === 'truncated');
-    return json(502, { error: long ? MSG.tooLong : MSG.aiFailed });
+    const reason = err && err.name === 'AiError' ? err.reason : '';
+    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : MSG.aiFailed });
   }
 
   usage.outcome({ fn: 'tailor', ref: auth.reservationId, outcome: 'ok', withheld: withheld.length });

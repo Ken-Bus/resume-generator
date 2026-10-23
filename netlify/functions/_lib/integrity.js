@@ -37,7 +37,7 @@ const numbersIn = (text) => {
 // Wording that claims responsibility, qualification or character. A match is only suspicious when the customer's own
 // text does not already contain it (compared by word root, or by the whole phrase for multi-word claims).
 const CLAIM_WORDS = [
-  { label: 'leadership or supervisory wording', rootLen: 4, re: /\b(supervis\w*|manag\w*|led|leading|directed|oversaw|oversee\w*|mentor\w*|coach\w*|train(?:ed|ing|er|s)?)\b/gi },
+  { label: 'leadership or supervisory wording', rootLen: 4, re: /\b(supervis\w*|manag\w*|led|leading|directed|oversaw|oversee\w*|mentor\w*|coach\w*|train(?:ed|ing|er|s)?|teach\w*|taught|tutor\w*|instruct\w*)\b/gi },
   { label: 'credential or licence wording', rootLen: 4, re: /\b(certif\w*|licen[sc]\w*|accredit\w*|bachelor\w*|master'?s|mba|ph\.?d|degree|diploma|osha|cpr|cdl)\b/gi },
   { label: 'praise or personality claim', rootLen: 6, re: /\b(motivated|passionate|dynamic|results?-driven|driven|proven|exceptional\w*|excellen\w*|outstanding|expert\w*|extensive\w*|highly|successful\w*|award-winning|top-performing|seasoned|skilled|strong|dedicated|committed|reliab\w*|dependab\w*|hard-?working|detail-oriented|self-starter|team player|innovative|enthusias\w*|energetic|ambitious|diligent|proactive|accomplished|talented|trustworthy|friendly|punctual)\b/gi },
   { label: 'attendance claim', rootLen: 0, re: /\b(perfect attendance|never (?:missed|late|absent)|always on time|on-time|consistent attendance)\b/gi }
@@ -64,23 +64,46 @@ const PLAIN_VERB_WORDS = (('help assist support handle complete prepare organize
 const IRREGULAR = { drove: 'drive', driven: 'drive', wrote: 'write', written: 'write', kept: 'keep', sold: 'sell', taught: 'teach', made: 'make', took: 'take', taken: 'take', gave: 'give', given: 'give',
   found: 'find', held: 'hold', brought: 'bring', bought: 'buy', caught: 'catch', fed: 'feed', got: 'get', had: 'have', met: 'meet', paid: 'pay', sent: 'send', spoke: 'speak', stood: 'stand', told: 'tell',
   swept: 'sweep', dealt: 'deal', sat: 'sit', did: 'do', done: 'do', went: 'go', came: 'come', saw: 'see', knew: 'know', chose: 'choose', began: 'begin', lost: 'lose', left: 'leave', put: 'put', read: 'read' };
+// Word forms that do not follow the suffix rules (people/person, shelves/shelf, babysat/babysit...).
+Object.assign(IRREGULAR, { children: 'child', people: 'person', persons: 'person', shelves: 'shelf', knives: 'knife', loaves: 'loaf', men: 'man', women: 'woman', babysat: 'babysit', rang: 'ring', learnt: 'learn' });
+// One inflection ending is removed, then one agent/adverb ending, so "orders", "ordered" and "order" meet, and so do "carry", "carried" and
+// "carries" (-y/-ied/-ies), "close" and "closed", "process" and "processed" (a final -s after s, u or i is part of the word, not a plural).
 const stem = (w) => {
   let x = w.toLowerCase(); if (IRREGULAR[x]) x = IRREGULAR[x];
-  if (x.length > 3) { for (let pass = 0; pass < 2 && x.length > 3; pass++) x = x.replace(/(ing|ed|es|ly|er|s)$/, ''); }      // twice, so "orders" and "order" meet
-  x = x.replace(/([bdgmnprt])\1$/, '$1');                      // canned -> can, stopped -> stop
+  if (x.length > 4 && /(ies|ied)$/.test(x)) x = `${x.slice(0, -3)}y`;                             // carried, carries -> carry
+  else if (x.length > 3) {
+    const m = /(ing|ed|es|s)$/.exec(x);
+    if (m) {
+      const base = x.slice(0, -m[1].length);
+      if (m[1] === 's') { if (!/(s|u|i)$/.test(base)) x = base; }                                 // orders -> order; process, bus, status stay
+      else if (m[1] === 'es') x = /(s|x|z|ch|sh|o)$/.test(base) ? base : x.slice(0, -1);          // boxes -> box, dishes -> dish, closes -> close
+      else x = base;                                                                              // loading -> load, loaded -> load
+    }
+  }
+  if (x.length > 4) x = x.replace(/(er|ly)$/, '');                                               // workers -> work, orders -> ord (as before)
+  x = x.replace(/([bdgmnprt])\1$/, '$1');                                                        // canned -> can, stopped -> stop
   return x.length > 4 ? x.replace(/(e|y)$/, '') : x;
 };
 // The list above is in base form; compare by stem, as the customer's words are ("organized" must match "organize").
 const PLAIN_VERBS = new Set([...PLAIN_VERB_WORDS, ...PLAIN_VERB_WORDS.map(stem)]);
 let NEUTRAL_STEMS = null;     // built once NEUTRAL exists (below)
 const wordsOf = (text) => s(text).toLowerCase().match(/[a-z]{3,}/g) || [];
-const stemSet = (text) => new Set(wordsOf(text).map(stem));
+// Two words written apart in the answers support the same two joined ("hair cut" -> "haircut", "paper work" -> "paperwork", "play ground" -> "playground").
+const stemSet = (text) => { const w = wordsOf(text); const set = new Set(w.map(stem)); for (let i = 0; i + 1 < w.length; i++) set.add(stem(w[i] + w[i + 1])); return set; };
 
 // Plain nouns that name no particular fact: they replace a vague word ("stuff", "things") or restate the work. A line gaining one of them gains no
 // new claim. (Who benefited, where and how well are judged elsewhere.)
 const NEUTRAL = new Set('product products item items thing things task tasks duty duties supply supplies material materials goods merchandise equipment person people persons orders order area areas'.split(' '));
 // Words that mean the same as one the customer wrote, in a resume.
-const SAME_AS = { accurate: ['correct', 'right'], correct: ['accurate', 'right'], customer: ['customers'], store: ['shop'], shop: ['store'], assist: ['help'] };
+const SAME_AS = { accurate: ['correct', 'right'], customer: ['customers'], store: ['shop'], shop: ['store'], assist: ['help'],
+  // the same word in another common form, or its everyday abbreviation (an honest edit may write either way round)
+  children: ['kids', 'kid', 'child'], child: ['kid', 'kids'], kids: ['children', 'child'], kid: ['child', 'children'],
+  home: ['house'], homes: ['houses', 'house'], house: ['home'], houses: ['homes', 'home'], occasionally: ['sometimes'], sometimes: ['occasionally'],
+  afterward: ['after'], afterwards: ['after'], entered: ['entry'], enter: ['entry'], entering: ['entry'],
+  employees: ['workers', 'worker', 'employee'], employee: ['worker', 'employees'], workers: ['employees', 'employee'], worker: ['employee', 'employees'],
+  temperature: ['temp', 'temps'], vegetables: ['veggies', 'veggie', 'veg'], substitute: ['sub', 'subs'], medications: ['meds', 'med'], medication: ['meds', 'med'], refrigerator: ['fridge'], photographs: ['photos'],
+  fix: ['correct', 'repair'], correct: ['accurate', 'right', 'fix'], supervised: ['supervision', 'supervisor'], arrive: ['come'],
+  graduate: ['grad'], graduates: ['grad'], years: ['yrs', 'yr'], year: ['yr'], department: ['dept'], information: ['info'], appointment: ['appt'], appointments: ['appts', 'appt'], quantity: ['qty'] };
 NEUTRAL_STEMS = new Set([...NEUTRAL, ...[...NEUTRAL].map(stem)]);
 // A word the customer's plain shorthand obviously refers to ("stock" -> shelves).
 const IMPLIED_BY = { shelv: ['stock'], shelf: ['stock'] };
@@ -100,7 +123,13 @@ function newContentWords(line, originalStems, skip = new Set()) {
 }
 
 // -> { claims: [reason...], details: [word...] }
-function analyse(line, originalText, originalNumbers, originalStems) {
+const TEACH_RE = /\b(train(?:ed|ing|er|s)?|teach\w*|taught|tutor\w*|instruct\w*)\b/i;
+// "Helped train new employees" is a faithful restatement of "Helped new workers learn ..." : training someone is the same help, said plainly. It is
+// accepted only when the line is hedged (helped / assisted / supported ...) AND the entry itself speaks of learning, teaching, showing or new people.
+// The entry itself already speaks of showing, teaching or training someone, so teaching is not a new claim.
+const TEACH_SAID_RE = /\b(show(?:s|ed|ing|n)?|teach\w*|taught|train(?:ed|ing|er|s)?|instruct\w*|orient(?:ed|ing|ation)?|explain\w*|tutor\w*)\b/i;
+const TRAIN_BASIS_RE = /\b(learn\w*|teach\w*|taught|show(?:s|ed|ing|n)?|orient(?:ed|ing|ation)?|explain\w*|new (?:workers?|employees?|hires?|staff|team ?members?|co-?workers?|people|folks|volunteers?|associates?|students?|kids|children))\b/i;
+function analyse(line, originalText, originalNumbers, originalStems, localText) {
   const claims = [];
   const claimTokens = new Set();                                                                  // words already reported as claims
   const lower = s(originalText).toLowerCase();
@@ -108,8 +137,14 @@ function analyse(line, originalText, originalNumbers, originalStems) {
   if (nums.length) claims.push(`number not in your resume: ${nums.slice(0, 3).join(', ')}`);
   CLAIM_WORDS.forEach(({ label, rootLen, re }) => {
     const fresh = (s(line).match(re) || []).filter((w) => {
+      if (TEACH_RE.test(w)) {
+        const local = s(localText !== undefined ? localText : originalText);
+        if (TEACH_SAID_RE.test(local)) return false;                                              // "showed new people how to ..." -> "Taught new people to ..."
+        if (/^train/i.test(w) && HEDGE_RE.test(line) && TRAIN_BASIS_RE.test(local)) { claimTokens.add(w.toLowerCase()); return false; }   // "helped train", said of people who learned
+      }
       if (!rootLen || /[\s-]/.test(w)) return !lower.includes(w.toLowerCase());                   // phrases: the phrase itself must be there
       const root = rootOf(w, rootLen);
+      if (TEACH_RE.test(w) && TEACH_RE.test(s(originalText))) return false;                      // train / teach / taught / tutor / instruct are one kind of claim
       return !new RegExp(`\\b${root}`, 'i').test(originalText);
     });
     if (fresh.length) { claims.push(`${label}: “${fresh[0]}”`); fresh.forEach((f) => wordsOf(f).forEach((w) => claimTokens.add(w))); }
@@ -150,6 +185,8 @@ const OWN_RE = /\b(organi[sz]\w*|plann(?:ed|ing)|plan|coordinat\w*|creat(?:ed|in
 const HEDGE_RE = /\b(help(?:ed|ing|s)?|assist(?:ed|ing|s)?|support(?:ed|ing|s)?|participat\w*|contribut\w*|join(?:ed|ing)?|took part|take part|part of|worked (?:with|alongside)|pitched in|aided)\b/i;
 const rootKey = (w) => { const x = w.toLowerCase(); if (/^plan/.test(x)) return 'plan'; if (/^buil/.test(x)) return 'build'; return x === 'ran' ? 'ran' : x.slice(0, 5); };
 const hasRoot = (text, root) => new RegExp(`\\b${root.replace(/[^a-z]/g, '')}`, 'i').test(text);
+const BENE_SYN = { child: ['kid'], kids: ['child'], kid: ['child'] };      // 'kids' in the answers supports 'children' in the edit
+const hasBeneRoot = (text, root) => hasRoot(text, root) || (BENE_SYN[root] || []).some((r) => hasRoot(text, r));
 
 // scope = { text: the entry's own original text, lines: its original lines, blank: the field was empty in the customer's answers,
 //           stems: stems of the entry's own words (+ the customer's stated goal), globalStems: stems of the whole resume }
@@ -177,22 +214,24 @@ function scopedReasons(line, scope) {
   if (scope.foreign && scope.foreign.has(lineKey(line))) reasons.push('copied from a different part of your resume: this line belongs to another entry');
   // Content words this entry never used. If some of them are the customer's words from a DIFFERENT entry, the line has been
   // given details that belong elsewhere (a line copied between entries, or a word borrowed from another job or project).
+  const trainOk = HEDGE_RE.test(line) && TRAIN_BASIS_RE.test(s(scope.text));                          // "helped train" for people who learned
+  const skip = new Set(trainOk ? wordsOf(line).filter((w) => /^train/.test(w)) : []);
   if (scope.stems && scope.globalStems) {
-    const fresh = newContentWords(line, scope.stems);
+    const fresh = newContentWords(line, scope.stems, skip);
     const borrowed = fresh.filter((w) => scope.globalStems.has(stem(w)));
     if (borrowed.length >= 1 && fresh.length >= 2) reasons.push(`details from a different part of your resume: ${borrowed.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
   }
   // ONE new content word is enough to add a fact ("safely", "refunds", "hazards", "discrepancies"), so in AI Polish a word that this entry never
   // used is a reason to withhold the line. A corrected spelling of a word the customer wrote ("recieve" -> "received") is not a new word.
   if (scope.stems && scope.words) {
-    const fresh = newContentWords(line, scope.stems).filter((w) => !scope.words.some((o) => nearSpelling(w, o)));
+    const fresh = newContentWords(line, scope.stems, skip).filter((w) => !scope.words.some((o) => nearSpelling(w, o)));
     if (fresh.length === 1) reasons.push(`a new detail that is not in this entry: “${fresh[0]}”`);
   }
   FREQ.forEach(([re, evidence, label]) => { if (s(line).match(re) && !evidence.test(scope.text)) reasons.push(`how often is not in this entry: “${label}”`); });
   const seen = new Set();
   BENEFICIARY_RES.forEach((re) => { for (const m of s(line).matchAll(re)) {
     const who = m[1].toLowerCase(); const root = who.split(' ')[0].slice(0, 5);
-    if (seen.has(root) || hasRoot(scope.text, root)) continue;
+    if (seen.has(root) || hasBeneRoot(scope.text, root) || wordsOf(scope.text).some((o) => nearSpelling(who.split(' ')[0], o))) continue;      // 'custmers' in THIS entry's own text supports 'customers' (the customer's stated goal never supports a beneficiary)
     seen.add(root); reasons.push(`who benefited is not in this entry: “${who}”`);
   } });
   for (const m of s(line).matchAll(OUTCOME_RE)) {
@@ -200,6 +239,11 @@ function scopedReasons(line, scope) {
     if (seen.has(root) || hasRoot(scope.text, root)) continue;
     seen.add(root); reasons.push(`a result or impact that is not in this entry: “${m[1].toLowerCase()}”`);
   }
+  // Checking the work of the person who supervised you is a change of role, and so is ordering what the customer only reported ("tell my boss when we run low").
+  const REVERSAL_RE = /\b(?:check|review|inspect|audit|approv|verif)\w*\s+(?:the\s+)?(?:pharmacist|manager|supervisor|boss|nurse|doctor|teacher|owner|chef|lead|trainer|foreman)(?:'s|s')?\s+(?:work|orders?|decisions?)\b/i;
+  const ORDER_VERB_RE = /(?:^|\band\s|,\s*)(order(?:ed|ing)?)\b(?=\s+(?:the\s+)?(?:more|new|extra|supplies|food|stock|inventory|parts|materials|products|items|equipment|replacements?)\b)/i;
+  if (REVERSAL_RE.test(s(line)) && !REVERSAL_RE.test(scope.text)) reasons.push(`a bigger role than you described: “${s(line).match(REVERSAL_RE)[0].toLowerCase()}”`);
+  if (ORDER_VERB_RE.test(s(line)) && !ORDER_VERB_RE.test(scope.text)) reasons.push('a responsibility that is not in this entry: “order”');
   if (!HEDGE_RE.test(line)) {
     for (const m of s(line).matchAll(OWN_RE)) {
       const key = rootKey(m[1]); if (seen.has(key)) continue;
@@ -224,6 +268,7 @@ function reconcile(original, output, options = {}) {
   const originalNumbers = numbersIn(originalText);
   const originalLines = new Set(allText(orig).map((t) => t.trim()));
   const originalStems = stemSet(`${originalText}\n${s(options.vocabulary)}`);
+  const originalWords = wordsOf(`${originalText}\n${s(options.vocabulary)}`);
 
   // 1. Restore facts.
   out.name = orig.name;
@@ -253,32 +298,50 @@ function reconcile(original, output, options = {}) {
   const unverified = [];
   // A line is flagged for a CLAIM (something the customer must confirm is true) or for NEW DETAILS (two or more
   // content words the customer never used). A faithful paraphrase has neither, so it passes without a warning.
+  // "4 years of experience" restates a duration the customer gave ("4 years"): the word "experience" there is not a new detail. ("Experienced" alone still is.)
+  const hasDuration = /\b(years?|yrs?)\b/i.test(originalText);
+  const plainDuration = (line) => (hasDuration ? line.replace(/\b((?:\d+|[a-z]+)\s+(?:years?|yrs?)\s+of\s+)experience\b/gi, '$1') : line);
   const check = (text, where, scope) => {
-    const t = s(text).trim();
+    const raw = s(text).trim(); const t = plainDuration(raw);
     // With the entry-scoped checks a line is "the customer's own" only if it is one of THIS entry's lines; a line that is identical
     // to a line of a different entry has been moved there, and is checked like any other.
     const known = options.entryScope && scope ? scope.lines : null;
-    if (!t || (known ? known.includes(t) : originalLines.has(t)) || unverified.length >= maxFlags) return;
-    const { claims, details } = analyse(t, originalText, originalNumbers, originalStems);
+    if (!raw || (known ? known.includes(raw) : originalLines.has(raw)) || unverified.length >= maxFlags) return;
+    const analysed = analyse(t, originalText, originalNumbers, originalStems, options.entryScope && scope ? scope.text : undefined);
+    const claims = analysed.claims;
+    // A corrected spelling of a word the customer wrote ("custmers" -> "customers") is the customer's own word, however many are fixed in one line.
+    const ownWords = (options.entryScope && scope && scope.words) || originalWords;
+    const details = analysed.details.filter((w) => !ownWords.some((o) => nearSpelling(w, o)));
     const reasons = claims.slice();
     if (details.length >= 2) reasons.push(`new details not in your answers: ${details.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
     const scoped = options.entryScope ? scopedReasons(t, scope) : [];       // AI Polish only
     scoped.forEach((r) => reasons.push(r));
-    if (reasons.length) unverified.push({ where, text: t, kind: claims.length || scoped.length ? 'claim' : 'details', reasons });
+    if (reasons.length) unverified.push({ where, text: raw, kind: claims.length || scoped.length ? 'claim' : 'details', reasons });
   };
   // Every line of the customer's resume, by entry, so a line can be recognised as having come from somewhere else.
   const linesByEntry = [];
   ['experience', 'volunteer', 'projects'].forEach((k) => arr(orig[k]).forEach((e, i) => { if (isObj(e)) linesByEntry.push({ k, i, keys: allText(e).map(lineKey).filter(Boolean) }); }));
   const topKeys = allText(isObj(orig.summary) ? orig.summary : {}).map(lineKey).filter(Boolean);
   const foreignOf = (k, i) => new Set(linesByEntry.filter((x) => !(x.k === k && x.i === i)).flatMap((x) => x.keys).concat(topKeys));
-  const wholeScope = { text: originalText, lines: allText(orig).map((x) => s(x).trim()).filter(Boolean), blank: false, stems: originalStems, globalStems: originalStems };
+  const wholeScope = { text: originalText, lines: allText(orig).map((x) => s(x).trim()).filter(Boolean), blank: false, stems: originalStems, words: originalWords, globalStems: originalStems };   // `words` makes ONE new content word in the headline or a summary line a reason to withhold it, as in a job entry
   check(out.summary.tagline, 'summary.tagline', wholeScope);
   arr(out.summary.bullets).forEach((b, i) => check(b, `summary.bullets.${i}`, wholeScope));
   const origSkills = new Set(arr(orig.summary && orig.summary.skills).map((x) => s(x).trim().toLowerCase()));
   const origSkillKeys = new Set(arr(orig.summary && orig.summary.skills).map((x) => lineKey(x)).filter(Boolean));   // 'Teamwork.' is not a new skill
+  // The AI may correct, tidy or re-case the skills the customer LISTED, but it may not add one ("Skills: fix spelling and capitals and remove exact
+  // repeats; never add a skill"). A skill is therefore supported only by the customer's own skills list, never by their goal or headline ("want to
+  // move into dispatch" says where they are headed, not what they can do) and not by a job description either: a skill the customer never listed is
+  // a claim for them to make themselves. The same words with a spelling or form fixed ("costumer service" -> "Customer service", "work hard" ->
+  // "Hard worker") are the customer's own skill.
+  const skillText = arr(orig.summary && orig.summary.skills).map(s).join('\n');
+  const skillStems = stemSet(skillText); const skillWords = wordsOf(skillText);
+  const supportedSkill = (t) => {
+    const a = analyse(t, skillText, numbersIn(skillText), skillStems);
+    return !a.claims.length && !a.details.filter((w) => !skillWords.some((o) => nearSpelling(w, o))).length;
+  };
   arr(out.summary.skills).forEach((sk, i) => {
     const t = s(sk).trim();
-    if (!t || origSkills.has(t.toLowerCase()) || origSkillKeys.has(lineKey(t)) || originalText.toLowerCase().includes(t.toLowerCase())) return;
+    if (!t || origSkills.has(t.toLowerCase()) || origSkillKeys.has(lineKey(t)) || supportedSkill(t)) return;
     if (unverified.length < maxFlags) unverified.push({ where: `summary.skills.${i}`, text: t, kind: 'claim', reasons: ['skill not found in your resume'] });
   });
   ['experience', 'volunteer', 'projects'].forEach((k) => arr(out[k]).forEach((e, i) => {
@@ -320,19 +383,24 @@ const textLines = (r) => {
 };
 const lineKey = (t) => s(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
-// Word-level difference between two lines (lower-case words, punctuation ignored): the words only in `a` (del), only in `b` (ins), and how
-// many separate places the line changed (hunks). Longest-common-subsequence based; lines are short, so this is cheap.
-function wordDiff(x, y) {
+// Word-level difference between two lines (lower-case words, punctuation ignored). diffHunks lists every separate place the line changed:
+// { del: words only in `a`, ins: words only in `b`, at: index of the hunk in `a`'s words }. Longest-common-subsequence based; lines are short.
+function diffHunks(x, y) {
   const a = lineKey(x).split(' ').filter(Boolean); const b = lineKey(y).split(' ').filter(Boolean);
   const L = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
   for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
-  const del = []; const ins = []; let hunks = 0; let inHunk = false; let i = 0; let j = 0;
+  const hunks = []; let cur = null; let i = 0; let j = 0;
   while (i < a.length || j < b.length) {
-    if (i < a.length && j < b.length && a[i] === b[j]) { inHunk = false; i++; j++; continue; }
-    if (!inHunk) { hunks++; inHunk = true; }
-    if (j >= b.length || (i < a.length && L[i + 1][j] >= L[i][j + 1])) del.push(a[i++]); else ins.push(b[j++]);
+    if (i < a.length && j < b.length && a[i] === b[j]) { cur = null; i++; j++; continue; }
+    if (!cur) { cur = { del: [], ins: [], at: i }; hunks.push(cur); }
+    if (j >= b.length || (i < a.length && L[i + 1][j] >= L[i][j + 1])) cur.del.push(a[i++]); else cur.ins.push(b[j++]);
   }
-  return { del, ins, hunks };
+  return { hunks, a, b };
+}
+// The words only in `a` (del), only in `b` (ins), and how many separate places the line changed (hunks).
+function wordDiff(x, y) {
+  const { hunks } = diffHunks(x, y);
+  return { del: hunks.flatMap((h) => h.del), ins: hunks.flatMap((h) => h.ins), hunks: hunks.length };
 }
 
 // What KIND of change is this line edit? (two different lines; the caller has already handled identical text)
@@ -356,7 +424,13 @@ function classifyEdit(x, y) {
 //   3. old lines nobody pairs with are `dropped`.
 const groupOf = (where) => where.replace(/\.\d+$/, '');
 const byGroup = (lines) => { const m = new Map(); lines.forEach((l) => { const g = groupOf(l.where); if (!m.has(g)) m.set(g, []); m.get(g).push(l.text.trim()); }); return m; };
-const shared = (x, y) => { const d = wordDiff(x, y); return Math.max(lineKey(x).split(' ').length - d.del.length, 0); };
+// How many words two lines share. A misspelling and its correction, or two forms of one word, count as the same word: otherwise a one-word line
+// ("paperwerk" -> "Paperwork", a skill) would look like a brand-new line instead of the customer's own line corrected.
+const shared = (x, y) => {
+  const d = wordDiff(x, y); let n = Math.max(lineKey(x).split(' ').length - d.del.length, 0); const pool = d.ins.slice();
+  d.del.forEach((w) => { const k = pool.findIndex((v) => nearSpelling(w, v) || stem(w) === stem(v)); if (k >= 0) { pool.splice(k, 1); n++; } });
+  return n;
+};
 
 // Every line of the comparison as an item: { kind, a (old text), b (new text) } with kind unchanged | cosmetic | minor | rewrite | added | dropped.
 // An `added` item also says whether it is a SPLIT of an existing line (all its content words come from one old line of the group), and a `dropped`
@@ -417,24 +491,60 @@ function describeWhere(orig, where) {
 // "line 4" no longer means the customer's line 4. The flagged line is swapped for the customer's own line it came from (the one it shares the
 // most words with); with nothing in common it is dropped. The other lines of the entry are kept: one questionable word must not throw away a
 // whole entry's improvements. Tailor re-orders on purpose, so there the whole group is put back.
+// A line is withheld whole because ONE of its words is a reach ("perform", "repair"). But the same line may also have put the customer's own
+// misspellings or word forms right ("cylce" -> "cycle", "damged" -> "damaged"), and that part is theirs and safe. salvage() keeps the customer's line
+// exactly as written and applies only those corrections, so withholding a reach never costs the fixes.
+// A withheld line therefore stays exactly the customer's wording, apart from words they misspelled or put in the wrong form.
+function salvage(origLine, aiLine) {
+  const o = s(origLine); const ai = s(aiLine); if (!o.trim() || !ai.trim()) return o;
+  // only when the AI's line is plainly this line reworded: most of its content words are the customer's (a misspelling counts as the same word)
+  const needs = contentStems(o); const aiW = wordsOf(ai);
+  const same = needs.filter((st) => aiW.some((w) => stem(w) === st || nearSpelling(w, st) || nearSpelling(stem(w), st))).length;
+  if (needs.length && same < Math.ceil(needs.length / 2)) return o;
+  const WORD = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
+  const aiWords = (ai.match(WORD) || []).map((w) => w.toLowerCase());
+  const own = new Set((o.match(WORD) || []).map((w) => w.toLowerCase()));
+  const used = new Set(); let n = 0; let first = '';
+  return o.replace(WORD, (w) => {
+    const at = n++; const lw = w.toLowerCase(); if (at === 0) first = lw;
+    if (lw.length < 4 || aiWords.includes(lw)) return w;                           // the AI kept this word, or it is too short to judge
+    // an ordinary word of resumes is not a misspelling ("stocked" is not a typo of "stacked"), so only an unfamiliar word may be corrected
+    const ordinary = known(PLAIN_VERBS, stem(lw)) || known(NEUTRAL_STEMS, stem(lw)) || STOP.has(lw);
+    // the leading verb may change form ("carry boxes" -> "Carried boxes", "i load" -> "Loaded"); no other word is changed for its form alone ("cans" is not "canned")
+    const lead = at === 0 || (at === 1 && /^(i|we|they|he|she)$/.test(first));
+    const v = aiWords.find((x, k) => !used.has(k) && !own.has(x) && x !== lw && !claimsWordNotIn(x, o)
+      && ((!ordinary && stem(lw) !== stem(x) && (nearSpelling(lw, x) || nearSpelling(x, lw))) || (lead && stem(lw) === stem(x) && !/^(?:led|built|ran)$/.test(x))));   // "nights" is not a typo of "night"
+    if (!v) return w;
+    used.add(aiWords.indexOf(v));
+    return /^[A-Z]/.test(w) ? v.charAt(0).toUpperCase() + v.slice(1) : v;
+  });                                                                              // only the corrected words change; capitals and punctuation stay the customer's own
+}
+// Would this word be a claim (leadership, credential, praise, attendance) that the customer's own line does not make?
+function claimsWordNotIn(word, line) {
+  return CLAIM_WORDS.some(({ re, rootLen }) => { re.lastIndex = 0; const m = word.match(re); if (!m) return false; return !new RegExp(`\\b${rootOf(m[0], rootLen || 4)}`, 'i').test(line); });
+}
 const hasDuplicates = (list) => { const seen = new Set(); return arr(list).some((x) => { const k = lineKey(x); if (!k) return false; if (seen.has(k)) return true; seen.add(k); return false; }); };
 function revertGroup(current, original, index, groupOnly) {
   const ob = arr(original);
   if (groupOnly) return JSON.parse(JSON.stringify(ob));
   const cur = arr(current).slice();
   if (cur.length === ob.length) {
-    const trial = cur.slice(); trial[index] = ob[index];
+    const trial = cur.slice(); trial[index] = salvage(ob[index], cur[index]);
     if (!hasDuplicates(trial)) return trial;
   }
   const bad = s(cur[index]); let best = -1; let bestShared = 0;
   ob.forEach((o, k) => { const sh = shared(o, bad); if (sh > bestShared) { best = k; bestShared = sh; } });
-  cur[index] = best < 0 ? '' : ob[best];                                   // '' keeps the other indexes stable; empties are removed by tidyGroups
+  cur[index] = best < 0 ? '' : salvage(ob[best], bad);                     // '' keeps the other indexes stable; empties are removed by tidyGroups
   return cur;
 }
 // After all flagged lines are put back: remove the placeholders and any line that now appears twice.
 function tidyList(list) {
-  const seen = new Set();
-  return arr(list).filter((x) => { const k = lineKey(x); if (!k) return false; if (seen.has(k)) return false; seen.add(k); return true; });
+  const seen = new Set(); const same = new Set();
+  return arr(list).filter((x) => {
+    const k = lineKey(x); if (!k) return false; if (seen.has(k)) return false; seen.add(k);
+    const w = [...new Set(contentStems(x))].sort().join(' '); if (w && same.has(w)) return false; if (w) same.add(w);     // "Ring up customers" and "Ring up customer" are one line
+    return true;
+  });
 }
 
 function withholdFlagged(orig, resume, unverified, options = {}) {
@@ -445,20 +555,22 @@ function withholdFlagged(orig, resume, unverified, options = {}) {
   unverified.forEach((u) => {
     const w = s(u.where);
     let m;
-    if (w === 'summary.tagline') out.summary.tagline = s(origSummary.tagline);
+    if (w === 'summary.tagline') out.summary.tagline = options.groupOnly ? s(origSummary.tagline) : salvage(s(origSummary.tagline), s(out.summary.tagline));
     else if ((m = /^summary\.bullets\.(\d+)$/.exec(w))) {
       out.summary.bullets = revertGroup(out.summary.bullets, origSummary.bullets, Number(m[1]), options.groupOnly);
     } else if (/^summary\.skills\.\d+$/.test(w)) {
       const keep = arr(out.summary.skills).filter((sk) => s(sk).trim() !== s(u.text).trim());
       const have = new Set(keep.map((x) => lineKey(x)));
-      arr(origSummary.skills).forEach((sk) => { if (!have.has(lineKey(sk))) keep.push(sk); });        // never lose a skill the customer listed
-      out.summary.skills = keep;
+      // never lose a skill the customer listed, but do not put back one that an accepted skill already says in corrected form ("costumer service"
+      // beside "Customer service")
+      arr(origSummary.skills).forEach((sk) => { if (!have.has(lineKey(sk)) && !covered(s(sk), keep.map(s))) keep.push(sk); });
+      out.summary.skills = tidyList(keep);
     } else if ((m = /^(experience|volunteer|projects)\.(\d+)\.bullets\.(\d+)$/.exec(w))) {
       const e = arr(out[m[1]])[Number(m[2])]; const o0 = arr(orig[m[1]])[Number(m[2])];
       if (isObj(e) && isObj(o0)) e.bullets = revertGroup(e.bullets, o0.bullets, Number(m[3]), options.groupOnly);
     } else if ((m = /^(experience|volunteer|projects)\.(\d+)\.(summary|description)$/.exec(w))) {
       const e = arr(out[m[1]])[Number(m[2])]; const o0 = arr(orig[m[1]])[Number(m[2])];
-      if (isObj(e)) e[m[3]] = isObj(o0) ? s(o0[m[3]]) : '';
+      if (isObj(e)) e[m[3]] = isObj(o0) ? (options.groupOnly ? s(o0[m[3]]) : salvage(s(o0[m[3]]), s(e[m[3]]))) : '';
     }
     withheld.push({ where: w, label: describeWhere(orig, w), kind: u.kind, reasons: arr(u.reasons).map(s) });
   });
@@ -471,13 +583,20 @@ function withholdFlagged(orig, resume, unverified, options = {}) {
 
 // The AI may merge repeats and drop duplicates, but it may not delete something the customer actually did. An original line whose words are not
 // (mostly) found anywhere in the entry's new lines is put back. Words are compared by stem, so a merged, re-tensed or re-spelled line counts as kept.
-const TRIVIAL_STEMS = new Set(['work', 'do', 'help']);
+const TRIVIAL_STEMS = new Set(['work', 'do', 'help', 'stuff', 'thing', 'various', 'get']);   // vague or empty words: replacing them with a plain noun is not losing a duty
 function contentStems(line) { return wordsOf(line).filter((w) => !STOP.has(w)).map(stem).filter((x) => !TRIVIAL_STEMS.has(x)); }
 function covered(origLine, newLines) {
   const need = contentStems(origLine); if (!need.length) return true;
   const have = new Set(newLines.flatMap(contentStems)); const haveWords = newLines.flatMap(wordsOf);
   const hit = need.filter((st) => known(have, st) || haveWords.some((w) => nearSpelling(w, st)) || SAME_COVER(st, have)).length;
-  return hit / need.length >= 0.5;
+  // The words of the line are found across the new lines (a run-on split into several bullets, two repeats merged into one) ...
+  if (need.length <= 2 ? hit === need.length : hit / need.length >= 0.75) return true;      // "cleaned tables" is not covered by "served the food to the tables": a unique duty stays
+  // ... or ONE new line is plainly this line reworded ("Did the register" -> "Operated the register", "Assisted customers at the register" -> "Handled customers at the register").
+  return newLines.some((nl) => {
+    const ns = new Set(contentStems(nl)); if (!ns.size) return false;
+    const h = need.filter((st) => known(ns, st) || SAME_COVER(st, ns) || wordsOf(nl).some((w) => nearSpelling(w, st))).length;
+    return h >= 1 && need.length - h <= 1 && ns.size - h <= 1;                    // one word for one word: only the verb differs
+  });
 }
 const SAME_COVER = (st, have) => (SAME_AS[st] || []).some((x) => known(have, stem(x)));
 function restoreDropped(orig, current) {
@@ -490,6 +609,21 @@ function restoreDropped(orig, current) {
   const os = isObj(orig.summary) ? orig.summary : {};
   if (isObj(current.summary)) fix(os.bullets, () => current.summary.bullets, (v) => { current.summary.bullets = v; });
   SECTIONS_.forEach((k) => arr(orig[k]).forEach((o, i) => { const e = arr(current[k])[i]; if (isObj(o) && isObj(e)) fix(o.bullets, () => e.bullets, (v) => { e.bullets = v; }); }));
+}
+
+// A resume reads as one person's when every line starts with a capital and the pronoun is "I". Lines the AI rewrote usually do; lines kept in the customer's
+// own wording (because the AI's version was withheld) often do not, so the result would look half-finished. This is formatting only (worth 0 points), applies to
+// the accepted text of AI Polish, and never touches names, titles, employers or schools. A word with a capital inside ("iPhone", "eBay") is left alone.
+function capFirst(line) {
+  let x = s(line); if (!x.trim()) return x;
+  x = x.replace(/(^|[^.\w'’-])i(?=[\s,;:!?]|$)(?!\.)/g, '$1I');                       // the pronoun: "i trained" -> "I trained" ("i.e." is left alone)
+  return x.replace(/^(\s*)([a-z][a-z'’-]*)(?![A-Za-z0-9])/, (m, sp, w) => sp + w.charAt(0).toUpperCase() + w.slice(1));
+}
+function tidyCase(r) {
+  const fix = (o, k) => { if (typeof o[k] === 'string') o[k] = capFirst(o[k]); };
+  const fixList = (o, k) => { if (Array.isArray(o[k])) o[k] = o[k].map((x) => (typeof x === 'string' ? capFirst(x) : x)); };
+  if (isObj(r.summary)) { fix(r.summary, 'tagline'); fixList(r.summary, 'bullets'); fixList(r.summary, 'skills'); }
+  SECTIONS_.forEach((k) => arr(r[k]).forEach((e) => { if (isObj(e)) { fix(e, 'summary'); fix(e, 'description'); fixList(e, 'bullets'); } }));
 }
 
 // mode: 'polish' (also keeps text the AI blanked) or 'tailor'. options.vocabulary: the customer's stated goal.
@@ -506,6 +640,7 @@ function guardResume(original, output, options = {}) {
     if (pass === 3) current = JSON.parse(JSON.stringify(orig));          // cannot settle: fall back to the customer's own wording
   }
   if (options.mode === 'polish') restoreDropped(orig, current);
+  if (options.mode === 'polish') tidyCase(current);
   // Keep only fields the resume model knows (drops unexpected keys, non-text values, empty rows).
   const resume = Core.clean(current);
   // Facts always come from the customer, whatever the AI sent.
@@ -549,4 +684,4 @@ function groundAnalyzed(sourceText, parsed) {
   return { resume, unverified, removed };
 }
 
-module.exports = { changeItems, classifyEdit, wordDiff, stem, nearSpelling, known, covered, contentStems, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };
+module.exports = { changeItems, classifyEdit, wordDiff, diffHunks, lineKey, STOP, stem, nearSpelling, known, covered, contentStems, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };

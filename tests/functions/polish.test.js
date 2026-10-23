@@ -2,7 +2,7 @@
 // reserve -> AI -> validate -> commit / release model as Analyze. Real handlers against real SQL; AI mocked.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs } = require('./harness');
+const { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, realReword } = require('./harness');
 
 const SECRET = 'test-secret-test-secret-test-secret-0123456789';
 let seq = 0;
@@ -196,7 +196,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     assert.deepEqual(out.experience, []);                                                                     // no work history is NOT an error, and none is invented
     assert.equal(out.education[0].degree, 'High School Diploma');
     assert.deepEqual(out.certifications, ANSWERS.certifications);
-    assert.deepEqual(out.projects[0].bullets, ['asked classmates to donate cans', 'Counted and sorted the donated cans']);   // the honest line is in, the 1,200-cans line is back to the customer's own
+    assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate cans', 'Counted and sorted the donated cans']);   // the honest line is in, the 1,200-cans line is back to the customer's own
     const text = JSON.stringify(out); for (const bad of ['Dynamic leader', '300%', '1,200', 'Salesforce', 'Supervised', 'MBA', 'CDL', 'Big Retail']) assert.equal(text.includes(bad), false, bad);
     assert.deepEqual(g.unverified, []); assert.ok(g.withheld.length >= 3); assert.equal(g.charged, true); assert.equal(await uses(d), 4);
   });
@@ -234,10 +234,10 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
 
   await t.test('long-tenure worker: facts, dates and the single long job are preserved; reworded bullets are accepted', async () => {
     reset(); const c = await seed();
-    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets = ['Trucks loaded', 'Orders checked']; return o; };
+    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets = o.experience[0].bullets.map(realReword); return o; };
     const out = JSON.parse(parseBody(await polish(c, WORKER)).result);
     assert.deepEqual([out.experience[0].title, out.experience[0].company, out.experience[0].start, out.experience[0].end], ['Warehouse Associate', 'Fictional Freight Co', '2016', 'Present']);
-    assert.deepEqual(out.experience[0].bullets, ['Trucks loaded', 'Orders checked']);
+    assert.deepEqual(out.experience[0].bullets, WORKER.experience[0].bullets.map(realReword));
   });
 
   await t.test('logs never contain the license code or the customer’s text, on success or failure', async () => {
@@ -396,11 +396,11 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
 
   await t.test('mixed: an honest improvement is accepted and charged once; the unsupported lines next to it are withheld and reported', async () => {
     reset(); clearCap(); const c = await seed();
-    ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food for families in the community.', 'Helped organize the food pickup']; o.volunteer[0].bullets[1] = 'Greeted arriving families'; return o; };
+    ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food for families in the community.', 'Helped organize the food pickup']; o.volunteer[0].bullets[1] = realReword(o.volunteer[0].bullets[1]); return o; };
     const b = parseBody(await polish(c, TAYLOR_ENTRY)); const out = JSON.parse(b.result);
     assert.equal(b.charged, true); assert.equal(await uses(c), 4);
     assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Helped organize the food pickup']);   // line 1 put back, line 2 accepted
-    assert.equal(out.volunteer[0].bullets[1], 'Greeted arriving families');
+    assert.equal(out.volunteer[0].bullets[1], realReword('Greeted families as they arrived'));
     assert.equal(b.withheld.length, 1); assert.match(b.withheld[0].reasons.join(), /families/); assert.deepEqual(b.unverified, []);
   });
 

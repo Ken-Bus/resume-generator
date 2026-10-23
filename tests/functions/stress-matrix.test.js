@@ -42,8 +42,10 @@ const B = {
   REWRITE: { expect: 'charged', make: (r) => { const o = clone(r); const t = firstBullets(o).filter(({ b }) => b.trim().split(/\s+/).length >= 3 && new Set(bulletRefs(o).map((x) => key(x.b))).size === bulletRefs(o).length); t.forEach(({ e, j, b }) => { e.bullets[j] = realReword(b); }); return t.length ? o : null; } },
   MERGE_BULLETS: { expect: 'charged', make: (r) => { const o = clone(r); const t = entries(o).find(({ e }) => (e.bullets || []).length >= 3 && new Set(e.bullets.map(key)).size === e.bullets.length); if (!t) return null;
     const b = t.e.bullets; const low = (x) => x.replace(/^./, (c) => c.toLowerCase()).replace(/[.]+$/, ''); t.e.bullets = [`${b[0].replace(/[.]+$/, '')}, then ${low(b[1])}`, ...b.slice(2)]; return o; } },
-  CLEAR_UP_CONFUSING: { expect: 'charged', make: (r) => { const o = clone(r); const t = bulletRefs(o).find(({ b }) => /^Did stuff with the oven/.test(b)); if (!t) return null; t.e.bullets[t.j] = 'Did the oven and the counter'; return o; } },
-  DEDUPE_ONLY: { expect: 'unchanged', make: (r) => { const o = clone(r); const t = entries(o).find(({ e }) => (e.bullets || []).some((b, x, a) => a.findIndex((y) => key(y) === key(b)) !== x)); if (!t) return null; t.e.bullets = t.e.bullets.filter((b, x, a) => a.findIndex((y) => key(y) === key(b)) === x); return o; } },
+  CLEAR_UP_CONFUSING: { expect: 'free',   // a wordy line cut down to what it said: worth 1 point (removed repetition), not a paid rewrite
+    make: (r) => { const o = clone(r); const t = bulletRefs(o).find(({ b }) => /^Did stuff with the oven/.test(b)); if (!t) return null; t.e.bullets[t.j] = 'Did the oven and the counter'; return o; } },
+  DEDUPE_ONLY: { expect: 'free',      // one repeated line removed: 1 point
+    make: (r) => { const o = clone(r); const t = entries(o).find(({ e }) => (e.bullets || []).some((b, x, a) => a.findIndex((y) => key(y) === key(b)) !== x)); if (!t) return null; t.e.bullets = t.e.bullets.filter((b, x, a) => a.findIndex((y) => key(y) === key(b)) === x); return o; } },
   INVENT_NUMBER: { expect: 'flagged', make: (r) => { const o = clone(r); const t = bulletRefs(o)[0]; if (!t) return null; append(t, ' and increased sales by 40%'); return o; } },
   INVENT_LEADERSHIP: { expect: 'flagged', make: (r) => { const o = clone(r); const t = bulletRefs(o)[0]; if (!t) return null; t.e.bullets[t.j] = 'Supervised a team of workers every day'; return o; } },
   INVENT_BENEFICIARY: { expect: 'flagged', make: (r) => { const o = clone(r); const t = bulletRefs(o).find(({ e }) => !/famil/i.test(JSON.stringify(e))); if (!t) return null; append(t, ' for families in the community'); return o; } },
@@ -61,10 +63,14 @@ function REWRITE_FIRST(r) { const o = clone(r); const t = bulletRefs(o).find(({ 
 
 // ── the oracle ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
 // Judges one scenario from what a customer could see: the HTTP answer, the balance, the reservation row and the resume that would be applied.
-function judge({ persona, behavior, source, res, usesBefore, usesAfter, rsv }) {
+function judge({ persona, behavior, source, res, usesBefore, usesAfter, rsv, aiCalls }) {
   const v = []; const bad = (m) => v.push(`${persona}/${behavior}: ${m}`);
   const b = parseBody(res); const exp = B[behavior].expect;
   if (res.statusCode !== 200) { bad(`status ${res.statusCode}`); return v; }
+  if (Core.writableWords(source) < 8) {                                   // too little to work with: told so, no AI call, no reservation, no charge, nothing handed back
+    if (b.reason !== 'sparse' || b.charged !== false || aiCalls !== 0 || rsv.length !== 0 || usesAfter !== usesBefore || b.result !== undefined) bad(`a resume with too little to work with must be answered plainly with no AI call and no charge (${b.reason}, ai ${aiCalls}, rsv ${rsv.length})`);
+    return v;
+  }
   const charged = b.charged === true;
   if (exp === 'charged' && !charged) bad(`should be charged, was free (${b.reason}; ${JSON.stringify(b.changes)})`);
   if ((exp === 'free' || exp === 'unchanged' || exp === 'flagged') && charged) bad(`must be FREE but a generation was charged (${JSON.stringify(b.changes)})`);
@@ -108,7 +114,7 @@ test('STRESS MATRIX against real SQL (AI provider mocked)', async (t) => {
     const out = B[behavior].make(source); if (!out) return null;
     fresh(); const c = await seed(); ai.polishPayload = () => clone(out);
     const before = await uses(c); const res = await hs.polish(post({ code: c, resume: persona, target: 'customer service' }));
-    return judge({ persona: personaName, behavior, source, res, usesBefore: before, usesAfter: await uses(c), rsv: await rows(c) });
+    return judge({ persona: personaName, behavior, source, res, usesBefore: before, usesAfter: await uses(c), rsv: await rows(c), aiCalls: ai.calls });
   }
   async function runAll(personaNames, behaviors) { const violations = []; let ran = 0; for (const p of personaNames) for (const bh of behaviors) { const v = await scenario(p, bh); if (v) { ran++; violations.push(...v); } } return { violations, ran }; }
 
@@ -126,14 +132,16 @@ test('STRESS MATRIX against real SQL (AI provider mocked)', async (t) => {
   });
 
   // ═══ 2. the oracle can FAIL: deliberately broken builds are caught ═══
-  const SAB_P = ['firstDetailed', 'multi', 'poor', 'experienced']; const SAB_B = ['ECHO', 'FILLER_WORD', 'SYNONYM_SWAP', 'ONE_WORD_FROM_ENTRY', 'REWRITE', 'INVENT_NUMBER', 'INVENT_BENEFICIARY', 'INVENT_OUTCOME', 'INVENT_INTO_BLANK', 'BORROW_FROM_OTHER_ENTRY', 'GOOD_PLUS_BAD', 'EVERYTHING_REJECTED'];
+  const SAB_P = ['firstDetailed', 'multi', 'poor', 'experienced']; const SAB_B = ['ECHO', 'GRAMMAR_ONE_WORD', 'DEDUPE_ONLY', 'FILLER_WORD', 'SYNONYM_SWAP', 'ONE_WORD_FROM_ENTRY', 'REWRITE', 'INVENT_NUMBER', 'INVENT_BENEFICIARY', 'INVENT_OUTCOME', 'INVENT_INTO_BLANK', 'BORROW_FROM_OTHER_ENTRY', 'GOOD_PLUS_BAD', 'EVERYTHING_REJECTED'];
   const real = { guardResume: integrity.guardResume, assessChange: integrity.assessChange };
-  async function withSabotage(patch, fn) { Object.assign(integrity, patch); try { return await fn(); } finally { Object.assign(integrity, real); } }
+  const scoring = require(path.join(FUNCS, '_lib', 'scoring')); const realScore = scoring.score;      // the SAME instance the handler charges by
+  async function withSabotage(patch, fn) { const { score, ...rest } = patch; Object.assign(integrity, rest); if (score) scoring.score = score; try { return await fn(); } finally { Object.assign(integrity, real); scoring.score = realScore; } }
   await t.test('sanity: the reduced set used for sabotage passes on the real build', async () => { const r = await runAll(SAB_P, SAB_B); assert.deepEqual(r.violations, []); assert.ok(r.ran >= 40); });
   const SABOTAGE = {
     'the integrity guard is switched off (AI text goes straight through)': { guardResume: (orig, out) => ({ resume: Core.clean(out), withheld: [] }) },
-    'every changed line counts as a paid rewrite (the pre-fix "one word costs a generation" rule)': { assessChange: (a, b) => { const r = real.assessChange(a, b); return { ...r, reworded: r.reworded + r.minor, minor: 0 }; } },
-    'nothing is ever charged (the credit is given away)': { assessChange: (a, b) => ({ ...real.assessChange(a, b), reworded: 0 }) },
+    'any single small fix is charged (the 3-point threshold is gone)': { score: (a, b) => { const r = realScore(a, b); return { ...r, charge: r.points > 0 }; } },
+    'every point is counted three times (a one-word fix becomes a paid rewrite)': { score: (a, b) => { const r = realScore(a, b); return { ...r, points: r.points * 3, charge: r.points * 3 >= r.threshold }; } },
+    'nothing is ever charged (the credit is given away)': { score: (a, b) => ({ ...realScore(a, b), charge: false }) },
     'flagged lines are kept instead of withheld (the 884640f behaviour)': { guardResume: (orig, out) => { const r = integrity.reconcile(orig, out, { keepBlankedText: true, entryScope: true, maxFlags: 1000 }); return { resume: Core.clean(r.resume), withheld: [] }; } },
     'blank fields may be filled and borrowed lines are not noticed (no entry scope)': { guardResume: (orig, out, o) => { const r = integrity.reconcile(orig, out, { vocabulary: o && o.vocabulary, keepBlankedText: true, maxFlags: 1000 }); const w = integrity.withholdFlagged(orig, r.resume, r.unverified, {}); return { resume: Core.clean(w.resume), withheld: w.withheld }; } }
   };
@@ -161,23 +169,23 @@ test('STRESS MATRIX against real SQL (AI provider mocked)', async (t) => {
   });
   await t.test('CUSTOMER CHANGES A NUMBER THE AI THEN "CORRECTS": the AI may not alter the figure', async () => {
     fresh(); const c = await seed(); const r = clone(P.polished);
-    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets[1] = 'Trained 60 new cashiers on the register and returns policy'; o.experience[0].bullets[2] = 'Prepared the nightly deposit and balanced the drawer'; return o; };
+    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets[1] = 'Trained 60 new cashiers on the register and returns policy'; o.experience[0].bullets[2] = realReword(o.experience[0].bullets[2]); return o; };
     const b = parseBody(await polish(c, r)); const out = JSON.parse(b.result);
     assert.equal(out.experience[0].bullets[1], 'Trained 6 new cashiers on the register and returns policy');
-    assert.equal(out.experience[0].bullets[2], 'Prepared the nightly deposit and balanced the drawer', 'the honest reorder beside it is kept'); assert.equal(b.charged, true);
+    assert.equal(out.experience[0].bullets[2], realReword(r.experience[0].bullets[2]), 'the honest rewrite beside it is kept'); assert.equal(b.charged, true);
   });
   await t.test('CUSTOMER ADDS ANOTHER JOB: the new job can be reworded, but its accomplishments are never lent to the old jobs', async () => {
     fresh(); const c = await seed(); const r = clone(P.changer);
     r.experience.unshift({ title: 'Barista', company: 'Fictional Cafe', start: '2026', end: 'Present', bullets: ['Made drinks and cleaned the espresso machine', 'Won the cafe tip jar contest'] });
-    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets[0] = 'Cleaned the espresso machine and made drinks'; o.experience[1].bullets[2] = 'Won the cafe tip jar contest'; return o; };
+    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets[0] = realReword(o.experience[0].bullets[0]); o.experience[1].bullets[2] = 'Won the cafe tip jar contest'; return o; };
     const b = parseBody(await polish(c, r)); const out = JSON.parse(b.result);
-    assert.equal(b.charged, true); assert.equal(out.experience[0].bullets[0], 'Cleaned the espresso machine and made drinks');
+    assert.equal(b.charged, true); assert.equal(out.experience[0].bullets[0], realReword('Made drinks and cleaned the espresso machine'));
     assert.equal(JSON.stringify(out.experience[1]).includes('tip jar'), false, 'the barista award did not move to the warehouse job');
-    assert.equal(out.experience[1].bullets[2], 'followed safety rules on the floor');
+    assert.equal(out.experience[1].bullets[2], 'Followed safety rules on the floor');   // (the customer's line, with its capital letter added)
   });
   await t.test('CUSTOMER REMOVES AN ENTRY: text from the removed entry cannot come back, even if a stale reply replays it', async () => {
     fresh(); const c = await seed(); const r = clone(P.experienced); r.experience = r.experience.slice(0, 2);          // Stock Clerk deleted
-    ai.polishPayload = (src) => { const o = clone(src); o.experience.push({ title: 'Stock Clerk', company: 'Fictional Grocery', start: '1999', end: '2004', bullets: ['Stocked shelves', 'Handled returns'] }); o.experience[1].bullets.push('Handled returns'); o.experience[0].bullets[0] = 'Used the pallet jack to show new people'; return o; };
+    ai.polishPayload = (src) => { const o = clone(src); o.experience.push({ title: 'Stock Clerk', company: 'Fictional Grocery', start: '1999', end: '2004', bullets: ['Stocked shelves', 'Handled returns'] }); o.experience[1].bullets.push('Handled returns'); o.experience[0].bullets[0] = realReword(o.experience[0].bullets[0]); return o; };
     const b = parseBody(await polish(c, r)); const out = JSON.parse(b.result);
     assert.equal(out.experience.length, 2); assert.equal(JSON.stringify(out).includes('Stock Clerk'), false); assert.equal(JSON.stringify(out).includes('Handled returns'), false);
     assert.ok(!ai.bodies[0].messages[0].content.includes('Stock Clerk'), 'the removed entry was never sent to the AI');
@@ -250,7 +258,7 @@ test('STRESS MATRIX against real SQL (AI provider mocked)', async (t) => {
     for (const secret of secrets) assert.equal(log.includes(secret), false, `a log line contains resume text: ${secret}`);
     for (const secret of ['FG-', 'TESTKEY-STRESS', SECRET]) assert.equal(log.includes(secret), false, `a log line contains ${secret}`);
     const outcomes = lines.filter((l) => l.startsWith('ai-outcome ')).map((l) => JSON.parse(l.slice(11)));
-    assert.ok(outcomes.length >= 20); for (const o of outcomes) { assert.deepEqual(Object.keys(o).sort(), ['fn', 'guard', 'outcome', 'ref', 'reworded', 'withheld']); if (o.outcome !== 'failed') assert.equal(o.guard, Core.GUARD_VERSION); }
+    assert.ok(outcomes.length >= 20); for (const o of outcomes) { assert.deepEqual(Object.keys(o).sort(), ['fn', 'guard', 'outcome', 'points', 'ref', 'reworded', 'withheld']); if (o.outcome !== 'failed') assert.equal(o.guard, Core.GUARD_VERSION); }
     assert.deepEqual([...new Set(outcomes.map((o) => o.outcome))].sort(), ['charged', 'failed', 'flagged', 'nochange']);
   });
   await t.test('LONG RESUME near the limit works; one over the limit is refused before any reservation or AI call', async () => {

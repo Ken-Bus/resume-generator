@@ -93,15 +93,18 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
     assert.equal((await db.admin('select failure_counted f from license_reservations where code=$1', [c])).rows[0].f, true);   // a timeout may have been billed
   });
 
-  await t.test('CONCURRENCY: 12 simultaneous valid requests on a 5-use code => exactly 5 succeed, 5 AI calls, never a 6th', async () => {
+  await t.test('CONCURRENCY: 12 simultaneous valid requests on a 5-use code => exactly ONE runs (one paid operation at a time), 11 are turned away uncharged; five in sequence use all five, never a sixth', async () => {
     reset(); const c = await seed(); ai.delayMs = 150;
     const rs = await Promise.all(Array.from({ length: 12 }, () => callParse(c)));
     const codes = rs.map(r => r.statusCode);
-    assert.equal(codes.filter(x => x === 200).length, 5);
-    assert.equal(codes.filter(x => x === 409).length, 7);
-    assert.equal(ai.calls, 5);                                   // blocked requests never reach the AI
-    assert.equal(await uses(c), 0);
-    ai.delayMs = 0; assert.equal((await callParse(c)).statusCode, 403);
+    assert.equal(codes.filter(x => x === 200).length, 1);
+    assert.equal(codes.filter(x => x === 409).length, 11);
+    assert.equal(ai.calls, 1); assert.equal(ai.maxInflight, 1);  // blocked requests never reach the AI
+    assert.equal(await uses(c), 4);
+    ai.delayMs = 0;
+    for (let i = 0; i < 4; i++) assert.equal((await callParse(c)).statusCode, 200);
+    assert.equal(await uses(c), 0); assert.equal(ai.calls, 5);
+    assert.equal((await callParse(c)).statusCode, 403);
     assert.equal(ai.calls, 5);
   });
 

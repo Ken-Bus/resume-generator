@@ -1,20 +1,24 @@
 # Etsy FAQ wording: generations, AI Polish, Tailor and your information (DRAFT, NOT PUBLISHED)
 
-*Recommended text for the AI Resume Generator listing. The live Etsy listing has not been changed. Publish only after the branch is merged and deployed (until then the live app behaves differently). Review against the listing checklist first.*
+*Recommended text for the AI Resume Generator listing, revised 2026-10-23 for the owner-approved charging rule (3 points) and the work-saving change. The live Etsy listing has NOT been changed (nothing in this QA assignment touches Etsy). Publish only after the branch is merged and deployed, because until then the live app behaves differently. Review against the listing checklist first.*
 
 ## Recommended FAQ entries
 
 **Q: What counts as one of my 5 generations?**
 
-A: Your access code includes 5 AI generations. A generation is used when the AI successfully analyzes your pasted resume, or when AI Polish makes real improvements to your wording. Typing, previewing, editing, switching templates, tailoring to a job and downloading never use one.
+A: Your access code includes 5 AI generations. A generation is used when the AI successfully analyzes your pasted resume, or when AI Polish makes real improvements to your wording (see the next question). Typing, building your resume step by step, previewing, editing, switching templates, tailoring to a job and downloading never use one. Downloading a PDF or Word file never uses a generation, even after all 5 are used.
 
 **Q: If the AI Polish doesn't improve my resume, do I lose a generation?**
 
-A: No. When you choose "Polish My Resume with AI," the AI reviews your resume. A generation is used only if it rewrites some of your wording in a way that stays true to your answers. Single-word touch-ups, capitals, punctuation and suggestions that add details you didn't give do not use a generation. If your wording is already clear and it finds nothing meaningful to improve, nothing is used, and your resume stays exactly as you wrote it. (Changing only capital letters, punctuation or spacing doesn't count as an improvement.)
+A: No. When you choose "Polish My Resume with AI," the AI reviews your resume and corrects spelling, grammar and tense, tidies run-on lines and repeats, and says things more clearly, using only what you wrote. A generation is used when it rewrites some of your wording or corrects three or more mistakes, and only when its changes stay true to your answers. If it finds less than that (for example just one or two small fixes), nothing is used and your resume stays exactly as you wrote it. If it finds nothing to improve, or if everything it suggested added details you didn't give, nothing is used either. (A one- or two-word fix is not applied in that case. You can make it yourself in the editor.)
 
 **Q: Will the AI add things I didn't say?**
 
-A: It is designed not to. It may only reword what you wrote. Your name, contact details, employers, job titles, dates, schools and certifications are always copied exactly from your answers. If the AI suggests something that adds a detail you didn't give (for example a number, who benefited, a result, or a bigger role than you described), that suggestion is left out and your own wording is kept. If every suggestion is left out, nothing is used. You can always undo a polish with "Restore my wording," and you should still read your resume before you send it.
+A: It is designed not to. It may only reword what you wrote, in plain language that fits you. Your name, contact details, employers, job titles, dates, schools and certifications are always copied exactly from your answers. If the AI suggests something that adds a detail you didn't give (for example a number, who benefited, a result, a skill you didn't list, or a bigger role than you described), that suggestion is left out and your own wording is kept. You can always undo a polish with "Restore my wording," and you should still read your resume before you send it. No tool can promise it never makes a mistake.
+
+**Q: Will it make me sound like someone I'm not?**
+
+A: No. The AI is told to keep your level of involvement ("helped" stays "helped"), to use natural, modest words, and not to add praise such as "motivated" or "dedicated" unless you wrote it. Your resume should sound like you on a good day, not like a different person. Always read it over and change anything that doesn't sound like you.
 
 **Q: What is "Tailor to This Job"?**
 
@@ -22,27 +26,40 @@ A: Paste a job description and the AI adjusts the emphasis and wording of your r
 
 **Q: What if something goes wrong while the AI is working?**
 
-A: If the AI can't finish, nothing is used. Your counter always shows how many generations you have left.
+A: If the AI can't finish, nothing is used. Your counter always shows how many generations you have left. If your screen refreshes or your phone loses signal while the AI is working, your resume is still there when the page comes back, and if you press the same button again it asks for the same result instead of using a second generation. This works best within a few minutes. If a generation did go missing, please message us with your access code and we will look at it.
+
+**Q: Is my resume kept if I refresh the page?**
+
+A: Yes, within the same browser tab. A copy of your resume is kept in your own browser tab so a refresh does not lose your work. It is not sent anywhere, and it disappears when you close the tab. On a shared computer, use "Clear this saved copy" (shown when your work is restored) or simply close the tab.
 
 **Q: Can I use a very long resume?**
 
 A: AI steps work best on resumes of up to about 5 to 6 pages. Pasting more than about 20,000 characters is not accepted for analysis, and a resume too long for AI Polish or Tailor is refused with a message before anything is used. You can still edit and download any length yourself.
 
+**Q: What if I don't give the AI much to work with?**
+
+A: It will tell you. If there are only a few words to work with, it asks you to add a little more (what you did, and what you worked with) instead of making something up, and nothing is used.
+
 **Q: Can I keep asking the AI to review the same resume?**
 
-A: If the AI has reviewed your resume several times in a row and found nothing to improve (or all of its suggestions were left out), the app will ask you to wait a few minutes before trying again (you can keep editing and downloading meanwhile). This protects your account and is never charged.
+A: If the AI has reviewed your resume several times in a row and found nothing worth applying, the app will ask you to wait a few minutes before trying again (you can keep editing and downloading meanwhile). This protects your account and is never charged.
 
 **Q: Are my resume and access code kept private?**
 
-A: Your resume text is sent to the AI service to be processed and to our server to build your PDF or Word file. We do not store it or write it to our logs.
+A: Your resume text is sent to the AI service to be processed and to our server to build your PDF or Word file. We do not store it or write it to our logs. (A copy stays in your own browser tab, as described above.)
 
 ## Short version (for the description's "HOW IT WORKS" section, one line)
 
-"AI Polish uses one of your 5 generations only when it makes real improvements that stay true to what you wrote; if there's nothing to improve, nothing is used."
+"AI Polish uses one of your 5 generations only when it rewrites some of your wording or corrects 3 or more mistakes, and only in ways that stay true to what you wrote. Otherwise nothing is used."
+
+## Claims to avoid (not demonstrated, so not to be made)
+- Do not say the resume is "ATS-friendly", "ATS-optimized" or "will get you interviews/hired". The PDF text is real, selectable text (tested), but nothing here has been tested against any applicant tracking system, and outcomes depend on the applicant and the employer.
+- Do not promise a number of improvements, "guaranteed rewrites", or that the AI "never" makes mistakes.
+- Do not name the underlying AI model (shop listing rule).
+- Do not describe the free sample as an example of what the AI will write for a customer: it is a fictional senior retail resume, not an AI result.
 
 ## Notes for the owner
-- Do not promise a number of "improvements" or "guaranteed rewrites". The AI leaves already-clear lines alone, so a strong first draft may get no changes, and that is by design.
-- Do not promise that the AI "never" makes mistakes. The checks catch added numbers, results, beneficiaries, inflated roles, and details moved between entries, but they are pattern based. Keep "you should still read your resume".
 - This wording does not change the price, the five-generation entitlement, or the Tailor allowance (up to 5 runs per paid generation).
-- Per the shop's listing rules, never name the underlying AI model.
-- The page-length guidance is approximate (about 20,000 characters is roughly 6 pages of plain text) and should be re-checked after the long-resume acceptance test in `docs/RELEASE_HARDENING.md`.
+- The 3-point rule means a useful one- or two-word fix is free and is not applied. That is a deliberate, transparent tradeoff against letting an AI decide what to charge. It is stated in the FAQ above so no customer is surprised.
+- "Within a few minutes" in the lost-reply answer is deliberate: the repeat-request protection is kept in memory on the server instance that did the work (a few minutes). A repeat that lands on another instance is a normal request.
+- The page-length guidance is approximate (about 20,000 characters is roughly 6 pages of plain text) and still needs the long-resume test on a real deploy (`docs/RELEASE_HARDENING.md`).

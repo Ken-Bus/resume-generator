@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const release = require('./_lib/release');
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
@@ -8,18 +7,24 @@ const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
 const nochange = require('./_lib/nochange');
+const scoring = require('./_lib/scoring');
 const usage = require('./_lib/usage');
 const limits = require('./_lib/limits');
 const { isFirstInFlight } = require('./_lib/inflight');
+const { makeLimiter, clientIp } = require('./_lib/rate');
 const Core = require('../../resume-core.js');
 
 const { stamp } = release;
 
+// Fewer words than this in the whole resume (names, dates and schools excluded) is too little for an AI to improve without inventing.
+const MIN_WORDS = 8;
+
 // "Polish My Resume with AI": turns the customer's own guided answers into clear resume wording.
 // PAID OPERATION, charged exactly like Analyze: ONE of the code's included generations, and only after a
-// validated result THAT MEANINGFULLY IMPROVES THE WORDING (at least one line actually reworded; capitals, punctuation and
-// spacing alone do not count). A result with nothing meaningful to improve releases the reservation uncharged and uncounted
-// (it never touches the database failure budget), is capped separately in _lib/nochange.js, and is never applied to the resume.
+// validated result whose ACCEPTED improvements add up to at least 3 points (_lib/scoring.js: a real rewrite is 3; each genuine
+// spelling, grammar or tense correction, removed repetition or vague word made specific is 1; capitals, punctuation, synonyms and
+// anything unsupported are 0). A result below that releases the reservation uncharged and uncounted (it never touches the
+// database failure budget), is capped separately in _lib/nochange.js, and is never applied to the resume.
 // Same reserve -> AI -> commit / release model, same signed tailoring token (so Tailor stays free,
 // token-gated and capped). Nothing here changes how Analyze or Tailor are charged.
 //
@@ -30,6 +35,8 @@ const { stamp } = release;
 //     charge (best-effort: kept in memory on the instance that served it, for a few minutes).
 
 // Error messages from the database can echo query values (such as the license code), so only a code or name is logged.
+// Guessing codes through this endpoint: an unknown or malformed code counts against the client (best effort, in memory; see _lib/rate.js).
+const failedCodes = makeLimiter({ windowMs: 10 * 60 * 1000, max: 30 });
 const safeReason = (e) => String((e && (e.code || e.name)) || 'error').slice(0, 40);
 
 // Every server-side failure answers with the same friendly text plus a short reference (for example "ref P101").
@@ -46,22 +53,22 @@ const MSG = {
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
+  sparse: 'There isn’t enough detail for the AI to improve yet, and it will not make anything up to fill the gap. Add a few words about what you did (what you worked with, and what you did each day), then try again. Nothing was used.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
   noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
-  minorOnly: 'The AI found only very small touch-ups (a single word here and there), which are not worth a generation, so your wording is unchanged and no generation was used.',
-  flaggedOnly: 'The AI suggested changes, but every one of them added details that are not in your answers, so your wording is unchanged and no generation was used.',
+  minorOnly: 'The AI found only a few small fixes (fewer than it takes to use a generation: a generation is used when the AI rewrites some of your wording or corrects three or more mistakes), so your wording is unchanged and no generation was used.',
+  flaggedOnly: 'The AI suggested changes, but they added details that are not in your answers, and what was left was too little to use a generation, so your wording is unchanged and no generation was used.',
+  slow: 'The AI took too long to answer. You haven’t been charged. Please try again in a moment. If it keeps happening, try again with fewer or shorter entries.',
   tooLong: 'This resume is too long to polish in one go (the AI could not finish it in time or space). You haven’t been charged. Try again with fewer or shorter entries, for example your most recent jobs first.',
   tooLongInput: 'This resume is too long to polish in one go. You haven’t been charged. Shorten it a little (fewer or shorter entries) and try again.',
   notCharged: 'Something went wrong on our side. Please check the counter above before trying again.',
   server: 'Server error, please try again.'
 };
 
-const REQUEST_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
-const recent = new Map();                                       // idempotency cache: key -> { at, body }
-const RECENT_MS = 5 * 60 * 1000;
-const cacheKey = (code, id) => crypto.createHash('sha256').update(`${code}:${id}`).digest('hex');
-function cacheGet(k) { const v = recent.get(k); if (v && Date.now() - v.at < RECENT_MS) return v.body; recent.delete(k); return null; }
-function cachePut(k, body) { recent.set(k, { at: Date.now(), body }); if (recent.size > 200) recent.delete(recent.keys().next().value); }
+const replay = require('./_lib/replay');
+const cacheKey = (code, id) => ['polish', code, id];
+function cacheGet(k) { return replay.get(...k); }
+function cachePut(k, body) { replay.put(...k, body); }
 
 // Who is this resume for? The customer can say (first resume / worked before / changing to different work); otherwise it
 // follows from the answers. Only these three values are ever used, so the field cannot inject text into the prompt.
@@ -170,17 +177,22 @@ exports.handler = async function(event) {
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
   const code = normalizeCode(rawCode);
   if (!code) return json(401, { error: MSG.refresh, guard: stamp() });
-  if (!CODE_RE.test(code)) return json(400, { error: MSG.badFormat });
+  const ip = clientIp(event);
+  const guessing = failedCodes.wait(ip);
+  if (guessing) return json(429, { error: 'Too many attempts in a short time. Please wait a moment and try again.' }, { 'Retry-After': String(guessing) });
+  if (!CODE_RE.test(code)) { failedCodes.hit(ip); return json(400, { error: MSG.badFormat }); }
   if (!resume || typeof resume !== 'object' || Array.isArray(resume)) return json(400, { error: 'Malformed request' });
   if (JSON.stringify(resume).length > cfg.RESUME_JSON_MAX_CHARS) return json(413, { error: 'That resume is too long to polish. Please shorten it and try again.' });
   const source = Core.clean(resume);
   if (!Core.hasWritableText(source)) return json(400, { error: MSG.nothing });
+  // Too little to work with: say so plainly instead of calling the AI (nothing to improve truthfully, and a call would cost money for no benefit).
+  if (Core.writableWords(source) < MIN_WORDS) return json(200, { guard: stamp(), noChange: true, charged: false, reason: 'sparse', message: MSG.sparse, withheld: [], changes: { reworded: 0, minor: 0, cosmetic: 0, unchanged: 0, dropped: 0 }, points: 0, threshold: scoring.THRESHOLD });
   // The reply is about as long as the resume. If it cannot fit in the output cap the call is certain to be cut off, so refuse now:
   // no reservation, no AI call, no cost.
   if (!limits.fitsOutput(JSON.stringify(source).length, cfg.TAILOR_MAX_TOKENS)) return json(413, { error: MSG.tooLongInput });
   const target = typeof rawTarget === 'string' ? rawTarget.replace(/["\\`]/g, "'").replace(/\s+/g, ' ').trim().slice(0, 120) : '';
   const profile = chooseProfile(typeof rawProfile === 'string' ? rawProfile : '', source);
-  const rid = typeof requestId === 'string' && REQUEST_ID_RE.test(requestId) ? requestId : null;
+  const rid = replay.validId(requestId);
 
   let supabase;
   try { supabase = getSupabaseClient(); } catch (err) {
@@ -217,7 +229,7 @@ exports.handler = async function(event) {
     return json(503, { error: refMsg('P103'), ref: 'P103' });
   }
 
-  if (reservation.outcome === 'not_found') return json(403, { error: MSG.notFound });
+  if (reservation.outcome === 'not_found') { failedCodes.hit(ip); return json(403, { error: MSG.notFound }); }
   if (reservation.outcome === 'exhausted') return json(403, { error: MSG.exhausted, usesRemaining: 0, maxUses: reservation.maximum });
   if (reservation.outcome === 'throttled') {
     const wait = Math.max(Number(reservation.retryAfterSeconds) || 60, 1);
@@ -249,6 +261,7 @@ exports.handler = async function(event) {
   let polished;
   let withheld = [];
   let changes;
+  let score;
   try {
     const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'polish', ref: reservation.reservationId });
     const shaped = assertResumeShape(extractJson(text));
@@ -257,28 +270,31 @@ exports.handler = async function(event) {
     const guarded = integrity.guardResume(source, shaped, { mode: 'polish', vocabulary: target });
     polished = guarded.resume; withheld = guarded.withheld;
     changes = integrity.assessChange(source, polished);
+    score = scoring.score(source, polished);                              // what the ACCEPTED edits are worth (never the withheld ones)
   } catch (err) {
     const guardFault = !(err && err.name === 'AiError');                   // a bug in our own checks is not the customer's failure
     const providerFault = guardFault || isProviderFault(err);
     await license.safeRelease(supabase, reservation.reservationId, !providerFault);
     console.error('polish-resume: generation failed', { ref: guardFault ? 'P107' : undefined, reservation: reservation.reservationId, reason: guardFault ? safeReason(err) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'failed' });
-    const long = err && err.name === 'AiError' && (err.reason === 'timeout' || err.reason === 'truncated');
-    return json(502, { error: long ? MSG.tooLong : MSG.aiFailed });
+    const reason = err && err.name === 'AiError' ? err.reason : '';
+    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : MSG.aiFailed });
   }
 
-  // 2b. Nothing ACCEPTED is a meaningful improvement (the AI changed nothing, or only capitals/punctuation, or every change it made was
-  // withheld by the integrity checks): release the reservation, uncharged and NOT counted as a failure, and hand back no text. It is
-  // capped separately (_lib/nochange.js) so it cannot become unlimited free AI. Counts only go to the log (P201 / P202).
-  if (changes.reworded === 0) {
-    const flaggedOnly = withheld.length > 0;
-    const minorOnly = !flaggedOnly && changes.minor > 0;
+  // 2b. The ACCEPTED improvements are worth less than the charging threshold (the AI changed nothing, or only capitals/punctuation, or only a
+  // couple of small fixes, or every change it made was withheld by the integrity checks): release the reservation, uncharged and NOT counted as a
+  // failure, and hand back no text (the customer's own wording stays). It is capped separately (_lib/nochange.js) so it cannot become unlimited
+  // free AI. Counts only go to the log (P201 / P202).
+  if (!score.charge) {
+    const seen = changes.reworded + changes.minor + changes.dropped;       // anything the customer could have seen change
+    const flaggedOnly = withheld.length > 0;                               // some suggestions were left out, and what remained was too little to use a generation
+    const smallOnly = !flaggedOnly && seen > 0;
     await license.safeRelease(supabase, reservation.reservationId, false);
     nochange.record(code);
-    console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
-      { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, withheld: withheld.length });
-    usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: 0, withheld: withheld.length });
-    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : minorOnly ? 'minor' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : minorOnly ? MSG.minorOnly : MSG.noChange, withheld, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+    console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : smallOnly ? 'polish-resume: accepted changes are below the charging threshold; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
+      { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
+    usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
+    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : smallOnly ? 'minor' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : smallOnly ? MSG.minorOnly : MSG.noChange, withheld, changes, points: score.points, threshold: score.threshold, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
     if (rid) cachePut(cacheKey(code, rid), body);
     return json(200, body);
   }
@@ -306,14 +322,16 @@ exports.handler = async function(event) {
   if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
-  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, withheld: withheld.length });
+  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
-  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
+  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
   if (rid) cachePut(cacheKey(code, rid), body);
   return json(200, body);
 };
 
-exports._recent = recent;     // for tests
+exports._recent = replay.recent;     // for tests
 exports._nochange = nochange;
 exports._buildPrompt = buildPrompt;
 exports._chooseProfile = chooseProfile;
+exports._MIN_WORDS = MIN_WORDS;
+exports._failedCodes = failedCodes;

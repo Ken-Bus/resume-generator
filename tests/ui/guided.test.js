@@ -10,8 +10,7 @@ const zlib = require('zlib');
 const { spawnSync } = require('child_process');
 
 const ROOT = path.join(__dirname, '..', '..');
-const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
-const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { PW, CHROME, unavailable } = require('./browser');
 const { exportApi } = require('./export-api');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json' };
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'rg-ui-'));
@@ -83,7 +82,7 @@ const WORKER = {
 };
 
 test('guided builder, section model and exports (Chromium, mocked endpoints)', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   const { chromium } = require(PW);
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });

@@ -7,6 +7,15 @@ const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
 const usage = require('./_lib/usage');
+const { isFirstInFlight } = require('./_lib/inflight');
+const replay = require('./_lib/replay');
+const { makeLimiter, clientIp } = require('./_lib/rate');
+
+// Guessing codes through this endpoint: an unknown or malformed code counts against the client (best effort, in memory; see _lib/rate.js).
+// A customer who mistypes a code a few times is never affected.
+const failedCodes = makeLimiter({ windowMs: 10 * 60 * 1000, max: 30 });
+// Database error messages can echo query values (such as the license code), so only a code or name is ever logged.
+const safeReason = (e) => String((e && (e.code || e.name)) || 'error').slice(0, 40);
 
 const MSG = {
   refresh: 'Please refresh the page and enter your access code again.',
@@ -15,6 +24,7 @@ const MSG = {
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
   aiFailed: 'We couldn’t analyze this resume right now. You haven’t been charged. Please try again.',
+  slow: 'The AI took too long to answer. You haven’t been charged. Please try again in a moment.',
   tooLong: 'This resume is too long for the AI to analyze in one go (it could not finish in time or space). You haven’t been charged. Try pasting fewer or shorter entries, for example your most recent jobs first.',
   notCharged: 'Something went wrong on our side. Please check the counter above before trying again.',
   server: 'Server error, please try again.'
@@ -34,13 +44,16 @@ exports.handler = async function(event) {
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { code: rawCode, resumeText, clientGuard } = parsed.body;
+  const { code: rawCode, resumeText, clientGuard, requestId } = parsed.body;
   if (release.staleClient(clientGuard)) return json(409, { error: release.STALE_MESSAGE, stale: true, guard: release.stamp() });
 
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
   const code = normalizeCode(rawCode);
   if (!code) return json(401, { error: MSG.refresh });
-  if (!CODE_RE.test(code)) return json(400, { error: MSG.badFormat });
+  const ip = clientIp(event);
+  const guessing = failedCodes.wait(ip);
+  if (guessing) return json(429, { error: 'Too many attempts in a short time. Please wait a moment and try again.' }, { 'Retry-After': String(guessing) });
+  if (!CODE_RE.test(code)) { failedCodes.hit(ip); return json(400, { error: MSG.badFormat }); }
   if (typeof resumeText !== 'string' || !resumeText.trim()) {
     return json(400, { error: 'Please paste your resume text first.' });
   }
@@ -48,21 +61,27 @@ exports.handler = async function(event) {
     return json(413, { error: `That resume is too long to analyze (limit ${cfg.RESUME_MAX_CHARS.toLocaleString('en-US')} characters). Please trim older or less relevant sections and try again.` });
   }
 
+  const rid = replay.validId(requestId);
   let supabase;
   let reservation;
   try {
     supabase = getSupabaseClient();
+    // A repeat of an Analyze that already finished (the reply was lost) returns the same result, uncharged.
+    if (rid) {
+      const hit = replay.get('analyze', code, rid);
+      if (hit) { try { if (await license.readLicense(supabase, code)) return json(200, hit); } catch (e) { /* fall through to the normal path */ } }
+    }
     reservation = await license.reserve(supabase, code, cfg);
   } catch (err) {
     // 42883 / PGRST202 = the function does not exist, i.e. the database migration has not been applied yet.
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
     console.error(missing
       ? 'parse-resume: reserve_license_use is missing. Apply supabase/migrations/20261020_01_license_reservations.sql BEFORE deploying this code.'
-      : 'parse-resume: reservation failed', { reason: err && err.message });
+      : 'parse-resume: reservation failed', { reason: safeReason(err) });
     return json(503, { error: MSG.server });
   }
 
-  if (reservation.outcome === 'not_found') return json(403, { error: MSG.notFound });
+  if (reservation.outcome === 'not_found') { failedCodes.hit(ip); return json(403, { error: MSG.notFound }); }
   if (reservation.outcome === 'exhausted') {
     return json(403, { error: MSG.exhausted, usesRemaining: 0, maxUses: reservation.maximum });
   }
@@ -80,6 +99,18 @@ exports.handler = async function(event) {
   }
   if (reservation.outcome !== 'reserved') {
     console.error('parse-resume: unexpected reservation outcome', { outcome: reservation.outcome });
+    return json(503, { error: MSG.server });
+  }
+
+  // One paid operation at a time per code (as in AI Polish): a double-send or a second tab is turned away uncharged, never run twice.
+  try {
+    if (!(await isFirstInFlight(supabase, code, reservation.reservationId))) {
+      await license.safeRelease(supabase, reservation.reservationId, false);
+      return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+    }
+  } catch (err) {
+    console.error('parse-resume: in-flight check failed', { reason: safeReason(err) });
+    await license.safeRelease(supabase, reservation.reservationId, false);          // never leave a reservation held
     return json(503, { error: MSG.server });
   }
 
@@ -102,8 +133,8 @@ exports.handler = async function(event) {
     await license.safeRelease(supabase, reservation.reservationId, !providerFault);
     console.error('parse-resume: generation failed', { ref: guardFault ? 'A107' : undefined, reservation: reservation.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'failed' });
-    const long = err && err.name === 'AiError' && (err.reason === 'timeout' || err.reason === 'truncated');
-    return json(502, { error: long ? MSG.tooLong : MSG.aiFailed });
+    const reason = err && err.name === 'AiError' ? err.reason : '';
+    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : MSG.aiFailed });
   }
 
   // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
@@ -139,11 +170,15 @@ exports.handler = async function(event) {
   }
 
   usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'charged', withheld: unverified.length });
-  return json(200, {
+  const body = {
     result: resultText,
     unverified,
     usesRemaining: committed.remaining,
     maxUses: committed.maximum,
     tailorToken
-  });
+  };
+  if (rid) replay.put('analyze', code, rid, body);
+  return json(200, body);
 };
+
+exports._failedCodes = failedCodes;     // for tests

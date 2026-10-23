@@ -61,6 +61,17 @@
       c.experience.some((e) => e.bullets.length || e.summary) || c.projects.some((p) => p.bullets.length || p.description) || c.volunteer.some((v) => v.bullets.length));
   }
 
+  // How many words of the customer's own writing an AI could work with (headline, summary, skills, and every job, project and activity line).
+  // Names, contact details, dates and school names are facts the AI may not touch, so they do not count.
+  function writableWords(cleaned) {
+    const c = cleaned; const n = (t) => (String(t || '').match(/[A-Za-z0-9\u00C0-\u024F']+/g) || []).length;
+    let total = n(c.summary.tagline) + c.summary.bullets.reduce((a, b) => a + n(b), 0) + c.summary.skills.reduce((a, b) => a + n(b), 0);
+    c.experience.forEach((e) => { total += n(e.summary) + e.bullets.reduce((a, b) => a + n(b), 0); });
+    c.projects.forEach((p) => { total += n(p.description) + p.bullets.reduce((a, b) => a + n(b), 0); });
+    c.volunteer.forEach((v) => { total += v.bullets.reduce((a, b) => a + n(b), 0); });
+    return total;
+  }
+
   function dateRange(start, end) {
     if (start && end) return `${start} – ${end}`;
     return start || end || '';
@@ -128,7 +139,7 @@
   // Which generation of the factual-integrity layer this build contains. The page and the AI functions both read it from this one file,
   // so a stale deploy is visible without spending a credit: in the browser console `ResumeCore.GUARD_VERSION`, and the same value comes
   // back from the AI functions as `guard.version` (see SETUP.md 5b). Bump it whenever the rules for what an AI result may contain change.
-  const GUARD_VERSION = 'entry-scope-withhold-5';
+  const GUARD_VERSION = 'entry-scope-withhold-6';
 
   // "Work you're looking for" -> the one-line intro. Customers type a job title ("Retail Sales Associate") but also whole phrases
   // ("Seeking a Retail Sales Associate position.", "looking for a job as a cashier"). Strip our own framing from what they typed so it is
@@ -153,5 +164,5 @@
     return `Seeking ${article} ${r} position`;
   }
 
-  return { blank, clean, hasContent, hasWritableText, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear, introFromTarget, GUARD_VERSION };
+  return { blank, clean, hasContent, hasWritableText, writableWords, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear, introFromTarget, GUARD_VERSION };
 });

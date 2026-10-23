@@ -80,15 +80,11 @@ const GOOD_RESUME = { name: 'Jordan Ellis', contact: { email: 'jordan.ellis@exam
   experience: [{ title: 'Retail Associate', company: 'Fictional Maple Market', start: 'June 2023', end: 'August 2026', bullets: ['Assisted customers'] }],
   education: [], certifications: [], projects: [], awards: [] };
 
-// A genuine, FAITHFUL rewrite of one line: it adds no word, so the integrity checks accept it, and it changes the sentence's structure
-// ("X and Y" -> "Y and X"; "Counted the drawer at closing" -> "At closing, counted the drawer"), so it is a real rewrite and not a touch-up.
+// A genuine, FAITHFUL rewrite of one line, worth 3 points under the collective rule (_lib/scoring.js): two or more words are put in, one of them a
+// plain verb the line did not have ("Completed"), and no other word is new, so the integrity checks accept it and it is a real rewrite, not a touch-up.
 function realReword(line) {
   const t = String(line).trim().replace(/[.!]+$/, '');
-  const cap = (x) => x.replace(/^./, (c) => c.toUpperCase()); const low = (x) => x.replace(/^./, (c) => c.toLowerCase());
-  let m = /^(.+?)\s+and\s+(.+)$/i.exec(t); if (m) return `${cap(m[2])} and ${low(m[1])}`;
-  m = /^(.+)\s+((?:at|on|in|for|during|after|before)\s+[^,]+)$/i.exec(t); if (m) return `${cap(m[2])}, ${low(m[1])}`;
-  const w = t.split(/\s+/); if (w.length >= 2) return [cap(w[1]), low(w[0]), ...w.slice(2)].join(' ');       // swap the first two words: no new word, a real edit
-  return t;
+  return `Completed the ${t.replace(/^./, (c) => c.toLowerCase())}`;
 }
 
 // Polish replies. ECHO = the AI hands the customer's resume back untouched (the Taylor Rivera case).

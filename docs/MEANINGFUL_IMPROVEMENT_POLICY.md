@@ -1,4 +1,6 @@
-# What is worth a generation? (decision record and one open proposal)
+# What is worth a generation? (decision record)
+
+> **SUPERSEDED 2026-10-23.** The owner's Product Trust & QA Directive approved the collective-improvement rule (a rewrite is 3 points; a genuine spelling/grammar/tense correction, removed repetition or vague word made specific is 1 point; cosmetic and synonym changes are 0; 3 points or more charges exactly one generation, fewer keeps the customer's wording and charges nothing). It is implemented in `netlify/functions/_lib/scoring.js` and described in `SETUP.md` and `docs/PROPOSAL_COLLECTIVE_CHARGING.md`. The text below is the earlier rule, kept as the record of how the decision developed. The "insertion-only edits are never chargeable" proposal below was not adopted.
 
 **Trigger:** a live test charged one generation when the only accepted change was "Helped organize food for pickup." -> "Helped organize **donated** food for pickup." The owner ruled that too minor to charge.
 

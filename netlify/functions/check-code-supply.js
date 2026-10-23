@@ -21,7 +21,7 @@ exports.handler = async function() {
 
     if (remaining >= THRESHOLD) {
       console.log(`check-code-supply: ${remaining} unassigned codes remaining (threshold ${THRESHOLD}). No action taken.`);
-      return json(200, { generated: 0, remaining });
+      return json(200, { ok: true });          // counts stay in the log: the response is public if the function can be called as a URL
     }
 
     console.log(`check-code-supply: ${remaining} unassigned codes remaining, below threshold (${THRESHOLD}). Generating ${BATCH_SIZE} more.`);
@@ -39,7 +39,7 @@ exports.handler = async function() {
       });
     }
 
-    return json(200, { generated: inserted.length, remaining: newRemaining });
+    return json(200, { ok: true });
   } catch (err) {
     console.error('check-code-supply failed:', err);
     return json(500, { error: 'check-code-supply failed' });

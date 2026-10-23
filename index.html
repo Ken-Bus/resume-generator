@@ -245,6 +245,7 @@
 <div class="layout">
   <!-- LEFT PANEL -->
   <div class="left-panel">
+    <div id="restore-notice" class="notice-box" role="status" style="display:none; margin:10px 14px 0;"></div>
     <div class="start-paths" id="start-paths">
       <div class="start-title">How would you like to start?</div>
       <button class="start-card" onclick="startGuided('first')" id="start-first"><strong>Create My First Resume</strong><span>No experience needed. We&rsquo;ll ask simple questions.</span></button>
@@ -260,7 +261,7 @@
     <div class="panel-content" id="panel-paste">
       <p class="paste-hint">Paste your resume as plain text. Our AI will analyze it into structured fields automatically.</p>
       <div id="error-box" class="error-box" style="display:none;"></div>
-      <textarea class="resume-textarea" id="resume-input" placeholder="Paste your resume text here..."></textarea>
+      <textarea class="resume-textarea" id="resume-input" placeholder="Paste your resume text here..." oninput="scheduleSave()"></textarea>
       <div class="btn-row">
         <button class="btn-primary" onclick="parseResume()" id="parse-btn">Analyze Resume</button>
         <button class="btn-secondary" onclick="loadSample()">Try Sample</button>
@@ -278,7 +279,7 @@
       </div>
             <div id="job-match-box" style="margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:6px;background:#FAFAFA;">
         <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:#555;margin-bottom:6px;">TAILOR TO A JOB (OPTIONAL)</div>
-        <textarea id="job-desc-input" class="resume-textarea" placeholder="Paste the job description here to tailor your resume's wording to it..." rows="4" style="width:100%;"></textarea>
+        <textarea id="job-desc-input" class="resume-textarea" oninput="scheduleSave()" placeholder="Paste the job description here to tailor your resume's wording to it..." rows="4" style="width:100%;"></textarea>
         <button class="btn-secondary" onclick="tailorToJob()" id="tailor-btn" style="margin-top:8px;">Tailor to This Job</button>
         <div id="match-summary-box" style="display:none;margin-top:10px;font-size:12px;line-height:1.5;"></div>
       </div>
@@ -405,6 +406,15 @@ const SAMPLE_DATA = {
   ]
 };
 
+// ── Browser storage ───────────────────────────────────────────────────────────
+// Some browsers (private modes, in-app browsers, strict cookie settings) throw as soon as sessionStorage is touched. The page must still load and
+// work, only without remembering the code or the work across a reload, so every access goes through here.
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); return true; } catch (e) { return false; } },
+  remove(k) { try { sessionStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+};
+
 // ── Templates ─────────────────────────────────────────────────────────────────
 const { TEMPLATES, CATEGORIES } = ResumeTemplates;
 
@@ -416,21 +426,91 @@ let state = {
   useAltColor: false,
   activePanel: 'paste',
   license: { code: null, verified: false, usesRemaining: null, maxUses: null },
-  tailorToken: null,   // signed authorisation issued with each paid generation; held in memory only
+  tailorToken: null,   // signed authorisation issued with each paid generation; kept (like the license code) in this tab's session storage only
   wizard: null,        // guided builder session (see wizard.js); null when not in use
   flags: new Set(),    // AI-written lines that need the customer's confirmation (see tailorToJob)
   preTailor: null,     // copy of the resume from before the last tailoring run, for Undo
   polishOriginal: null, // the customer's own wording from before the last AI polish, for Restore
   polish: null,         // AI polish UI state (confirm / busy / result), shared by the Review step and the editor
   polishResult: null,   // the resume exactly as the last polish returned it, to tell whether the customer has edited since (see Restore)
+  polishBaseline: null, // the customer's own wording from before the FIRST polish since this resume was started or analyzed
   aiBusy: null,         // 'analyze' | 'polish' | 'tailor' while a paid or AI step is running: only one at a time (see setAiBusy)
   sampleJson: null,     // the untouched sample, so Analyze can tell "sample" from "the customer's own work"
+  pending: null,        // { fn, requestId, at } while a paid step may still be running or its answer may have been lost (kept across a reload)
 };
+
+// ── Keeping the customer's work safe ──────────────────────────────────────────────────────────────────────────────────
+// A refresh, an accidental close or a phone browser discarding a background tab must not erase a resume (or a paid AI result). The work is
+// kept in this TAB's own session storage (never sent anywhere, and gone when the tab is closed, which matters on a shared computer). It is saved a
+// moment after every change and again whenever the page is hidden or closed. If a paid step (Analyze / AI Polish) was running when the page went
+// away, its request id is kept too, so asking again reuses the same request and a step that already finished is not charged a second time
+// (best effort: see netlify/functions/_lib/replay.js).
+const WORK_KEY = 'fg_work_v1';
+const PENDING_MAX_AGE_MS = 10 * 60 * 1000;
+let saveTimer = null;
+function isUntouchedSample() { return !!state.sampleJson && JSON.stringify(state.data) === state.sampleJson; }
+function saveWork() {
+  clearTimeout(saveTimer);
+  if (discarding) return;
+  try {
+    if (!state.data || !ResumeCore.hasContent(state.data) || isUntouchedSample()) { store.remove(WORK_KEY); return; }
+    const w = state.wizard ? { path: state.wizard.path, step: state.wizard.step, work: state.wizard.work, target: state.wizard.target, autoTagline: state.wizard.autoTagline, profile: state.wizard.profile, edu: state.wizard.edu } : null;
+    store.set(WORK_KEY, JSON.stringify({
+      v: 1, savedAt: Date.now(), data: state.data, template: state.selectedTemplate.id, alt: !!state.useAltColor, panel: state.activePanel,
+      flags: [...state.flags], polishOriginal: state.polishOriginal, polishResult: state.polishResult, polishBaseline: state.polishBaseline, preTailor: state.preTailor, tailorToken: state.tailorToken,
+      wizard: w, pending: state.pending || null,
+      resumeText: (document.getElementById('resume-input') || {}).value || '', jobText: (document.getElementById('job-desc-input') || {}).value || ''
+    }));
+  } catch (e) { /* storage full, blocked or private mode: the page works exactly as before, only without this safety net */ }
+}
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveWork, 300); }
+let discarding = false;
+// "Clear this saved copy": for a shared computer. It removes the stored copy AND starts the page over (otherwise the work still on screen would just be saved again).
+function clearSavedWork() {
+  if (!confirm('Remove your resume from this tab and start fresh? Anything you have not downloaded will be gone.')) return;
+  discarding = true; store.remove(WORK_KEY); store.remove(LICENSE_STORAGE_KEY); location.reload();
+}
+function restoreWork() {
+  let w = null;
+  try { w = JSON.parse(store.get(WORK_KEY) || 'null'); } catch (e) { w = null; }
+  if (!w || w.v !== 1 || !w.data || typeof w.data !== 'object' || !ResumeCore.hasContent(w.data)) return false;
+  try {
+    state.data = w.data;
+    const t = TEMPLATES.find(x => x.id === w.template); if (t) { state.selectedTemplate = t; state.selectedCategory = t.category; }
+    state.useAltColor = !!w.alt;
+    state.flags = new Set(Array.isArray(w.flags) ? w.flags : []);
+    state.polishOriginal = w.polishOriginal || null; state.polishResult = w.polishResult || null; state.polishBaseline = w.polishBaseline || null; state.preTailor = w.preTailor || null;
+    state.tailorToken = typeof w.tailorToken === 'string' ? w.tailorToken : null;
+    if (w.resumeText) document.getElementById('resume-input').value = w.resumeText;
+    if (w.jobText) document.getElementById('job-desc-input').value = w.jobText;
+    if (w.wizard && typeof w.wizard === 'object') state.wizard = { path: w.wizard.path, step: w.wizard.step, work: w.wizard.work, target: w.wizard.target || '', autoTagline: w.wizard.autoTagline || '', profile: w.wizard.profile, edu: Array.isArray(w.wizard.edu) ? w.wizard.edu : [] };
+    const fresh = w.pending && Date.now() - Number(w.pending.at) < PENDING_MAX_AGE_MS ? w.pending : null;
+    state.pending = fresh;
+    if (fresh && fresh.fn === 'polish' && typeof Wiz !== 'undefined') Wiz.polishState().requestId = fresh.requestId;
+    renderCategoryTabs(); renderVariants(); renderEditFields(); renderPreview();
+    if (state.wizard) Wiz.render();
+    switchPanel(w.panel === 'guide' && !state.wizard ? 'edit' : (['paste', 'edit', 'guide'].includes(w.panel) ? w.panel : 'edit'));
+    syncChrome();
+    const n = document.getElementById('restore-notice');
+    if (n) {
+      n.innerHTML = `<strong>Welcome back.</strong> We kept your resume from this browser tab, so nothing you typed was lost. It is stored only in this tab (never sent anywhere) and disappears when you close it.${fresh ? ' Your last AI step (' + esc(fresh.fn === 'polish' ? 'AI Polish' : 'Analyze') + ') may have been interrupted when the page reloaded. Check the generations counter above. If you run the same step again now it reuses the same request, so a step that already finished should not be charged a second time.' : ''} <button class="wiz-link" onclick="clearSavedWork()">Clear this saved copy</button>`;
+      n.style.display = 'block';
+    }
+    return true;
+  } catch (e) { clearSavedWork(); state.data = null; state.wizard = null; return false; }
+}
+// Leaving with a paid step running, or with a resume that has not been downloaded yet, asks first (the browser shows its own wording).
+let exportedSnapshot = null;
+function hasUnsavedWork() { return !discarding && !!state.data && ResumeCore.hasContent(state.data) && !isUntouchedSample() && JSON.stringify(state.data) !== exportedSnapshot; }
+window.addEventListener('beforeunload', (e) => { saveWork(); if (state.aiBusy || hasUnsavedWork()) { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWork(); });
+window.addEventListener('pagehide', saveWork);
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   renderCategoryTabs();
   renderVariants();
+  restoreWork();
   initLicenseGate();
 }
 
@@ -462,7 +542,7 @@ function aiEnd(name) { if (state.aiBusy === name) setAiBusy(null); }
 
 // ── Panel Switch ──────────────────────────────────────────────────────────────
 function switchPanel(panel) {
-  state.activePanel = panel;
+  state.activePanel = panel; scheduleSave();
   ['paste', 'edit', 'guide'].forEach(p => {
     document.getElementById('panel-' + p).style.display = panel === p ? 'block' : 'none';
     document.getElementById('tab-' + p).classList.toggle('active', panel === p);
@@ -547,7 +627,7 @@ function etsyLinkHTML() {
 }
 
 function initLicenseGate() {
-  const savedCode = sessionStorage.getItem(LICENSE_STORAGE_KEY);
+  const savedCode = store.get(LICENSE_STORAGE_KEY);
   if (savedCode) {
     verifyLicense(savedCode, { silent: true, showGateOnFail: true });
   } else {
@@ -604,7 +684,7 @@ async function verifyLicense(codeInput, opts = {}) {
 
     if (json.valid) {
       state.license = { code, verified: true, usesRemaining: json.usesRemaining, maxUses: json.maxUses };
-      sessionStorage.setItem(LICENSE_STORAGE_KEY, code);
+      store.set(LICENSE_STORAGE_KEY, code);
       hideGate();
       renderLicenseBadge();
       if (pendingGeneration) {
@@ -615,7 +695,7 @@ async function verifyLicense(codeInput, opts = {}) {
       return true;
     } else {
       state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-      sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+      store.remove(LICENSE_STORAGE_KEY);
       if (opts.showGateOnFail || !opts.silent) {
         let msg = json.error || 'Invalid code.';
         if (json.usesRemaining === 0) msg += etsyLinkHTML();
@@ -667,15 +747,21 @@ async function parseResume() {
   document.getElementById('loading').style.display = 'flex';
   document.getElementById('error-box').style.display = 'none';
 
+  // One request id per attempt, reused when the same text is sent again after a lost reply or a reload: a repeat of an Analyze that already finished
+  // returns the same result instead of using a second generation.
+  const requestId = state.pending && state.pending.fn === 'analyze' && state.pending.text === text ? state.pending.requestId : Wiz.newRequestId();
+  state.pending = { fn: 'analyze', requestId, text, at: Date.now() }; saveWork();
+  let definite = false;
   try {
     // The server checks the code, reserves a generation, runs the AI, and only charges for a validated result.
     const res = await aiFetch('/.netlify/functions/parse-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: state.license.code, resumeText: text, clientGuard: ResumeCore.GUARD_VERSION })
+      body: JSON.stringify({ code: state.license.code, resumeText: text, requestId, clientGuard: ResumeCore.GUARD_VERSION })
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
+    definite = json !== null && res.status !== 409 && res.status < 500;     // a cut-off body, busy, or a server error may mean the answer was lost: keep the id
 
     let parsed = null;
     if (res.ok && json && json.result) {
@@ -683,7 +769,7 @@ async function parseResume() {
     }
     if (parsed) {
       state.data = parsed;
-      state.wizard = null; state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polish = null; state.sampleJson = null;
+      state.wizard = null; state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null; state.sampleJson = null;
       // Numbers the AI put in that are not in the pasted text are shown in yellow for the customer to confirm.
       const unverified = Array.isArray(json.unverified) ? json.unverified : [];
       state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
@@ -707,9 +793,11 @@ async function parseResume() {
     refreshLicenseCounter();
   } finally {
     analyzing = false;
+    if (definite) state.pending = null;
     aiEnd('analyze');
     document.getElementById('parse-btn').disabled = false;
     document.getElementById('loading').style.display = 'none';
+    saveWork();
   }
 }
 
@@ -718,7 +806,7 @@ async function handleParseFailure(status, json) {
   const message = (json && json.error) || 'Something went wrong while analyzing your resume. Please try again.';
   if (status === 401) {
     state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-    sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+    store.remove(LICENSE_STORAGE_KEY);
     renderLicenseBadge();
     showGate(message);
     return;
@@ -733,7 +821,7 @@ async function handleParseFailure(status, json) {
   }
   if (status === 403) {
     state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-    sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+    store.remove(LICENSE_STORAGE_KEY);
     renderLicenseBadge();
     showGate(message);
     return;
@@ -769,7 +857,7 @@ function loadSample() {
   state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
   state.sampleJson = JSON.stringify(state.data);
   state.tailorToken = null;
-  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polish = null;
+  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null;
   const note = document.getElementById('analyze-notice'); if (note) note.innerHTML = '';
   renderEditFields();
   renderPreview();
@@ -947,6 +1035,7 @@ function renderPreview() {
   area.innerHTML = `<div class="resume-page${state.license.verified ? '' : ' demo'}" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
   syncChrome();
   if (typeof renderEditPolish === 'function') renderEditPolish();
+  scheduleSave();
 }
 
 function buildResumeHTML(rawData, t, useAlt) {
@@ -1081,7 +1170,7 @@ async function runExport(kind) {
       const message = (json && json.error) || 'We couldn’t prepare your download. Please try again.';
       if (res.status === 401 || res.status === 403) {
         state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-        sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+        store.remove(LICENSE_STORAGE_KEY);
         renderLicenseBadge();
         showGate(message);
       } else {
@@ -1095,6 +1184,7 @@ async function runExport(kind) {
     a.href = url; a.download = `${ResumeCore.fileBase(state.data.name)}.${kind === 'pdf' ? 'pdf' : 'docx'}`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    exportedSnapshot = JSON.stringify(state.data);                  // downloaded: leaving no longer needs a warning
     if (res.headers.get('X-Export-Notice') === 'simplified' && kind === 'pdf') exportNotice('Some characters outside standard Latin letters were simplified in the PDF. The Word download keeps them.');
   } catch (e) {
     exportNotice('We couldn’t reach the server. Downloading needs an internet connection. Your resume is still here, so please try again.');

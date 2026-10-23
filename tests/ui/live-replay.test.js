@@ -7,8 +7,7 @@ const http = require('http');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
-const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
-const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { PW, CHROME, unavailable } = require('./browser');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript' };
 const integrity = require('../../netlify/functions/_lib/integrity');
 const Core = require('../../resume-core.js');
@@ -33,7 +32,7 @@ function serve() {
 }
 
 test('live replay in the browser: the invented "families in the community" never reaches the screen, the editor or the download data', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   const { chromium } = require(PW);
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });
@@ -80,7 +79,7 @@ test('live replay in the browser: the invented "families in the community" never
       const fields = await page.locator('#edit-fields textarea, #edit-fields input').evaluateAll((els) => els.map((e) => e.value).join('\n'));
       assert.doesNotMatch(fields, /for families in the community|collect donated food/i, 'nor in any editor field');
       assert.equal(await page.locator('#edit-fields textarea.flag-warn').count(), 0, 'no yellow "kept with a warning" lines: they are withheld, not kept');
-      assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), 'entry-scope-withhold-5', 'the page carries the same guard version as the functions');
+      assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), 'entry-scope-withhold-6', 'the page carries the same guard version as the functions');
       assert.deepEqual(errors, []);
       await ctx.close();
     });
@@ -88,7 +87,7 @@ test('live replay in the browser: the invented "families in the community" never
 });
 
 test('the owner\'s browser checks: the guard label is readable by the Console, the page sends its version on every paid request, and a refused stale page shows a plain message', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'mock';
   const release = require('../../netlify/functions/_lib/release');
   const polishFn = require('../../netlify/functions/polish-resume');
@@ -121,7 +120,7 @@ test('the owner\'s browser checks: the guard label is readable by the Console, t
   assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), get[1].guard.version, 'page and function agree');
   // Opened like the owner would open it, the address shows the label on screen.
   await page.goto(base + '/.netlify/functions/polish-resume');
-  assert.match(await page.innerText('body'), /"version":"entry-scope-withhold-5"/);
+  assert.match(await page.innerText('body'), /"version":"entry-scope-withhold-6"/);
 
   await page.goto(base + '/index.html');
   await page.fill('#gate-code-input', 'FG-TEST-AAAA'); await page.click('#gate-unlock-btn'); await page.waitForSelector('#license-gate', { state: 'hidden' });

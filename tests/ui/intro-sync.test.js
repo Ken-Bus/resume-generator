@@ -7,8 +7,7 @@ const http = require('http');
 const path = require('path');
 
 const ROOT = path.join(__dirname, '..', '..');
-const PW = process.env.PLAYWRIGHT_MODULE || '/opt/node-tools/node_modules/playwright';
-const CHROME = process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const { PW, CHROME, unavailable } = require('./browser');
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript' };
 const BAD = /seeking.*seeking|\b(a|an) (a|an)\b|position position|\bposition\b.*\bposition\b/i;
 
@@ -22,7 +21,7 @@ function serve() {
 }
 
 test('Guided Builder step 1: role field and one-line intro stay in sync without duplicating or overwriting', async (t) => {
-  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  if (unavailable(t)) return;
   const { chromium } = require(PW);
   const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
   const browser = await chromium.launch({ executablePath: CHROME });

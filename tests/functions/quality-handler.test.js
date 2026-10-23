@@ -36,8 +36,9 @@ test('quality personas through polish-resume against real SQL (AI mocked)', asyn
     const code = await seed(); let b = await run(code, C.polished.before, (r) => clone(r)); assert.equal(b.noChange, true); assert.equal(await uses(code), 5);
     b = await run(code, C.polished.before, (r) => { const o = clone(r); o.experience[0].bullets = o.experience[0].bullets.map((x) => `${x}.`); return o; }); assert.equal(b.noChange, true); assert.equal(await uses(code), 5);
   });
-  await t.test('CURRENT rule, documented: a spelling-only fix of six lines is free and not applied (see docs/PROPOSAL_COLLECTIVE_CHARGING.md)', async () => {
+  await t.test('the owner-approved rule: a spelling-only fix of six lines is worth a generation (6 points), is APPLIED, and is charged once (it used to be free and thrown away)', async () => {
     const code = await seed(); const b = await run(code, C.spellingOnly.before, () => clone(C.spellingOnly.after));
-    assert.equal(b.noChange, true); assert.equal(b.reason, 'minor'); assert.equal(await uses(code), 5); assert.equal(b.result, undefined); assert.equal(b.changes.minor, 6);
+    assert.equal(b.charged, true); assert.equal(await uses(code), 4); assert.equal(b.points, 6);
+    assert.deepEqual(JSON.parse(b.result).experience[0].bullets, C.spellingOnly.after.experience[0].bullets);
   });
 });
