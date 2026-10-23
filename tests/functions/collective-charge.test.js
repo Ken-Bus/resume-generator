@@ -82,6 +82,21 @@ test('collective charging against real SQL (AI provider mocked)', async (t) => {
     assert.equal(await uses(c), 5); assert.ok((await rsv(c)).every((x) => x === 'released'));
   });
 
+  await t.test('CAP IS EXACT under concurrency: with 2 of 3 free attempts already used, eight simultaneous polishes produce at most ONE more free result, never more AI calls than that', async () => {
+    reset(); const c = await seed(); ai.delayMs = 40; ai.polishPayload = fixFirst(1);
+    hs.polishModule._nochange.record(c); hs.polishModule._nochange.record(c);
+    const rs = await Promise.all(Array.from({ length: 8 }, () => polish(c)));
+    assert.ok(rs.filter((r) => r.statusCode === 200).length <= 1, rs.map((r) => r.statusCode).join()); assert.ok(ai.calls <= 1, `AI calls: ${ai.calls}`); assert.equal(await uses(c), 5);
+  });
+
+  await t.test('CAP RECHECK: if the cap fills while this request waited for its turn, it is refused BEFORE the AI call and its reservation is released uncharged', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixFirst(1);
+    const nc = hs.polishModule._nochange; const real = nc.check; let calls = 0;
+    nc.check = (...a) => (++calls === 1 ? real(...a) : { allowed: false, retryAfterSeconds: 120 });          // another request used the last free attempt in between
+    try { const r = await polish(c); assert.equal(r.statusCode, 429); assert.equal(parseBody(r).retryAfterSeconds, 120); } finally { nc.check = real; }
+    assert.equal(ai.calls, 0, 'no AI call'); assert.equal(await uses(c), 5); assert.deepEqual(await rsv(c), ['released']);
+  });
+
   await t.test('a free applied result never disturbs the tailoring token of an earlier PAID generation', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixFirst(3);
     const paid = parseBody(await polish(c)); assert.equal(paid.charged, true); assert.ok(paid.tailorToken);

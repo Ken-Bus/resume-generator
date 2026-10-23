@@ -1,5 +1,7 @@
 # Migration 03: durable duplicate-charge protection (NOT applied to production)
 
+> The complete review package (verbatim SQL, hashes, compatibility matrix, tests, deployment plan, rollback script) is `docs/MIGRATION_03_REVIEW_PACKAGE.md`. Where the two differ, the review package wins.
+
 File: `supabase/migrations/20261023_03_request_idempotency.sql` (also mirrored at the end of `supabase/schema.sql`).
 Status: designed and tested against local PostgreSQL only. **It must not be applied to production without the owner's explicit approval.**
 

@@ -211,14 +211,16 @@ exports.handler = async function(event) {
   }
 
   // Free-but-costly requests are capped separately: a code that keeps getting "nothing to improve" must change something first.
-  const capped = nochange.check(code, cfg);
-  if (!capped.allowed) {
+  const capResponse = () => {
+    const capped = nochange.check(code, cfg);
+    if (capped.allowed) return null;
     const minutes = Math.ceil(capped.retryAfterSeconds / 60);
     return json(429, {
-      error: `The AI has already reviewed this resume several times without being able to use any of its suggestions. To protect your account, please try again in about ${minutes} minute${minutes === 1 ? '' : 's'}. You can keep editing your resume and downloading it in the meantime. You haven’t been charged.`,
+      error: `The AI has already reviewed this resume several times in a row without needing a generation. To protect your account, please try again in about ${minutes} minute${minutes === 1 ? '' : 's'}. You can keep editing your resume and downloading it in the meantime. You haven’t been charged.`,
       retryAfterSeconds: capped.retryAfterSeconds
     }, { 'Retry-After': String(capped.retryAfterSeconds) });
-  }
+  };
+  const early = capResponse(); if (early) return early;
 
   let reservation;
   try {
@@ -262,6 +264,13 @@ exports.handler = async function(event) {
     console.error('polish-resume: in-flight check failed', { ref: 'P105', reason: safeReason(err) });
     await license.safeRelease(supabase, reservation.reservationId, false);          // never leave a reservation held
     return json(503, { error: refMsg('P105'), ref: 'P105' });
+  }
+
+  // Concurrent requests may all have passed the cap check before any of them finished: look again now that this one is the only one running, so the
+  // cap holds exactly (and a refused request costs nothing: no AI call has been made yet).
+  if (!redelivery) {
+    const late = capResponse();
+    if (late) { await license.safeRelease(supabase, reservation.reservationId, false); return late; }
   }
 
   // 2. Run the AI and guard its answer. ANY failure releases the reservation and the customer is not charged.
