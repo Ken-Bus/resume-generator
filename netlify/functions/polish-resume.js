@@ -58,8 +58,8 @@ const MSG = {
   aiBusy: 'The AI service is very busy right now. You haven’t been charged. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
   noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
-  minorOnly: 'The AI found only a few small fixes (fewer than it takes to use a generation: a generation is used when the AI rewrites some of your wording or corrects three or more mistakes), so your wording is unchanged and no generation was used.',
-  flaggedOnly: 'The AI suggested changes, but they added details that are not in your answers, and what was left was too little to use a generation, so your wording is unchanged and no generation was used.',
+  appliedFree: 'The AI found a few small fixes (fewer than it takes to use a generation) and they have been applied. No generation was used.',
+  flaggedOnly: 'The AI suggested changes, but they added details that are not in your answers, so they were left out and your wording is unchanged. No generation was used.',
   slow: 'The AI took too long to answer. You haven’t been charged. Please try again in a moment. If it keeps happening, try again with fewer or shorter entries.',
   tooLong: 'This resume is too long to polish in one go (the AI could not finish it in time or space). You haven’t been charged. Try again with fewer or shorter entries, for example your most recent jobs first.',
   tooLongInput: 'This resume is too long to polish in one go. You haven’t been charged. Shorten it a little (fewer or shorter entries) and try again.',
@@ -288,20 +288,28 @@ exports.handler = async function(event) {
     return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
-  // 2b. The ACCEPTED improvements are worth less than the charging threshold (the AI changed nothing, or only capitals/punctuation, or only a
-  // couple of small fixes, or every change it made was withheld by the integrity checks): release the reservation, uncharged and NOT counted as a
-  // failure, and hand back no text (the customer's own wording stays). It is capped separately (_lib/nochange.js) so it cannot become unlimited
-  // free AI. Counts only go to the log (P201 / P202).
+  // 2b. The ACCEPTED improvements are worth less than the charging threshold (owner decision 2026-10-23):
+  //   * some of them are real (a spelling or grammar fix, a repeat removed, a vague word made specific): they are APPLIED, free. The reservation
+  //     is released uncharged and not counted as a failure; no tailoring token is issued (there is no paid generation behind it);
+  //   * none of them is (the AI changed nothing, only capitals/punctuation, or every change it made was withheld by the integrity checks): nothing is
+  //     applied and nothing is charged.
+  // Both are capped together (_lib/nochange.js) so a free result cannot become unlimited free AI. Counts only go to the log (P201 / P202 / P203).
   if (!score.charge && !redelivery) {
-    const seen = changes.reworded + changes.minor + changes.dropped;       // anything the customer could have seen change
-    const flaggedOnly = withheld.length > 0;                               // some suggestions were left out, and what remained was too little to use a generation
-    const smallOnly = !flaggedOnly && seen > 0;
+    const seen = changes.reworded + changes.minor + changes.dropped;       // anything the customer could see change
     await license.safeRelease(supabase, reservation.reservationId, false);
     nochange.record(code);
-    console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : smallOnly ? 'polish-resume: accepted changes are below the charging threshold; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
+    if (seen > 0) {
+      console.warn('polish-resume: accepted changes are below the charging threshold; applied free, not charged', { ref: 'P203', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
+      usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'free', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
+      const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: false, appliedFree: true, message: MSG.appliedFree, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+      if (rid) cachePut(cacheKey(code, rid), body);
+      return json(200, body);
+    }
+    const flaggedOnly = withheld.length > 0;                               // some suggestions were left out, and nothing was left to apply
+    console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
       { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
-    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : smallOnly ? 'minor' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : smallOnly ? MSG.minorOnly : MSG.noChange, withheld, changes, points: score.points, threshold: score.threshold, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, points: score.points, threshold: score.threshold, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
     if (rid) cachePut(cacheKey(code, rid), body);
     return json(200, body);
   }

@@ -42,7 +42,10 @@ function simServer({ parsed, polish, tailor, guard = integrity.guardResume, scor
       st.polishCalls++;
       if (b.clientGuard !== Core.GUARD_VERSION) return { status: 409, json: { error: 'This page is out of date.', stale: true } };
       const source = Core.clean(b.resume); const g = guard(source, polish(source, b), { mode: 'polish', vocabulary: b.target }); const changes = integrity.assessChange(source, g.resume); const sc = score(source, g.resume);
-      if (!sc.charge) return { status: 200, json: { guard: stamp, noChange: true, charged: false, reason: g.withheld.length ? 'flagged' : changes.minor > 0 ? 'minor' : 'unchanged', withheld: g.withheld, changes, usesRemaining: st.uses, maxUses: 5 } };
+      if (!sc.charge) {
+        if (changes.reworded + changes.minor + changes.dropped > 0) return { status: 200, json: { guard: stamp, result: JSON.stringify(g.resume), unverified: [], withheld: g.withheld, changes, charged: false, appliedFree: true, usesRemaining: st.uses, maxUses: 5 } };   // small fixes are applied free
+        return { status: 200, json: { guard: stamp, noChange: true, charged: false, reason: g.withheld.length ? 'flagged' : 'unchanged', withheld: g.withheld, changes, usesRemaining: st.uses, maxUses: 5 } };
+      }
       st.uses--; return { status: 200, json: { guard: stamp, result: JSON.stringify(g.resume), unverified: [], withheld: g.withheld, changes, charged: true, usesRemaining: st.uses, maxUses: 5, tailorToken: 'tok-p' } };
     },
     'tailor-resume': (b) => {
@@ -145,15 +148,19 @@ test('SYSTEM STRESS (Chromium, simulated server built from the real guard and ch
 
   // ── the owner's complaint, end to end ──
   for (const layout of Object.keys(layouts)) {
-    await t.test(`[${layout}] A ONE-WORD TOUCH-UP IS FREE: nothing is charged, nothing is changed, the card says so plainly, no Restore button appears`, async () => {
+    await t.test(`[${layout}] A ONE-WORD FIX IS APPLIED FREE: nothing is charged, the fix is on screen, the card says so plainly, Restore is offered, the earlier tailoring token is kept`, async () => {
       const sim = simServer({ parsed: parsedTaylor, polish: oneWord, tailor: tailorSwap }); const s = await open(sim, layout);
-      await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); switchPanel('edit'); }, P.firstDetailed);
+      await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); state.tailorToken = 'earlier-paid-token'; renderEditFields(); renderPreview(); switchPanel('edit'); }, P.firstDetailed);
       const before = await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data)));
       await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(150);
       assert.match(await badge(s), /5 of 5/); assert.equal(sim.st.uses, 5);
-      assert.equal(await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data))), before, 'the resume is untouched');
-      const card = await s.page.innerText('#edit-polish'); assert.match(card, /Only a few small fixes were found/); assert.match(card, /No generation was used/); assert.match(card, /5 of 5 left/);
-      assert.equal(await s.page.locator('#edit-polish .wiz-err').count(), 0, 'not an error'); assert.doesNotMatch(card, /Restore all/);
+      assert.notEqual(await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data))), before, 'the small fix was applied');
+      assert.equal(await s.page.evaluate(() => state.tailorToken), 'earlier-paid-token', 'a free result never wipes the token of an earlier paid generation');
+      const card = await s.page.innerText('#edit-polish'); assert.match(card, /Polished/); assert.match(card, /No generation was used/); assert.match(card, /small fixes, so they are free/); assert.match(card, /5 of 5 left/);
+      assert.equal(await s.page.locator('#edit-polish .wiz-err').count(), 0, 'not an error'); assert.match(card, /Restore all/);
+      const pdf = pdfText(await download(s, '#btn-pdf')); const doc = docxText(await download(s, '#btn-word'));
+      assert.match(pdf, /donated food for pickup/i); assert.match(doc, /donated food for pickup/i); assert.match(await badge(s), /5 of 5/, 'exports of a free result use no generation');
+      await s.page.evaluate(() => Wiz.restoreAll()); assert.equal(await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data))), before, 'Restore returns the customer\'s own wording exactly');
       if (layout === 'android') assert.equal(await s.page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true, 'no sideways scrolling');
       await s.close();
     });

@@ -47,3 +47,6 @@ Atomic reserve -> AI -> guard -> commit-or-release; every failure free; the fact
 
 ## 6. What I ask you to decide
 Approve (a) the rule in section 2 with threshold 3, (b) the customer sentence above for the confirmation text and the Etsy FAQ. I recommend approving after the paid acceptance run, because that run shows whether real model output is mostly rewrites (rule irrelevant) or mostly small fixes (rule matters).
+
+## Owner clarification, 2026-10-23 (implemented)
+Below 3 points the accepted improvements are APPLIED free of charge (they were previously kept back). At 3 points or more they are applied and exactly one generation is charged. Unsupported changes stay rejected. Any "free, not applied" row above describes the earlier build.

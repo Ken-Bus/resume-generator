@@ -39,19 +39,56 @@ test('collective charging against real SQL (AI provider mocked)', async (t) => {
     assert.equal(await uses(c), 5); assert.deepEqual(await rsv(c), ['released']); assert.equal(ai.calls, 1);
   });
 
-  await t.test('1 point (one typo put right): free and NOT applied, the customer is told why, nothing is charged', async () => {
+  await t.test('1 point (one typo put right): APPLIED free, nothing is charged, no tailoring token, the reservation is released', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixFirst(1);
     const r = await polish(c); const b = parseBody(r);
-    assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.reason, 'minor'); assert.equal(b.points, 1); assert.equal(b.threshold, 3);
-    assert.equal(b.result, undefined, 'the improved text is not handed out for free');
-    assert.match(b.message, /three or more mistakes/); assert.equal(await uses(c), 5); assert.deepEqual(await rsv(c), ['released']);
-    assert.equal(b.usesRemaining, 5);
+    assert.equal(r.statusCode, 200); assert.equal(b.noChange, undefined); assert.equal(b.charged, false); assert.equal(b.appliedFree, true); assert.equal(b.points, 1); assert.equal(b.threshold, 3);
+    assert.deepEqual(bullets(b).slice(0, 1), FIXED.slice(0, 1)); assert.deepEqual(bullets(b).slice(1), BASE.slice(1), 'only what the AI fixed changes');
+    assert.match(b.message, /No generation was used/); assert.equal(b.tailorToken, undefined);
+    assert.equal(await uses(c), 5); assert.deepEqual(await rsv(c), ['released']); assert.equal(b.usesRemaining, 5);
   });
 
-  await t.test('2 points (two typos): still free and not applied', async () => {
+  await t.test('2 points (two typos): applied free, nothing charged', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixFirst(2);
     const b = parseBody(await polish(c));
-    assert.equal(b.charged, false); assert.equal(b.points, 2); assert.equal(b.result, undefined); assert.equal(await uses(c), 5);
+    assert.equal(b.charged, false); assert.equal(b.points, 2); assert.deepEqual(bullets(b).slice(0, 2), FIXED.slice(0, 2)); assert.equal(await uses(c), 5);
+  });
+
+  await t.test('GRAMMAR (verb tense fixed on two lines) is applied free; facts, dates and titles are untouched; the failure budget is NOT used', async () => {
+    reset(); const c = await seed(); const src = clone(RESUME); src.experience[0].bullets = ['Ring up purchases for customers', 'Count the cash drawer at closing', 'Stocked shelves', 'Answered questions about prices'];
+    ai.polishPayload = withBullets(() => ['Rang up purchases for customers', 'Counted the cash drawer at closing', 'Stocked shelves', 'Answered questions about prices']);
+    const b = parseBody(await polish(c, {}, src)); const out = JSON.parse(b.result);
+    assert.equal(b.appliedFree, true); assert.equal(b.charged, false); assert.deepEqual(out.experience[0].bullets.slice(0, 2), ['Rang up purchases for customers', 'Counted the cash drawer at closing']);
+    assert.equal(out.experience[0].title, 'Retail Clerk'); assert.equal(out.experience[0].start, '2020'); assert.equal(out.name, 'Lena Ortiz');
+    assert.equal(await uses(c), 5);
+    assert.equal((await db.admin('select count(*)::int n from license_reservations where code=$1 and failure_counted', [c])).rows[0].n, 0, 'a free result is not a failure');
+  });
+
+  await t.test('REPEAT ATTEMPTS: polishing the already-fixed text finds nothing (free, nothing applied); the free cap then stops further attempts before any AI call', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixFirst(2);
+    const first = parseBody(await polish(c)); assert.equal(first.appliedFree, true);
+    const fixed = JSON.parse(first.result); ai.polishPayload = (r) => clone(r);
+    const second = parseBody(await polish(c, {}, fixed)); assert.equal(second.noChange, true); assert.equal(second.reason, 'unchanged'); assert.equal(second.result, undefined);
+    ai.polishPayload = fixFirst(2); assert.equal(parseBody(await polish(c, {}, fixed)).noChange, true, 'nothing left to fix, still nothing applied');
+    const calls = ai.calls; assert.equal((await polish(c)).statusCode, 429); assert.equal(ai.calls, calls); assert.equal(await uses(c), 5);
+  });
+
+  await t.test('RETRY of a free applied result (lost reply, cold instance, same request id): free again, never charged, same fixes', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixFirst(2);
+    const first = parseBody(await polish(c, { requestId: 'free-retry-0001' }));
+    hs.polishModule._recent.clear();                                                           // the retry lands on an instance with empty memory
+    const again = parseBody(await polish(c, { requestId: 'free-retry-0001' }));
+    assert.equal(first.appliedFree, true); assert.equal(again.appliedFree, true); assert.deepEqual(bullets(again).slice(0, 2), FIXED.slice(0, 2));
+    assert.equal(await uses(c), 5); assert.ok((await rsv(c)).every((x) => x === 'released'));
+  });
+
+  await t.test('a free applied result never disturbs the tailoring token of an earlier PAID generation', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixFirst(3);
+    const paid = parseBody(await polish(c)); assert.equal(paid.charged, true); assert.ok(paid.tailorToken);
+    ai.polishPayload = withBullets((b) => b.map((x, i) => (i === 3 ? 'Answered questions about our prices' : x)));
+    const free = parseBody(await polish(c, {}, JSON.parse(paid.result))); assert.equal(free.charged, false); assert.equal(free.tailorToken, undefined);
+    const tailor = await hs.tailor(post({ resumeData: JSON.parse(paid.result), tailorToken: paid.tailorToken, jobDescription: 'Retail clerk: cash handling and customer service.' }));
+    assert.notEqual(tailor.statusCode, 401, 'the paid generation can still be tailored');
   });
 
   await t.test('3 points (three typos): the fixes are applied and exactly ONE generation is charged', async () => {
@@ -76,11 +113,11 @@ test('collective charging against real SQL (AI provider mocked)', async (t) => {
     assert.equal(b.charged, true); assert.equal(b.points, 3); assert.equal(await uses(c), 4);
   });
 
-  await t.test('rejected material earns nothing: two honest fixes + one invented line = 2 points, free; the invention never appears', async () => {
+  await t.test('rejected material earns nothing: two honest fixes + one invented line = 2 points; the honest fixes are applied free and the invention never appears', async () => {
     reset(); const c = await seed();
     ai.polishPayload = withBullets((b) => [FIXED[0], 'Supervised a team of 12 cashiers, increasing sales by 40%', b[2], b[3], FIXED[4], b[5]]);
     const b = parseBody(await polish(c));
-    assert.equal(b.charged, false); assert.equal(b.points, 2); assert.ok(b.withheld.length >= 1); assert.equal(b.result, undefined);
+    assert.equal(b.charged, false); assert.equal(b.points, 2); assert.ok(b.withheld.length >= 1); assert.equal(bullets(b)[0], FIXED[0]); assert.equal(bullets(b)[1], BASE[1]);
     assert.equal(JSON.stringify(b).includes('Supervised a team'), false, 'the withheld line itself is never handed out (the reason may quote one word)'); assert.equal(await uses(c), 5);
   });
 
@@ -125,9 +162,9 @@ test('collective charging against real SQL (AI provider mocked)', async (t) => {
     const left = (await rsv(c)).filter((s) => s === 'reserved').length; assert.equal(left, 0, 'no reservation left holding the code');
   });
 
-  await t.test('free results still count against the free-attempt cap: the 4th small-fix result in a row is refused BEFORE any AI call', async () => {
+  await t.test('free results (applied small fixes) count against the free-attempt cap: the 4th in a row is refused BEFORE any AI call', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixFirst(1);
-    for (let i = 0; i < 3; i++) assert.equal(parseBody(await polish(c)).reason, 'minor');
+    for (let i = 0; i < 3; i++) assert.equal(parseBody(await polish(c)).appliedFree, true);
     const calls = ai.calls; const r = await polish(c);
     assert.equal(r.statusCode, 429); assert.equal(ai.calls, calls, 'no AI call for a capped request'); assert.equal(await uses(c), 5);
   });

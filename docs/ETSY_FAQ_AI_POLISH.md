@@ -10,7 +10,7 @@ A: Your access code includes 5 AI generations. A generation is used when the AI 
 
 **Q: If the AI Polish doesn't improve my resume, do I lose a generation?**
 
-A: No. When you choose "Polish My Resume with AI," the AI reviews your resume and corrects spelling, grammar and tense, tidies run-on lines and repeats, and says things more clearly, using only what you wrote. A generation is used when it rewrites some of your wording or corrects three or more mistakes, and only when its changes stay true to your answers. If it finds less than that (for example just one or two small fixes), nothing is used and your resume stays exactly as you wrote it. If it finds nothing to improve, or if everything it suggested added details you didn't give, nothing is used either. (A one- or two-word fix is not applied in that case. You can make it yourself in the editor.)
+A: No. When you choose "Polish My Resume with AI," the AI reviews your resume and corrects spelling, grammar and tense, tidies run-on lines and repeats, and says things more clearly, using only what you wrote. A generation is used when it rewrites some of your wording or corrects three or more mistakes. If it finds fewer than that (for example just one or two small fixes), it still applies those fixes and nothing is used. If it finds nothing to improve, or if everything it suggested added details you didn't give, nothing is changed and nothing is used. You can always undo a polish with "Restore my wording."
 
 **Q: Will the AI add things I didn't say?**
 
@@ -50,7 +50,7 @@ A: Your resume text is sent to the AI service to be processed and to our server 
 
 ## Short version (for the description's "HOW IT WORKS" section, one line)
 
-"AI Polish uses one of your 5 generations only when it rewrites some of your wording or corrects 3 or more mistakes, and only in ways that stay true to what you wrote. Otherwise nothing is used."
+"AI Polish uses one of your 5 generations only when it rewrites some of your wording or corrects 3 or more mistakes, and only in ways that stay true to what you wrote. Smaller fixes are applied free."
 
 ## Claims to avoid (not demonstrated, so not to be made)
 - Do not say the resume is "ATS-friendly", "ATS-optimized" or "will get you interviews/hired". The PDF text is real, selectable text (tested), but nothing here has been tested against any applicant tracking system, and outcomes depend on the applicant and the employer.
@@ -60,6 +60,6 @@ A: Your resume text is sent to the AI service to be processed and to our server 
 
 ## Notes for the owner
 - This wording does not change the price, the five-generation entitlement, or the Tailor allowance (up to 5 runs per paid generation).
-- The 3-point rule means a useful one- or two-word fix is free and is not applied. That is a deliberate, transparent tradeoff against letting an AI decide what to charge. It is stated in the FAQ above so no customer is surprised.
+- The 3-point rule means small fixes (under 3 points) are applied FREE, and a generation is charged only at 3 points or more. Charging is decided by counting the customer's own accepted changes, never by an AI judgement. Free results are capped (3 per 15 minutes, 10 per day per code) so they cannot become unlimited free AI.
 - The lost-reply answer ("about an hour") is true ONLY after supabase/migrations/20261023_03_request_idempotency.sql is applied to production and the new code is deployed (see docs/MIGRATION_03_DEPLOYMENT.md). Before that, the protection lives in memory on one server instance for a few minutes, so keep the older wording until the owner has confirmed the migration.
 - The page-length guidance is approximate (about 20,000 characters is roughly 6 pages of plain text) and still needs the long-resume test on a real deploy (`docs/RELEASE_HARDENING.md`).

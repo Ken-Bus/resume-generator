@@ -184,7 +184,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     assert.match(await s.page.innerText('.wiz-polish'), /Uses 1 of your 5 generations \(of 5\)/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);
     await s.page.click('#polish-btn');                                                                          // first click only asks
-    assert.match(await s.page.innerText('.wiz-confirm'), /The AI will review your resume\. A generation is used only if it rewrites some of your wording or corrects three or more mistakes[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds less than that[\s\S]*nothing is used/);
+    assert.match(await s.page.innerText('.wiz-confirm'), /The AI will review your resume and fix what it can[\s\S]*A generation is used only if it rewrites some of your wording or corrects three or more mistakes[\s\S]*uses 1 of your 5 generations remaining[\s\S]*fewer than that, it still applies the small fixes it found, and no generation is used/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);
     await s.page.click('.wiz-confirm .wiz-back');                                                               // cancel: still nothing
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0); assert.match(await s.page.innerText('#license-badge'), /5 of 5/);
@@ -419,7 +419,7 @@ test('access control and AI polish (Chromium)', async (t) => {
     await s.page.fill('input[placeholder^="e.g. customer service"]', 'customer support');
     await s.page.click('.wiz-dot:has-text("Review")'); await s.page.click('button:has-text("Open in Editor")');
     await s.page.click('#edit-polish-btn');
-    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /The AI will review your resume\. A generation is used only if it rewrites some of your wording or corrects three or more mistakes[\s\S]*uses 1 of your 5 generations remaining[\s\S]*finds less than that[\s\S]*nothing is used/);
+    assert.match(await s.page.innerText('#edit-polish .wiz-confirm'), /The AI will review your resume and fix what it can[\s\S]*A generation is used only if it rewrites some of your wording or corrects three or more mistakes[\s\S]*uses 1 of your 5 generations remaining[\s\S]*fewer than that, it still applies the small fixes it found, and no generation is used/);
     assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 0);                                                 // the first click only asks
     await s.page.dblclick('#edit-polish-confirm'); await s.page.waitForSelector('#edit-polish .wiz-ok');
     const calls = s.calls.filter((c) => c.name === 'polish-resume'); assert.equal(calls.length, 1);

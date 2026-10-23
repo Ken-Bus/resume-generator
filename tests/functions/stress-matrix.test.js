@@ -75,11 +75,11 @@ function judge({ persona, behavior, source, res, usesBefore, usesAfter, rsv, aiC
   if (exp === 'charged' && !charged) bad(`should be charged, was free (${b.reason}; ${JSON.stringify(b.changes)})`);
   if ((exp === 'free' || exp === 'unchanged' || exp === 'flagged') && charged) bad(`must be FREE but a generation was charged (${JSON.stringify(b.changes)})`);
   if (exp === 'unchanged' && !charged && b.reason !== 'unchanged') bad(`expected reason unchanged, got ${b.reason}`);
-  if (exp === 'flagged' && !charged && b.reason !== 'flagged') bad(`expected reason flagged, got ${b.reason}`);
+  if (exp === 'flagged' && !charged && b.reason !== 'flagged' && b.appliedFree !== true) bad(`expected reason flagged (or the honest part applied free), got ${b.reason}`);
   // the money: exactly one generation for a charged result, none otherwise, and the reservation row agrees
   if (charged) { if (usesAfter !== usesBefore - 1) bad(`balance ${usesBefore} -> ${usesAfter}`); if (!(rsv.length === 1 && rsv[0].status === 'committed')) bad(`reservation ${JSON.stringify(rsv)}`); }
-  else { if (usesAfter !== usesBefore) bad(`free result changed the balance ${usesBefore} -> ${usesAfter}`); if (!(rsv.length === 1 && rsv[0].status === 'released' && rsv[0].fc === false)) bad(`free result left reservation ${JSON.stringify(rsv)}`); if (b.result !== undefined) bad('a free result handed back resume text'); if (b.tailorToken) bad('a free result issued a tailoring token'); }
-  if (!charged) return v;
+  else { if (usesAfter !== usesBefore) bad(`free result changed the balance ${usesBefore} -> ${usesAfter}`); if (!(rsv.length === 1 && rsv[0].status === 'released' && rsv[0].fc === false)) bad(`free result left reservation ${JSON.stringify(rsv)}`); if (b.result !== undefined && b.appliedFree !== true) bad('a free result handed back resume text without saying it was applied free'); if (b.appliedFree === true && (b.noChange === true || b.result === undefined)) bad('appliedFree must carry the result and not be a no-change reply'); if (exp === 'unchanged' && b.result !== undefined) bad('nothing changed but text was handed back'); if (b.tailorToken) bad('a free result issued a tailoring token'); }
+  if (!charged && b.result === undefined) return v;
   let out; try { out = JSON.parse(b.result); } catch (e) { bad('result is not JSON'); return v; }
   // customer facts never change
   if (JSON.stringify(FIXED(out)) !== JSON.stringify(FIXED(source))) bad(`customer facts changed: ${JSON.stringify(FIXED(out)).slice(0, 160)}`);
@@ -94,6 +94,7 @@ function judge({ persona, behavior, source, res, usesBefore, usesAfter, rsv, aiC
   entries(source).forEach(({ k, i, e }) => { const o = (out[k] || [])[i]; if (!o) return; ['description', 'summary'].forEach((f) => { if (f in e && !String(e[f] || '').trim() && String(o[f] || '').trim()) bad(`blank ${k}.${i}.${f} was filled`); }); });
   // a charged result really contains the rewrite (it was applied)
   if (exp === 'charged' && JSON.stringify(out) === JSON.stringify(source)) bad('charged but nothing changed');
+  if (!charged && JSON.stringify(out) === JSON.stringify(source)) bad('applied free but nothing changed');
   return v;
 }
 
@@ -200,15 +201,16 @@ test('STRESS MATRIX against real SQL (AI provider mocked)', async (t) => {
     fresh(); const c = await seed();
     ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets = ['Baked 200 loaves of bread daily for local customers', 'Did stuff with the oven and the counter and also the oven', 'Managed the bakery counter']; return o; };
     const b = parseBody(await polish(c, P.ambiguous));
-    assert.equal(b.noChange, true); assert.equal(b.reason, 'flagged'); assert.equal(await uses(c), 5); assert.ok(b.withheld.length >= 2);
+    assert.equal(await uses(c), 5); assert.ok(b.withheld.length >= 2); assert.equal(b.charged, false);
+    const text = JSON.stringify(b.result || ''); assert.equal(/200|loaves|Managed|local customers/.test(text), false, 'none of the invented specifics reached the resume');
   });
-  await t.test('POLISHED, EDITED, POLISHED AGAIN: only a real rewrite of the new wording is charged; echoes and touch-ups are free', async () => {
+  await t.test('POLISHED, EDITED, POLISHED AGAIN: only a real rewrite of the new wording is charged; echoes are free and small fixes are applied free', async () => {
     fresh(); const c = await seed(); let current = clone(P.multi);
     ai.polishPayload = REWRITE_FIRST; let b = parseBody(await polish(c, current)); assert.equal(b.charged, true); assert.equal(await uses(c), 4); current = JSON.parse(b.result);
     current.experience[0].bullets[1] = 'Counted the cash drawer and checked receipts at closing';                                   // the customer edits
     ai.polishPayload = (r) => clone(r); b = parseBody(await polish(c, current, { requestId: 'edit-0002-aaaa' })); assert.equal(b.noChange, true); assert.equal(await uses(c), 4);
     ai.polishPayload = (r) => { const o = clone(r); o.experience[0].bullets[1] = o.experience[0].bullets[1].replace('checked', 'also checked'); return o; };
-    b = parseBody(await polish(c, current, { requestId: 'edit-0003-aaaa' })); assert.equal(b.noChange, true); assert.equal(b.reason, 'minor'); assert.equal(await uses(c), 4);
+    b = parseBody(await polish(c, current, { requestId: 'edit-0003-aaaa' })); assert.equal(b.appliedFree, true); assert.equal(b.charged, false); assert.equal(await uses(c), 4);
     ai.polishPayload = (r) => { const o = clone(r); o.experience[1].bullets[0] = realReword(o.experience[1].bullets[0]); return o; };
     b = parseBody(await polish(c, current, { requestId: 'edit-0004-aaaa' })); assert.equal(b.charged, true); assert.equal(await uses(c), 3);
   });
@@ -259,7 +261,7 @@ test('STRESS MATRIX against real SQL (AI provider mocked)', async (t) => {
     for (const secret of ['FG-', 'TESTKEY-STRESS', SECRET]) assert.equal(log.includes(secret), false, `a log line contains ${secret}`);
     const outcomes = lines.filter((l) => l.startsWith('ai-outcome ')).map((l) => JSON.parse(l.slice(11)));
     assert.ok(outcomes.length >= 20); for (const o of outcomes) { assert.deepEqual(Object.keys(o).sort(), ['fn', 'guard', 'outcome', 'points', 'ref', 'reworded', 'withheld']); if (o.outcome !== 'failed') assert.equal(o.guard, Core.GUARD_VERSION); }
-    assert.deepEqual([...new Set(outcomes.map((o) => o.outcome))].sort(), ['charged', 'failed', 'flagged', 'nochange']);
+    assert.deepEqual([...new Set(outcomes.map((o) => o.outcome))].sort(), ['charged', 'failed', 'flagged', 'free', 'nochange']);
   });
   await t.test('LONG RESUME near the limit works; one over the limit is refused before any reservation or AI call', async () => {
     fresh(); const c = await seed(); ai.polishPayload = REWRITE_FIRST;

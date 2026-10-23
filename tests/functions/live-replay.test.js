@@ -69,7 +69,7 @@ test('the build stamp: page and functions share one guard version, and it is bum
   assert.equal(Core.GUARD_VERSION, 'entry-scope-withhold-6');
 });
 
-test('polish-resume against real SQL: the live result is now FREE (only a one-word touch-up survives); a real rewrite beside it is charged once; the invented claim never appears', async (t) => {
+test('polish-resume against real SQL: the live result is now FREE and APPLIED (only a one-word fix survives); a real rewrite beside it is charged once; the invented claim never appears', async (t) => {
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_live_replay');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
@@ -91,22 +91,22 @@ test('polish-resume against real SQL: the live result is now FREE (only a one-wo
     assert.equal(res.statusCode, 200); b = parseBody(res);
   } finally { w.restore && w.restore(); w.stop && w.stop(); }
 
-  // The reported result had exactly ONE accepted change left after the guard: "food for pickup" -> "donated food for pickup". That is a
-  // one-word touch-up, so the whole polish is free (the owner's decision after the live test) and nothing is applied.
-  assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.reason, 'flagged');
-  assert.equal(b.usesRemaining, 5); assert.equal(await uses(), 5, 'nothing is charged for a one-word touch-up');
-  assert.equal(b.result, undefined, 'and nothing is applied');
+  // The reported result had exactly ONE accepted change left after the guard: "food for pickup" -> "donated food for pickup". That is worth fewer than
+  // three points, so (owner decision 2026-10-23) it is APPLIED FREE: nothing is charged, the withheld claims still never appear.
+  assert.equal(b.charged, false); assert.equal(b.appliedFree, true); assert.equal(b.noChange, undefined);
+  assert.equal(b.usesRemaining, 5); assert.equal(await uses(), 5, 'nothing is charged for small fixes');
+  assert.equal(JSON.parse(b.result).projects[0].bullets[2], 'Helped organize donated food for pickup.', 'the one supported fix is applied');
   assert.deepEqual(b.changes, { reworded: 0, minor: 1, cosmetic: 0, unchanged: 6, dropped: 0 });
   assert.deepEqual(b.withheld.map((x) => x.where).sort(), ['projects.0.bullets.0', 'projects.0.description']);
   assert.equal(JSON.stringify(b).includes('families in the community.'), false, 'the withheld text itself is not handed back');
   assert.equal(JSON.stringify(b).includes('collect donated food'), false);
   assert.equal(b.guard.version, Core.GUARD_VERSION); assert.equal(b.guard.withholds, true);
 
-  // The same one-word touch-up on its own: free, reason "minor".
+  // The same one-word touch-up on its own: applied free too.
   hs.polishModule._nochange._events.clear();
   ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets[2] = 'Helped organize donated food for pickup.'; return o; };
   const solo = parseBody(await hs.polish(post({ code, resume: clone(TAYLOR), target: 'customer service', requestId: 'live-replay-0002' })));
-  assert.equal(solo.noChange, true); assert.equal(solo.reason, 'minor'); assert.equal(solo.charged, false); assert.equal(await uses(), 5); assert.match(solo.message, /few small fixes/);
+  assert.equal(solo.appliedFree, true); assert.equal(solo.charged, false); assert.equal(await uses(), 5); assert.match(solo.message, /small fixes/);
 
   // …but a real rewrite next to the invented claims IS charged once, and the claims are still gone.
   hs.polishModule._nochange._events.clear();

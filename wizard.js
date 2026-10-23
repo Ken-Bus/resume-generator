@@ -235,14 +235,14 @@ const Wiz = {
         state.polishOriginal = ResumeCore.clean(state.data);               // the wording from before THIS polish, for Restore
         state.data = parsed;
         state.polishResult = JSON.parse(JSON.stringify(ResumeCore.clean(parsed)));   // what the polish returned, to tell later whether the customer edited it
-        state.tailorToken = json.tailorToken || null;
+        if (json.charged !== false) state.tailorToken = json.tailorToken || null;     // a free (small-fix) result has no paid generation behind it: an earlier paid token stays valid
         if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
         if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
         const unverified = Array.isArray(json.unverified) ? json.unverified : [];
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
-        Wiz.setOutcome('improved', { unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
+        Wiz.setOutcome('improved', { free: json.charged === false, unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
         renderLicenseBadge(); renderEditFields(); renderPreview();
       } else {
         await Wiz.polishFailed(res.status, json);
@@ -371,17 +371,17 @@ const Wiz = {
     } else if (!writable) {
       body = '<div class="wiz-example">Add a few answers first (what you did in a job, a project, or your skills), then come back.</div>';
     } else if (p.confirm) {
-      body = `<div class="wiz-confirm"><strong>The AI will review your resume. A generation is used only if it rewrites some of your wording or corrects three or more mistakes, and only when its changes stay true to your answers.</strong>
-          If it does, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds less than that, if its suggestions add details that are not in your answers, or if anything goes wrong, nothing is used and your wording stays exactly as you wrote it.
+      body = `<div class="wiz-confirm"><strong>The AI will review your resume and fix what it can, using only what you wrote. A generation is used only if it rewrites some of your wording or corrects three or more mistakes.</strong>
+          If it does, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds fewer than that, it still applies the small fixes it found, and no generation is used. Anything that adds details not in your answers is left out, and if anything goes wrong nothing is used and your wording stays exactly as you wrote it.
           <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="${prefix}polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
     } else {
       body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="${prefix}polish-btn">✨ Polish My Resume with AI</button>
-        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI rewrites some of your wording or corrects three or more mistakes, and only when the changes stay true to your answers. Typing, previewing, editing and downloading never use one.</div>`;
+        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI rewrites some of your wording or corrects three or more mistakes (smaller fixes are applied free). Changes that add details not in your answers are always left out. Typing, previewing, editing and downloading never use one.</div>`;
     }
     let result = '';
     if (p.done && state.polishOriginal) {
       const parts = Wiz.changedParts(); const unv = p.done.unverified || []; const wh = p.done.withheld || [];
-      const used = `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
+      const used = p.done.free ? `No generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}: these were small fixes, so they are free.` : `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
         result = `<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
       } else {
@@ -403,8 +403,6 @@ const Wiz = {
       const usedLine = `<strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       result += p.noChange.reason === 'sparse'
         ? `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>There isn’t enough detail for the AI to improve yet.</strong> It will not make anything up to fill the gap. Add a few words about what you did in each job or activity (what you worked with, and what you did each day), then try again. ${usedLine}</div>`
-        : p.noChange.reason === 'minor'
-        ? `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>Only a few small fixes were found.</strong> The AI found fewer than three mistakes to correct and nothing worth rewriting, which isn’t enough to use a generation, so your wording is unchanged. ${usedLine} You can fix those few words yourself in Edit Fields, or add more detail to your answers and try again.</div>`
         : p.noChange.reason === 'flagged'
         ? `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>The AI’s suggestions were not used.</strong> It suggested changes, but they added details that are not in your answers, and what was left was too little to use a generation, so your wording is unchanged. ${usedLine}${list}</div>`
         : `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged, which often means your answers are already clear. ${usedLine} If you add or change some answers, you can try again.</div>`;
