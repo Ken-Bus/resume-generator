@@ -33,7 +33,7 @@ Scoring columns: **points** = the approved collective rule (3 or more charges ex
 | gap | natural | 5 | 1 generation, applied | 2->0 | none | 0 | 5 | 2.7->3.5 |
 | gap | inflated | 0 | free, wording kept | 2->2 | none | 0 | 9 | 2.7->2.7 |
 | multi | careful | 4 | 1 generation, applied | 3->0 | none | 0 | 0 | 5->5.3 |
-| multi | natural | 10 | 1 generation, applied | 3->0 | none | 0 | 4 | 5->6 |
+| multi | natural | 12 | 1 generation, applied | 3->0 | none | 0 | 3 | 5->6.7 |
 | multi | inflated | 0 | free, wording kept | 3->3 | none | 0 | 11 | 5->5 |
 | severeTypos | careful | 10 | 1 generation, applied | 7->2 | none | 0 | 0 | 2->2.4 |
 | severeTypos | natural | 7 | 1 generation, applied | 7->3 | none | 0 | 2 | 2->3.7 |
@@ -260,7 +260,7 @@ Bagger, Fictional Market (June 2026-August 2026)
 - Headline: praise or personality claim: “Dynamic”|new details not in your answers: “customer”, “focused”, “professional”
 - Skills: skill not found in your resume
 - Bagger, bullet 1: new details not in your answers: “efficiently”, “hundreds”, “customers”|how often is not in this entry: “daily”
-- Bagger, bullet 2: praise or personality claim: “exceptional”|new details not in your answers: “assistance”, “elderly”, “shoppers”|who benefited is not in this entry: “elderly”
+- Bagger, bullet 2: praise or personality claim: “exceptional”|new details not in your answers: “assistance”, “shoppers”|who benefited is not in this entry: “elderly”
 - Bagger, bullet 3: new details not in your answers: “safe”, “environment”
 - Bagger, bullet 4: new details not in your answers: “checkout”, “operations”, “peak”
 

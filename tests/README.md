@@ -44,3 +44,8 @@ Never point these tests at a real Supabase project.
 - `functions/analyze-guard.test.js`: Analyze is one-at-a-time and replay-safe like Polish; guessing limits on every endpoint that takes a code; no code in a log; timeout wording.
 - `functions/code-supply.test.js`: the scheduled code top-up reveals no inventory counts in its response.
 - `ui/work-safety.test.js`: the customer's work survives a reload, a reload during a paid step, a lost reply, and blocked browser storage; the leave-page question; the Guided Builder returns to its step; the first polish's wording stays restorable.
+
+## Durable duplicate-charge suites (migration 03)
+- `functions/durable-idempotency.test.js`: independent "instances" (freshly loaded handlers with empty memory and their own connection pool) against one real Postgres. A charged Analyze or Polish whose reply is lost and retried on a cold instance is not charged again and is re-delivered; changed input or another request id is a new step; failed re-delivery gives its turn back; simultaneous retries produce one re-delivery; limit of three; a request id is never honoured for another code; only two hashes are stored (privacy); an older page without request ids behaves as before; new code against a database without migration 03 answers 503 and charges nothing; provider 429/529 is a calm "very busy" message with no server-side retry.
+- `db/reservations.test.js` also proves migration 03 applies twice, keeps the 5-argument call working, leaves license rows untouched, is server-only, and that `schema.sql` and the migrations end in the same shape.
+

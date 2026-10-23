@@ -206,3 +206,20 @@ test('withholding a reach still applies the customer\'s spelling corrections (sa
   assert.equal(out.withheld.length, 1);
   assert.match(line, /shelves/); assert.match(line, /customers/); assert.doesNotMatch(line, /team|12|led/);
 });
+
+// Found by a second, independent holdout corpus (2026-10-23): rules, not cases.
+test('"the manager" is someone else: it never makes "Managed ..." the customer\'s own claim, but it is not a claim itself either', () => {
+  const src = ['stocked shelves', 'worked in the freezer section', 'did stuff for the manager'];
+  const run = (cand) => I.guardResume(Core.clean(job('Stock Person', 'Fictional Foods', src)), Core.clean(job('Stock Person', 'Fictional Foods', [src[0], cand, src[2]])), { mode: 'polish', vocabulary: '' }).resume.experience[0].bullets[1];
+  assert.equal(run('Managed the freezer section.'), 'Worked in the freezer section');                // withheld: the customer worked there
+  assert.equal(run('Supervised the freezer section'), 'Worked in the freezer section');
+  assert.ok(kept('Stock Person', 'Fictional Foods', ['I tell my supervisor if something is broken in the room'], 'Tell my supervisor if something is broken in the room'));
+  assert.equal(kept('Cashier', 'Fictional Store', ['worked the ledger and the register'], 'Led the register'), false, '"led" is not found inside "ledger"');
+});
+test('joined words, everyday equivalents and spelling fixes of a duty word are honest edits', () => {
+  assert.ok(kept('Kennel Aide', 'Fictional Pets', ['greeted owners at drop off and pick up'], 'Greeted owners at drop-off and pickup'));
+  assert.ok(kept('Janitor', 'Fictional School', ['I keep the floor clean and take out the garbage'], 'I keep the floor clean and take out the trash'));
+  assert.ok(kept('Mechanic Helper', 'Fictional Garage', ['kept the tools orgenized and the shop clean'], 'Kept the tools organized and the shop clean'));
+  assert.ok(kept('Cashier', 'Fictional Grocery', ['stayed calm when customers were mad'], 'Stayed calm when customers were angry'));
+});
+

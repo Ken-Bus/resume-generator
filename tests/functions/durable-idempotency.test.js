@@ -139,6 +139,14 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     assert.equal(stranger.statusCode, 403); assert.equal(ai.calls, 0); assert.equal(await uses(owner), 4);
   });
 
+  await t.test('RE-DELIVERY is never turned into a "free, nothing changed" reply: the step was paid, so even a lighter second answer is delivered (and still uncharged)', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixAll; const A = await instance(); const B = await instance();
+    await polish(A, c, { requestId: 'req-polish-0005' }); assert.equal(await uses(c), 4);
+    ai.polishPayload = (r) => r;                                                         // the second run happens to find nothing to change
+    const again = await polish(B, c, { requestId: 'req-polish-0005' }); const b = parseBody(again);
+    assert.equal(again.statusCode, 200); assert.equal(b.charged, true); assert.ok(b.result); assert.notEqual(b.noChange, true); assert.equal(await uses(c), 4);
+  });
+
   await t.test('COMPATIBILITY: the page sends no request id (an older page): behaviour is exactly the previous one, and no key is stored', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance();
     await analyze(A, c); await analyze(B, c); assert.equal(await uses(c), 3);

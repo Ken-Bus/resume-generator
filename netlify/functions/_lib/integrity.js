@@ -42,6 +42,8 @@ const CLAIM_WORDS = [
   { label: 'praise or personality claim', rootLen: 6, re: /\b(motivated|passionate|dynamic|results?-driven|driven|proven|exceptional\w*|excellen\w*|outstanding|expert\w*|extensive\w*|highly|successful\w*|award-winning|top-performing|seasoned|skilled|strong|dedicated|committed|reliab\w*|dependab\w*|hard-?working|detail-oriented|self-starter|team player|innovative|enthusias\w*|energetic|ambitious|diligent|proactive|accomplished|talented|trustworthy|friendly|punctual)\b/gi },
   { label: 'attendance claim', rootLen: 0, re: /\b(perfect attendance|never (?:missed|late|absent)|always on time|on-time|consistent attendance)\b/gi }
 ];
+// Someone else holding a leadership role (a boss, a coach), as opposed to the customer doing it.
+const OTHERS_ROLE_RE = /\b(?:the|my|our|his|her|their|your|a|an|to|for|with|by|from|under|and|or|of)\s+(?:\w+\s+)?(?:manager|supervisor|trainer|coach|mentor|teacher|instructor|tutor|director|boss|leader|foreman|lead)s?(?:'s)?\b/gi;
 const rootOf = (w, len) => w.toLowerCase().replace(/[^a-z]/g, '').slice(0, len);
 
 // ── faithful paraphrase vs new content ─────────────────────────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ const PLAIN_VERBS = new Set([...PLAIN_VERB_WORDS, ...PLAIN_VERB_WORDS.map(stem)]
 let NEUTRAL_STEMS = null;     // built once NEUTRAL exists (below)
 const wordsOf = (text) => s(text).toLowerCase().match(/[a-z]{3,}/g) || [];
 // Two words written apart in the answers support the same two joined ("hair cut" -> "haircut", "paper work" -> "paperwork", "play ground" -> "playground").
-const stemSet = (text) => { const w = wordsOf(text); const set = new Set(w.map(stem)); for (let i = 0; i + 1 < w.length; i++) set.add(stem(w[i] + w[i + 1])); return set; };
+const stemSet = (text) => { const w = wordsOf(text); const set = new Set(w.map(stem)); const t = s(text).toLowerCase().match(/[a-z]{2,}/g) || []; for (let i = 0; i + 1 < t.length; i++) set.add(stem(t[i] + t[i + 1])); return set; };      // short words count here: "pick up" -> "pickup"
 
 // Plain nouns that name no particular fact: they replace a vague word ("stuff", "things") or restate the work. A line gaining one of them gains no
 // new claim. (Who benefited, where and how well are judged elsewhere.)
@@ -103,6 +105,9 @@ const SAME_AS = { accurate: ['correct', 'right'], customer: ['customers'], store
   employees: ['workers', 'worker', 'employee'], employee: ['worker', 'employees'], workers: ['employees', 'employee'], worker: ['employee', 'employees'],
   temperature: ['temp', 'temps'], vegetables: ['veggies', 'veggie', 'veg'], substitute: ['sub', 'subs'], medications: ['meds', 'med'], medication: ['meds', 'med'], refrigerator: ['fridge'], photographs: ['photos'],
   fix: ['correct', 'repair'], correct: ['accurate', 'right', 'fix'], supervised: ['supervision', 'supervisor'], arrive: ['come'],
+  trash: ['garbage', 'rubbish'], garbage: ['trash', 'rubbish'], rubbish: ['trash', 'garbage'], angry: ['mad', 'upset'], mad: ['angry', 'upset'], upset: ['angry', 'mad'],
+  older: ['elderly'], elderly: ['older', 'old'], personal: ['own'], whole: ['entire', 'all'], entire: ['whole', 'all'], beginning: ['start'], start: ['beginning'],
+  many: ['alot', 'lot', 'lots'], monitor: ['watch'], monitored: ['watched', 'watch'], watch: ['monitor', 'monitored'], watched: ['monitored', 'monitor'], schedule: ['book'], scheduled: ['booked', 'book'], booked: ['scheduled'],
   graduate: ['grad'], graduates: ['grad'], years: ['yrs', 'yr'], year: ['yr'], department: ['dept'], information: ['info'], appointment: ['appt'], appointments: ['appts', 'appt'], quantity: ['qty'] };
 NEUTRAL_STEMS = new Set([...NEUTRAL, ...[...NEUTRAL].map(stem)]);
 // A word the customer's plain shorthand obviously refers to ("stock" -> shelves).
@@ -136,7 +141,8 @@ function analyse(line, originalText, originalNumbers, originalStems, localText) 
   const nums = [...numbersIn(line)].filter((n) => !originalNumbers.has(n));
   if (nums.length) claims.push(`number not in your resume: ${nums.slice(0, 3).join(', ')}`);
   CLAIM_WORDS.forEach(({ label, rootLen, re }) => {
-    const fresh = (s(line).match(re) || []).filter((w) => {
+    const claimLine = label === CLAIM_WORDS[0].label ? s(line).replace(OTHERS_ROLE_RE, ' ') : s(line);        // "tell my supervisor" names someone else, it claims nothing
+    const fresh = (claimLine.match(re) || []).filter((w) => {
       if (TEACH_RE.test(w)) {
         const local = s(localText !== undefined ? localText : originalText);
         if (TEACH_SAID_RE.test(local)) return false;                                              // "showed new people how to ..." -> "Taught new people to ..."
@@ -145,7 +151,9 @@ function analyse(line, originalText, originalNumbers, originalStems, localText) 
       if (!rootLen || /[\s-]/.test(w)) return !lower.includes(w.toLowerCase());                   // phrases: the phrase itself must be there
       const root = rootOf(w, rootLen);
       if (TEACH_RE.test(w) && TEACH_RE.test(s(originalText))) return false;                      // train / teach / taught / tutor / instruct are one kind of claim
-      return !new RegExp(`\\b${root}`, 'i').test(originalText);
+      // "the manager", "my supervisor", "for the coach" name SOMEONE ELSE: they never make "Managed" / "Supervised" / "Coached" the customer's own claim.
+      const hay = label === CLAIM_WORDS[0].label ? s(originalText).replace(OTHERS_ROLE_RE, ' ') : originalText;
+      return !new RegExp(`\\b${root}${root.length < 4 ? '\\b' : ''}`, 'i').test(hay);                     // "led" is not "ledger"
     });
     if (fresh.length) { claims.push(`${label}: “${fresh[0]}”`); fresh.forEach((f) => wordsOf(f).forEach((w) => claimTokens.add(w))); }
   });
@@ -182,6 +190,7 @@ const BENEFICIARY_RES = [
 const OUTCOME_RE = /\b(resulting in|resulted in|leading to|led to|which (?:helped|allowed|ensured|made)|ensur(?:ing|ed)|so that|improv(?:ing|ed)|increas(?:ing|ed)|reduc(?:ing|ed)|sav(?:ing|ed)|boost(?:ing|ed)|streamlin\w*|enabl(?:ing|ed)|making a difference|made a difference|impact\w*|benefit(?:ing|ed|s)?)\b/gi;
 // Verbs that claim ownership of a task, and verbs that keep the person in a supporting role.
 const OWN_RE = /\b(organi[sz]\w*|plann(?:ed|ing)|plan|coordinat\w*|creat(?:ed|ing)|built|build(?:ing)?|design(?:ed|ing)?|develop(?:ed|ing)?|launch(?:ed|ing)?|establish(?:ed|ing)?|implement(?:ed|ing)?|initiat(?:ed|ing)|arrang(?:ed|ing)|orchestrat\w*|spearhead\w*|ran)\b/gi;
+const OWN_ONE = new RegExp(OWN_RE.source, 'i');                                         // non-global copy: safe for .test()
 const HEDGE_RE = /\b(help(?:ed|ing|s)?|assist(?:ed|ing|s)?|support(?:ed|ing|s)?|participat\w*|contribut\w*|join(?:ed|ing)?|took part|take part|part of|worked (?:with|alongside)|pitched in|aided)\b/i;
 const rootKey = (w) => { const x = w.toLowerCase(); if (/^plan/.test(x)) return 'plan'; if (/^buil/.test(x)) return 'build'; return x === 'ran' ? 'ran' : x.slice(0, 5); };
 const hasRoot = (text, root) => new RegExp(`\\b${root.replace(/[^a-z]/g, '')}`, 'i').test(text);
@@ -247,6 +256,7 @@ function scopedReasons(line, scope) {
   if (!HEDGE_RE.test(line)) {
     for (const m of s(line).matchAll(OWN_RE)) {
       const key = rootKey(m[1]); if (seen.has(key)) continue;
+      if (wordsOf(scope.text).some((o) => stem(o) !== stem(m[1].toLowerCase()) && !OWN_ONE.test(o) && nearSpelling(m[1].toLowerCase(), o))) continue;          // "orgenized" in the entry supports "organized": a spelling fix is not a new duty
       const withKey = scope.lines.filter((o) => [...o.matchAll(OWN_RE)].some((x) => rootKey(x[1]) === key));
       if (withKey.some((o) => !HEDGE_RE.test(o))) continue;              // the customer owns this task in their own words
       seen.add(key);
