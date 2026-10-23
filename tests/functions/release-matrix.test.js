@@ -65,7 +65,7 @@ const hasHedge = (p) => ['experience', 'volunteer', 'projects'].some((k) => (p[k
 test('release matrix against real SQL (AI provider mocked)', async (t) => {
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_release_matrix');
-  await db.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2);
+  await db.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
   const hs = loadHandlers(db.pool('service_role', 60)); const ai = installAi({});
   Object.assign(process.env, { SUPABASE_URL: 'http://mock.invalid', SUPABASE_SERVICE_ROLE_KEY: 'mock', ANTHROPIC_API_KEY: KEY, TAILOR_TOKEN_SECRET: SECRET, AI_TIMEOUT_MS: '1000' });
   let n = 0; const seed = async (uses = 5) => { const c = `FG-X${String(++n).padStart(3, '0')}-DDDD`; await H.seed(db, [{ code: c, uses, assigned: true }]); return c; };

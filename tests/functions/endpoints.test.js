@@ -14,7 +14,7 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
 
   const db = await H.freshDatabase('rg_fn');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
   await H.seed(db, [{ code: 'FG-CUST-0001', uses: 3, assigned: true, buyer: 'customer@example.com' }]);
   const pool = db.pool('service_role', 40);
   const hs = loadHandlers(pool);

@@ -89,7 +89,7 @@ test('tailor-resume: facts restored, unsupported lines WITHHELD (put back to the
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_integrity');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
   const code = 'FG-INTG-0001';
   await H.seed(db, [{ code, uses: 5, assigned: true }]);
   const hs = loadHandlers(db.pool('service_role', 10));

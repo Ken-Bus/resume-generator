@@ -52,6 +52,7 @@ const MSG = {
   notFound: 'We couldn’t find that code.',
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
+  replayLimit: 'This step was already completed and counted on your code, but its result could not be delivered after several tries. Nothing more has been charged. Please message us with your access code and we will make it right.',
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
   sparse: 'There isn’t enough detail for the AI to improve yet, and it will not make anything up to fill the gap. Add a few words about what you did (what you worked with, and what you did each day), then try again. Nothing was used.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
@@ -220,7 +221,7 @@ exports.handler = async function(event) {
 
   let reservation;
   try {
-    reservation = await license.reserve(supabase, code, cfg);
+    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, JSON.stringify({ r: source, t: target, p: profile })));
   } catch (err) {
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
     console.error(missing
@@ -239,15 +240,20 @@ exports.handler = async function(event) {
       retryAfterSeconds: wait, usesRemaining: reservation.remaining, maxUses: reservation.maximum
     }, { 'Retry-After': String(wait) });
   }
-  if (reservation.outcome === 'busy') return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
-  if (reservation.outcome !== 'reserved') {
+  if (reservation.outcome === 'busy' || reservation.outcome === 'replay_busy') return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  if (reservation.outcome === 'replay_limit') return json(409, { error: MSG.replayLimit, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  // 'replay': this very polish was already paid for (the reply was lost and the retry reached another or a restarted instance). The AI runs
+  // again to re-deliver the result; nothing more is charged.
+  const redelivery = reservation.outcome === 'replay';
+  if (reservation.outcome !== 'reserved' && !redelivery) {
     console.error('polish-resume: unexpected reservation outcome', { ref: 'P104', outcome: reservation.outcome });
     return json(503, { error: refMsg('P104'), ref: 'P104' });
   }
 
   // One paid operation at a time per code: only the earliest live reservation proceeds.
+  const giveBack = (counted) => (redelivery ? license.finishRedelivery(supabase, reservation.reservationId, false) : license.safeRelease(supabase, reservation.reservationId, counted));
   try {
-    if (!(await isFirstInFlight(supabase, code, reservation.reservationId))) {
+    if (!redelivery && !(await isFirstInFlight(supabase, code, reservation.reservationId))) {
       await license.safeRelease(supabase, reservation.reservationId, false);
       return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
     }
@@ -274,7 +280,7 @@ exports.handler = async function(event) {
   } catch (err) {
     const guardFault = !(err && err.name === 'AiError');                   // a bug in our own checks is not the customer's failure
     const providerFault = guardFault || isProviderFault(err);
-    await license.safeRelease(supabase, reservation.reservationId, !providerFault);
+    await giveBack(!providerFault);
     console.error('polish-resume: generation failed', { ref: guardFault ? 'P107' : undefined, reservation: reservation.reservationId, reason: guardFault ? safeReason(err) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
@@ -285,7 +291,7 @@ exports.handler = async function(event) {
   // couple of small fixes, or every change it made was withheld by the integrity checks): release the reservation, uncharged and NOT counted as a
   // failure, and hand back no text (the customer's own wording stays). It is capped separately (_lib/nochange.js) so it cannot become unlimited
   // free AI. Counts only go to the log (P201 / P202).
-  if (!score.charge) {
+  if (!score.charge && !redelivery) {
     const seen = changes.reworded + changes.minor + changes.dropped;       // anything the customer could have seen change
     const flaggedOnly = withheld.length > 0;                               // some suggestions were left out, and what remained was too little to use a generation
     const smallOnly = !flaggedOnly && seen > 0;
@@ -300,7 +306,7 @@ exports.handler = async function(event) {
   }
 
   // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
-  let committed;
+  let committed = redelivery ? { outcome: 'already_committed', remaining: reservation.remaining, maximum: reservation.maximum } : undefined;
   for (let attempt = 0; attempt < 2 && !committed; attempt++) {
     try { committed = await license.commit(supabase, reservation.reservationId); }
     catch (err) { console.error('polish-resume: commit attempt failed', { reservation: reservation.reservationId, attempt }); }
@@ -322,7 +328,8 @@ exports.handler = async function(event) {
   if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
-  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
+  if (redelivery) await license.finishRedelivery(supabase, reservation.reservationId, true);
+  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: redelivery ? 'redelivered' : 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
   const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
   if (rid) cachePut(cacheKey(code, rid), body);

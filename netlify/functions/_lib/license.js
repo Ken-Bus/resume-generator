@@ -8,8 +8,11 @@ async function one(supabase, fn, args) {
   return data;
 }
 
-async function reserve(supabase, code, cfg) {
+// `repeat` (optional) = { key, inputHash }: identifies one logical step so the DATABASE can recognise a repeat of an already-paid step
+// (migration 03). Without it the call is exactly the one the earlier deployment made.
+async function reserve(supabase, code, cfg, repeat) {
   const d = await one(supabase, 'reserve_license_use', {
+    ...(repeat && repeat.key ? { p_request_key: repeat.key, p_input_hash: repeat.inputHash || null } : {}),
     p_code: code,
     p_lease_seconds: cfg.LEASE_SECONDS,
     p_fail_window_seconds: cfg.FAIL_WINDOW_SECONDS,
@@ -18,6 +21,14 @@ async function reserve(supabase, code, cfg) {
   });
   if (!d) throw new Error('reserve_license_use returned no row');
   return { outcome: d.outcome, reservationId: d.reservation_id, remaining: d.remaining, maximum: d.maximum, retryAfterSeconds: d.retry_after_seconds };
+}
+
+// Gives the re-delivery turn back (ok = false) or just frees the slot (ok = true). Best effort: the turn also lapses by itself after a minute.
+async function finishRedelivery(supabase, reservationId, ok) {
+  try {
+    const { error } = await supabase.rpc('finish_redelivery', { p_reservation_id: reservationId, p_ok: !!ok });
+    if (error) throw error;
+  } catch (e) { console.error('finish_redelivery failed; the turn lapses on its own', { reservation: reservationId }); }
 }
 
 async function commit(supabase, reservationId) {
@@ -66,4 +77,4 @@ async function readLicense(supabase, code) {
   return data;
 }
 
-module.exports = { reserve, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };
+module.exports = { reserve, finishRedelivery, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };

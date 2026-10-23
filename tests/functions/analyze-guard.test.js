@@ -14,7 +14,7 @@ test('Analyze: one at a time, replay-safe, guess-limited (real SQL, AI mocked)',
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_analyze_guard');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
   const pool = db.pool('service_role', 40);
   const realQuery = pool.query.bind(pool); let breakReserveFor = null;
   pool.query = async (sql, params) => { if (breakReserveFor && /reserve_license_use/.test(sql)) throw Object.assign(new Error(`could not serialize access for code ${breakReserveFor}`), { code: '40001' }); return realQuery(sql, params); };

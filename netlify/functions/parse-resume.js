@@ -23,6 +23,7 @@ const MSG = {
   notFound: 'We couldn’t find that code.',
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
+  replayLimit: 'This step was already completed and counted on your code, but its result could not be delivered after several tries. Nothing more has been charged. Please message us with your access code and we will make it right.',
   aiFailed: 'We couldn’t analyze this resume right now. You haven’t been charged. Please try again.',
   slow: 'The AI took too long to answer. You haven’t been charged. Please try again in a moment.',
   tooLong: 'This resume is too long for the AI to analyze in one go (it could not finish in time or space). You haven’t been charged. Try pasting fewer or shorter entries, for example your most recent jobs first.',
@@ -71,7 +72,7 @@ exports.handler = async function(event) {
       const hit = replay.get('analyze', code, rid);
       if (hit) { try { if (await license.readLicense(supabase, code)) return json(200, hit); } catch (e) { /* fall through to the normal path */ } }
     }
-    reservation = await license.reserve(supabase, code, cfg);
+    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('analyze', rid, resumeText));
   } catch (err) {
     // 42883 / PGRST202 = the function does not exist, i.e. the database migration has not been applied yet.
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
@@ -94,17 +95,22 @@ exports.handler = async function(event) {
       retryAfterSeconds: wait, usesRemaining: reservation.remaining, maxUses: reservation.maximum
     }, { 'Retry-After': String(wait) });
   }
-  if (reservation.outcome === 'busy') {
+  if (reservation.outcome === 'busy' || reservation.outcome === 'replay_busy') {
     return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
   }
-  if (reservation.outcome !== 'reserved') {
+  if (reservation.outcome === 'replay_limit') return json(409, { error: MSG.replayLimit, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  // 'replay': this very step was already paid for (the reply was lost and the retry reached another instance or a restarted one). The AI runs
+  // again to re-deliver the result; nothing more is charged.
+  const redelivery = reservation.outcome === 'replay';
+  if (reservation.outcome !== 'reserved' && !redelivery) {
     console.error('parse-resume: unexpected reservation outcome', { outcome: reservation.outcome });
     return json(503, { error: MSG.server });
   }
 
   // One paid operation at a time per code (as in AI Polish): a double-send or a second tab is turned away uncharged, never run twice.
+  const giveBack = (counted) => (redelivery ? license.finishRedelivery(supabase, reservation.reservationId, false) : license.safeRelease(supabase, reservation.reservationId, counted));
   try {
-    if (!(await isFirstInFlight(supabase, code, reservation.reservationId))) {
+    if (!redelivery && !(await isFirstInFlight(supabase, code, reservation.reservationId))) {
       await license.safeRelease(supabase, reservation.reservationId, false);
       return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
     }
@@ -130,7 +136,7 @@ exports.handler = async function(event) {
     // Provider outages (and faults in our own checks) are released uncounted; anything that may have cost money counts toward the per-code budget.
     const guardFault = !(err && err.name === 'AiError');
     const providerFault = guardFault || isProviderFault(err);
-    await license.safeRelease(supabase, reservation.reservationId, !providerFault);
+    await giveBack(!providerFault);
     console.error('parse-resume: generation failed', { ref: guardFault ? 'A107' : undefined, reservation: reservation.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
@@ -138,7 +144,7 @@ exports.handler = async function(event) {
   }
 
   // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
-  let committed;
+  let committed = redelivery ? { outcome: 'already_committed', remaining: reservation.remaining, maximum: reservation.maximum } : undefined;
   for (let attempt = 0; attempt < 2 && !committed; attempt++) {
     try {
       committed = await license.commit(supabase, reservation.reservationId);
@@ -169,7 +175,8 @@ exports.handler = async function(event) {
     console.error('parse-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
   }
 
-  usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'charged', withheld: unverified.length });
+  if (redelivery) await license.finishRedelivery(supabase, reservation.reservationId, true);
+  usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: redelivery ? 'redelivered' : 'charged', withheld: unverified.length });
   const body = {
     result: resultText,
     unverified,
