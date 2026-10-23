@@ -672,7 +672,7 @@ async function parseResume() {
     const res = await aiFetch('/.netlify/functions/parse-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: state.license.code, resumeText: text })
+      body: JSON.stringify({ code: state.license.code, resumeText: text, clientGuard: ResumeCore.GUARD_VERSION })
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
@@ -1146,7 +1146,7 @@ async function tailorToJob() {
     const res = await aiFetch('/.netlify/functions/tailor-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken })
+      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken, clientGuard: ResumeCore.GUARD_VERSION })
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }

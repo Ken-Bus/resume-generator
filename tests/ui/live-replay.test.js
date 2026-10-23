@@ -86,3 +86,53 @@ test('live replay in the browser: the invented "families in the community" never
     });
   }
 });
+
+test('the owner\'s browser checks: the guard label is readable by the Console, the page sends its version on every paid request, and a refused stale page shows a plain message', async (t) => {
+  if (!fs.existsSync(PW) || !fs.existsSync(CHROME)) { t.skip('Playwright/Chromium not available'); return; }
+  process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'mock';
+  const release = require('../../netlify/functions/_lib/release');
+  const polishFn = require('../../netlify/functions/polish-resume');
+  const { chromium } = require(PW);
+  const server = await serve(); const base = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ executablePath: CHROME });
+  t.after(async () => { await browser.close(); server.close(); });
+  const ctx = await browser.newContext(); const page = await ctx.newPage(); const bodies = []; let stale = false;
+  // Netlify turns a handler result into an HTTP response like this; the same objects are served here.
+  const asHttp = (r) => ({ status: r.statusCode, headers: r.headers || {}, body: r.body });
+  await page.route('**/*', async (route) => {
+    const req = route.request(); const url = req.url();
+    if (url.includes('/.netlify/functions/polish-resume')) {
+      if (req.method() === 'POST' && req.postData() && Object.keys(JSON.parse(req.postData())).length) {
+        bodies.push(JSON.parse(req.postData()));
+        if (stale) return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: release.STALE_MESSAGE, stale: true, guard: release.stamp() }) });
+      }
+      return route.fulfill(asHttp(await polishFn.handler({ httpMethod: req.method(), body: req.postData() || '', headers: {} })));
+    }
+    if (url.includes('/.netlify/functions/')) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ valid: true, usesRemaining: 5, maxUses: 5 }) });
+    if (url.startsWith(base)) return route.continue();
+    return route.abort();
+  });
+  await page.goto(base + '/index.html');
+  // The owner's own command: a POST with no code (401) and a plain visit (GET, 405) both read as JSON.
+  const post = await page.evaluate(() => fetch('/.netlify/functions/polish-resume', { method: 'POST', body: '{}' }).then((r) => r.json().then((j) => [r.status, j])));
+  const get = await page.evaluate(() => fetch('/.netlify/functions/polish-resume').then((r) => r.json().then((j) => [r.status, j])));
+  assert.equal(post[0], 401); assert.equal(post[1].guard.version, Core.GUARD_VERSION);
+  assert.equal(get[0], 405); assert.equal(get[1].guard.version, Core.GUARD_VERSION);
+  assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), get[1].guard.version, 'page and function agree');
+  // Opened like the owner would open it, the address shows the label on screen.
+  await page.goto(base + '/.netlify/functions/polish-resume');
+  assert.match(await page.innerText('body'), /"version":"entry-scope-withhold-3"/);
+
+  await page.goto(base + '/index.html');
+  await page.fill('#gate-code-input', 'FG-TEST-AAAA'); await page.click('#gate-unlock-btn'); await page.waitForSelector('#license-gate', { state: 'hidden' });
+  await page.click('#start-first'); await page.waitForSelector('#panel-guide .wiz-title');
+  await page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); Wiz.render(); renderPreview(); }, TAYLOR);
+  await page.click('.wiz-dot:has-text("Review")');
+  stale = true;
+  await page.click('#polish-btn'); await page.click('#polish-confirm'); await page.waitForFunction(() => !state.polish.busy); await page.waitForTimeout(150);
+  assert.equal(bodies.length, 1); assert.equal(bodies[0].clientGuard, Core.GUARD_VERSION, 'the page sends its version with the paid request');
+  const msg = await page.innerText('#polish-card, .wiz-err, #panel-guide');
+  assert.match(msg, /out of date/i); assert.match(msg, /refresh/i); assert.match(msg, /haven.t been charged/i);
+  assert.equal(await page.evaluate(() => state.license.usesRemaining), 5, 'nothing was charged');
+  await ctx.close();
+});

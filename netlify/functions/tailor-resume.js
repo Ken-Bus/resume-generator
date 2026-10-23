@@ -1,3 +1,4 @@
+const release = require('./_lib/release');
 const { getSupabaseClient, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
@@ -23,7 +24,7 @@ const MSG = {
 // It consumes no generation, but each paid generation allows a limited number of runs.
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+    return release.notAllowed();
   }
 
   const cfg = get();
@@ -39,7 +40,8 @@ exports.handler = async function(event) {
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { resumeData, jobDescription, tailorToken } = parsed.body;
+  const { resumeData, jobDescription, tailorToken, clientGuard } = parsed.body;
+  if (release.staleClient(clientGuard)) return json(409, { error: release.STALE_MESSAGE, stale: true, guard: release.stamp() });
 
   // Authorisation and input checks all run BEFORE any billable AI call.
   // During a secret rotation, TAILOR_TOKEN_SECRET_PREVIOUS is still accepted (never used to sign).

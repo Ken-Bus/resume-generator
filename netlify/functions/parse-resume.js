@@ -1,3 +1,4 @@
+const release = require('./_lib/release');
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
@@ -22,7 +23,7 @@ const MSG = {
 // Paid operation: a generation is reserved before the AI runs and only charged after a validated result.
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+    return release.notAllowed();
   }
 
   const cfg = get();
@@ -33,7 +34,8 @@ exports.handler = async function(event) {
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { code: rawCode, resumeText } = parsed.body;
+  const { code: rawCode, resumeText, clientGuard } = parsed.body;
+  if (release.staleClient(clientGuard)) return json(409, { error: release.STALE_MESSAGE, stale: true, guard: release.stamp() });
 
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
   const code = normalizeCode(rawCode);

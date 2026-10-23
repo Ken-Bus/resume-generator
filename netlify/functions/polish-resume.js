@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const release = require('./_lib/release');
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
@@ -12,8 +13,7 @@ const limits = require('./_lib/limits');
 const { isFirstInFlight } = require('./_lib/inflight');
 const Core = require('../../resume-core.js');
 
-// Which integrity layer produced this answer (also in every ai-outcome log line). Lets a stale deploy be spotted for free.
-const stamp = () => ({ version: Core.GUARD_VERSION, withholds: true, deploy: String(process.env.DEPLOY_ID || process.env.COMMIT_REF || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 12) || null });
+const { stamp } = release;
 
 // "Polish My Resume with AI": turns the customer's own guided answers into clear resume wording.
 // PAID OPERATION, charged exactly like Analyze: ONE of the code's included generations, and only after a
@@ -129,7 +129,7 @@ ${JSON.stringify(source)}`;
 
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, body: 'Method Not Allowed' };
+    return release.notAllowed();
   }
 
   const cfg = get();
@@ -140,7 +140,8 @@ exports.handler = async function(event) {
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { code: rawCode, resume, target: rawTarget, requestId, profile: rawProfile } = parsed.body;
+  const { code: rawCode, resume, target: rawTarget, requestId, profile: rawProfile, clientGuard } = parsed.body;
+  if (release.staleClient(clientGuard)) return json(409, { error: release.STALE_MESSAGE, stale: true, guard: stamp() });
 
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
   const code = normalizeCode(rawCode);

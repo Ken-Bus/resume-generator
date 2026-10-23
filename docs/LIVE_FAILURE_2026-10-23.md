@@ -24,6 +24,8 @@ Most likely the branch deploy that served the test was **running an older build*
 
 ## Free check before any further paid test (no credit, about a minute)
 1. Netlify > Deploys > the branch: confirm the **published** deploy is commit `d4d480c` or later, with status "Published" (not failed). If a newer build failed, open its log and send me the error.
-2. On the branch site, browser console: `ResumeCore.GUARD_VERSION` must print `entry-scope-withhold-3`. (`undefined` = old page.)
-3. `fetch('/.netlify/functions/polish-resume',{method:'POST',body:'{}'}).then(r=>r.json()).then(console.log)` must print `guard: {version: 'entry-scope-withhold-3', ...}`. (No `guard` = old functions.)
+2. Open `https://<branch-site>/.netlify/functions/polish-resume` in a browser tab: it must show `"guard":{"version":"entry-scope-withhold-3",...}` (no Console needed; a plain visit never reaches licensing or the AI). A bare `Method Not Allowed` with no `guard` = old functions.
+3. Page version: Console `ResumeCore.GUARD_VERSION` must print `entry-scope-withhold-3` (`undefined` = old page).
 4. Only then repeat the Taylor Polish (one credit). With the current build the description stays blank, bullet 1 stays as written, and the card lists "left out" items. The Netlify log line `ai-outcome` shows `"guard":"entry-scope-withhold-3"`.
+
+(The first version of this check was a Console `fetch(...)` one-liner; it is replaced by the address check above. A `401` for a POST with no code is expected, and the reply is valid JSON that `r.json()` reads; see `docs/BUILD_CHECK_2026-10-23.md`.)

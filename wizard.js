@@ -215,7 +215,7 @@ const Wiz = {
     try {
       const res = await aiFetch('/.netlify/functions/polish-resume', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId })
+        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId, clientGuard: ResumeCore.GUARD_VERSION })
       });
       let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
       let parsed = null;
