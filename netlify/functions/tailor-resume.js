@@ -2,7 +2,7 @@ const release = require('./_lib/release');
 const { getSupabaseClient, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
-const { callClaude, extractJson, assertTailorShape, isObject, isProviderFault } = require('./_lib/ai');
+const { callClaude, extractJson, assertTailorShape, isObject, isProviderFault, isBusy } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
@@ -15,6 +15,7 @@ const MSG = {
   expired: 'Your tailoring session has expired. Analyze your resume again to continue.',
   limit: 'You’ve reached the tailoring limit for this resume.',
   unavailable: 'Tailoring is temporarily unavailable. Please try again later.',
+  aiBusy: 'The AI service is very busy right now. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t tailor your resume right now. Please try again.',
   slow: 'The AI took too long to answer. Nothing was used. Please try again in a moment.',
   tooLong: 'This resume (with that job description) is too long to tailor in one go. Please shorten it a little, or paste only the key sections of the job description, and try again.',
@@ -117,7 +118,7 @@ ${jobDescription}`;
     console.error('tailor-resume: generation failed', { ref: guardFault ? 'T107' : undefined, reservation: auth.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', providerFault });
     usage.outcome({ fn: 'tailor', ref: auth.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
-    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : MSG.aiFailed });
+    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
   usage.outcome({ fn: 'tailor', ref: auth.reservationId, outcome: 'ok', withheld: withheld.length });

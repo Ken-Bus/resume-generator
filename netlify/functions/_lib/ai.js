@@ -98,4 +98,7 @@ function isProviderFault(err) {
   return !!err && (err.reason === 'upstream_status' || err.reason === 'network');
 }
 
-module.exports = { isProviderFault, AiError, callClaude, extractJson, assertResumeShape, assertTailorShape, isObject };
+// The provider says it is overloaded or rate-limiting us (429 / 503 / 529): the honest message is "busy, try again in a minute", not "failed".
+const isBusy = (err) => !!err && err.reason === 'upstream_status' && [429, 503, 529].includes(Number(err.detail));
+
+module.exports = { isBusy, isProviderFault, AiError, callClaude, extractJson, assertResumeShape, assertTailorShape, isObject };

@@ -26,7 +26,7 @@ A: Paste a job description and the AI adjusts the emphasis and wording of your r
 
 **Q: What if something goes wrong while the AI is working?**
 
-A: If the AI can't finish, nothing is used. Your counter always shows how many generations you have left. If your screen refreshes or your phone loses signal while the AI is working, your resume is still there when the page comes back, and if you press the same button again it asks for the same result instead of using a second generation. This works best within a few minutes. If a generation did go missing, please message us with your access code and we will look at it.
+A: If the AI can't finish, nothing is used. Your counter always shows how many generations you have left. If your screen refreshes or your phone loses signal while the AI is working, your resume is still there when the page comes back, and if you press the same button again for the same resume it recovers that result instead of using a second generation. This works for about an hour after the first try. If the AI service itself is very busy you will be told to wait a minute and try again; nothing is used. If a generation did go missing, please message us with your access code and we will look at it.
 
 **Q: Is my resume kept if I refresh the page?**
 
@@ -61,5 +61,5 @@ A: Your resume text is sent to the AI service to be processed and to our server 
 ## Notes for the owner
 - This wording does not change the price, the five-generation entitlement, or the Tailor allowance (up to 5 runs per paid generation).
 - The 3-point rule means a useful one- or two-word fix is free and is not applied. That is a deliberate, transparent tradeoff against letting an AI decide what to charge. It is stated in the FAQ above so no customer is surprised.
-- "Within a few minutes" in the lost-reply answer is deliberate: the repeat-request protection is kept in memory on the server instance that did the work (a few minutes). A repeat that lands on another instance is a normal request.
+- The lost-reply answer ("about an hour") is true ONLY after supabase/migrations/20261023_03_request_idempotency.sql is applied to production and the new code is deployed (see docs/MIGRATION_03_DEPLOYMENT.md). Before that, the protection lives in memory on one server instance for a few minutes, so keep the older wording until the owner has confirmed the migration.
 - The page-length guidance is approximate (about 20,000 characters is roughly 6 pages of plain text) and still needs the long-resume test on a real deploy (`docs/RELEASE_HARDENING.md`).

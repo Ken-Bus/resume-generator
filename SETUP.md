@@ -34,6 +34,7 @@ Failures are free to the customer, so they must not be free to abuse. Both limit
 2. For a **new** project: run `supabase/schema.sql` in the SQL editor. It is idempotent and creates the `licenses` table, the reservation table and functions, and applies the lock-down below.
 3. For the **existing production** project: do **not** re-run all of `schema.sql`. Apply only the migrations you have approved, **in this order relative to the deploy**:
    - `supabase/migrations/20261020_01_license_reservations.sql` — additive (new table and functions). **Before** the code deploys.
+   - `supabase/migrations/20261023_03_request_idempotency.sql` — additive; durable duplicate-charge protection (a lost reply that is retried on another server instance is never charged twice). **Before** the code that sends request keys deploys; the currently deployed code keeps working with it. Full order, compatibility, backup and rollback: `docs/MIGRATION_03_DEPLOYMENT.md`. **Needs the owner's approval; not applied anywhere yet.**
    - `supabase/migrations/20261020_02_revoke_public_execute_consume_license_use.sql` — one `revoke` statement that stops the public `anon`/`authenticated` roles from calling `consume_license_use`. **After** the deploy has been smoke-tested. The new code never calls that function, so applying it last cannot break anything, and applying it earlier would only add risk to the still-running old code for no benefit.
 4. In Project Settings → API, copy the **Project URL** and the **service_role** key (not the `anon` key). Nothing in this app uses the `anon` key.
 5. **A merged change to `schema.sql` is not live until it is applied in Supabase.** After applying anything, re-run the read-only checks in §5.
@@ -282,7 +283,7 @@ Customers see a friendly message with a short reference. The same reference is w
 |---|---|---|---|
 | P101 | polish-resume | `ANTHROPIC_API_KEY` is not set for this deploy's context | Add it for that context, then redeploy |
 | P102 | polish-resume | Database settings (`SUPABASE_URL` / key) missing | Add them for that context, then redeploy |
-| P103 | polish-resume | The reservation call to the database failed | Check Supabase status; confirm migration 01 is applied |
+| P103 | polish-resume | The reservation call to the database failed | Check Supabase status; confirm migrations 01 and 03 are applied (a request carrying a request id needs 03) |
 | P104 | polish-resume | The database returned an unexpected reservation answer | Check the function log; report it |
 | P105 | polish-resume | The duplicate-request check failed (the reservation is released) | Check Supabase status / table access for `service_role` |
 | P106 | polish-resume | The AI finished but the charge could not be recorded (released, uncharged) | Check the counter, then try again |

@@ -64,6 +64,35 @@ test('work safety (Chromium, mocked endpoints)', async (t) => {
     await s.close();
   });
 
+  await t.test('OFFLINE: the connection drops while the customer is typing; nothing is lost, a reload (back online) restores everything, and the paid step explains itself and charges nothing', async () => {
+    const s = await open({ 'verify-license': verifyOk, 'polish-resume': () => ({ status: 200, json: { noChange: true } }) }); await unlock(s.page); await putResume(s.page);
+    await s.context.setOffline(true);
+    await s.page.fill('input[oninput*="experience\',0,\'title\'"]', 'Lead Retail Associate (typed offline)'); await s.page.waitForTimeout(500);
+    assert.match(await s.page.innerText('#resume-preview'), /typed offline/);                       // the page keeps working with no network
+    await s.context.setOffline(false); await reload(s);
+    assert.match(await s.page.innerText('#resume-preview'), /typed offline/); assert.equal(s.errors.length, 0, s.errors.join('|'));
+    await s.close();
+  });
+
+  await t.test('BACK / FORWARD: leaving the page and coming back with the browser buttons brings the resume back', async () => {
+    const s = await open({ 'verify-license': verifyOk }); await unlock(s.page); await putResume(s.page);
+    await s.page.fill('input[oninput*="experience\',0,\'title\'"]', 'Shift Lead'); await s.page.waitForTimeout(500);
+    await s.page.goto(base + '/404.html'); await s.page.goBack(); await s.page.waitForSelector('#export-bar, #license-gate, .start-paths', { state: 'attached' }); await s.page.waitForTimeout(300);
+    assert.match(await s.page.innerText('#resume-preview'), /Shift Lead/); assert.equal(s.errors.length, 0, s.errors.join('|'));
+    await s.close();
+  });
+
+  await t.test('DOUBLE SUBMIT (two calls in the same instant, as a double tap can produce): exactly ONE polish request is sent and no error is shown', async () => {
+    const polishApi = async () => ({ status: 200, delay: 300, json: { guard: 'x', result: JSON.stringify(POLISHED), unverified: [], withheld: [], changes: { reworded: 1, minor: 0, cosmetic: 0, unchanged: 0, dropped: 0 }, points: 3, threshold: 3, charged: true, usesRemaining: 4, maxUses: 5, tailorToken: 'tok' } });
+    const s = await open({ 'verify-license': verifyOk, 'polish-resume': polishApi }); await unlock(s.page); await putResume(s.page);
+    await s.page.evaluate(() => { Wiz.askPolish(); Wiz.doPolish(); Wiz.doPolish(); Wiz.doPolish(); });
+    await s.page.waitForFunction(() => !Wiz.polishState().busy); await s.page.waitForTimeout(200);
+    assert.equal(s.calls.filter((c) => c.name === 'polish-resume').length, 1); assert.equal(await s.page.locator('.wiz-err').count(), 0);
+    assert.doesNotMatch(await s.page.innerText('body'), /Please wait until the AI step that is already running/, 'the extra taps are ignored silently: no scary "busy" error for a double tap');
+    assert.match(await s.page.innerText('#license-badge'), /4 of 5/);
+    await s.close();
+  });
+
   await t.test('the untouched free sample is not saved: a reload starts fresh', async () => {
     const s = await open({}); await s.page.click('.gate-sample-link'); await s.page.waitForSelector('#resume-preview');
     assert.equal(await s.page.evaluate(() => sessionStorage.getItem('fg_work_v1')), null);

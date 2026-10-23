@@ -2,7 +2,7 @@ const release = require('./_lib/release');
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
-const { callClaude, extractJson, assertResumeShape, isProviderFault } = require('./_lib/ai');
+const { callClaude, extractJson, assertResumeShape, isProviderFault, isBusy } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
@@ -24,6 +24,7 @@ const MSG = {
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
   replayLimit: 'This step was already completed and counted on your code, but its result could not be delivered after several tries. Nothing more has been charged. Please message us with your access code and we will make it right.',
+  aiBusy: 'The AI service is very busy right now. You haven’t been charged. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t analyze this resume right now. You haven’t been charged. Please try again.',
   slow: 'The AI took too long to answer. You haven’t been charged. Please try again in a moment.',
   tooLong: 'This resume is too long for the AI to analyze in one go (it could not finish in time or space). You haven’t been charged. Try pasting fewer or shorter entries, for example your most recent jobs first.',
@@ -140,7 +141,7 @@ exports.handler = async function(event) {
     console.error('parse-resume: generation failed', { ref: guardFault ? 'A107' : undefined, reservation: reservation.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
-    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : MSG.aiFailed });
+    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
   // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.

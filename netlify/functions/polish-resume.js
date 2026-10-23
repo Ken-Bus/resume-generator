@@ -2,7 +2,7 @@ const release = require('./_lib/release');
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
-const { callClaude, extractJson, assertResumeShape, isProviderFault } = require('./_lib/ai');
+const { callClaude, extractJson, assertResumeShape, isProviderFault, isBusy } = require('./_lib/ai');
 const license = require('./_lib/license');
 const tokens = require('./_lib/token');
 const integrity = require('./_lib/integrity');
@@ -55,6 +55,7 @@ const MSG = {
   replayLimit: 'This step was already completed and counted on your code, but its result could not be delivered after several tries. Nothing more has been charged. Please message us with your access code and we will make it right.',
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
   sparse: 'There isn’t enough detail for the AI to improve yet, and it will not make anything up to fill the gap. Add a few words about what you did (what you worked with, and what you did each day), then try again. Nothing was used.',
+  aiBusy: 'The AI service is very busy right now. You haven’t been charged. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
   noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
   minorOnly: 'The AI found only a few small fixes (fewer than it takes to use a generation: a generation is used when the AI rewrites some of your wording or corrects three or more mistakes), so your wording is unchanged and no generation was used.',
@@ -284,7 +285,7 @@ exports.handler = async function(event) {
     console.error('polish-resume: generation failed', { ref: guardFault ? 'P107' : undefined, reservation: reservation.reservationId, reason: guardFault ? safeReason(err) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
-    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : MSG.aiFailed });
+    return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
   // 2b. The ACCEPTED improvements are worth less than the charging threshold (the AI changed nothing, or only capitals/punctuation, or only a

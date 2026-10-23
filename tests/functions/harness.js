@@ -113,6 +113,7 @@ function installAi(state) {
     if (state.delayMs) await sleep(state.delayMs);
     if (mode === 'hang') return new Promise((_, rej) => opts.signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
     if (mode === 'throw') throw new Error('socket hang up');
+    if (mode === 'http429' || mode === 'http529') return { ok: false, status: Number(mode.slice(4)), json: async () => ({ error: { type: 'overloaded_error' } }) };
     if (mode === 'http500') return { ok: false, status: 500, json: async () => ({ error: { type: 'overloaded_error' } }) };
     const body = JSON.parse(opts.body);
     (state.bodies = state.bodies || []).push(body);

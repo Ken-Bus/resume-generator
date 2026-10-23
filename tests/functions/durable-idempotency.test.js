@@ -118,6 +118,27 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     for (const needle of [c, 'req-analyze-secretid-9', 'Jordan', 'Maple Market']) assert.equal(logs.includes(needle), false, `logs must not contain ${needle}`);
   });
 
+  await t.test('PROVIDER BUSY (429 / 529): a calm "very busy, wait a minute" message on Analyze and Polish, nothing charged, not counted as the customer\'s failure, and no automatic retry', async () => {
+    reset(); const c = await seed(); const A = await instance(); ai.polishPayload = fixAll;
+    for (const mode of ['http429', 'http529']) {
+      ai.mode = mode; ai.calls = 0;
+      const a = await analyze(A, c); const p = await polish(A, c);
+      for (const r of [a, p]) { assert.equal(r.statusCode, 502); assert.match(parseBody(r).error, /very busy/); assert.match(parseBody(r).error, /haven’t been charged/); }
+      assert.equal(ai.calls, 2, 'exactly one provider call per request: the server never retries on its own');
+    }
+    assert.equal(await uses(c), 5); assert.ok((await rsv(c)).every((s) => s === 'released'));
+    assert.equal((await db.admin("select count(*)::int n from license_reservations where code=$1 and failure_counted", [c])).rows[0].n, 0, 'an outage never counts against the customer');
+  });
+
+  await t.test('SECURITY: a request id is only ever honoured for the SAME code: another code (or an unknown one) cannot replay or read someone else\'s paid step', async () => {
+    reset(); const owner = await seed(); const other = await seed(); const A = await instance(); const B = await instance();
+    await analyze(A, owner, { requestId: 'req-analyze-0007' }); assert.equal(await uses(owner), 4);
+    const mine = await analyze(B, other, { requestId: 'req-analyze-0007' });                         // same id, same text, different customer
+    assert.equal(mine.statusCode, 200); assert.equal(await uses(other), 4, 'charged as its own new step, not replayed from the other code');
+    ai.calls = 0; const stranger = await analyze(B, 'FG-NONE-NONE', { requestId: 'req-analyze-0007' });
+    assert.equal(stranger.statusCode, 403); assert.equal(ai.calls, 0); assert.equal(await uses(owner), 4);
+  });
+
   await t.test('COMPATIBILITY: the page sends no request id (an older page): behaviour is exactly the previous one, and no key is stored', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance();
     await analyze(A, c); await analyze(B, c); assert.equal(await uses(c), 3);
