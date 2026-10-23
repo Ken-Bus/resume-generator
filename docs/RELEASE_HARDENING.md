@@ -21,6 +21,7 @@
 | I6 | Release failure was a single attempt (a lapsed lease counts as a strike) | Important | Code review | One retry |
 | I7 | Pure deletions counted as "reworded" | Important | Matrix test | Reported as `dropped`; never charged |
 | I9 | Guided Builder step 1: typing a phrase such as "Seeking a S" in "Work you're looking for" produced "Seeking a Seeking a S position" in the one-line intro (Android acceptance test) | Important (customer-visible, every first impression) | Android report; reproduced by test | `ResumeCore.introFromTarget` strips the customer's own framing once and frames it once (a/an); typing is applied after a 700 ms pause, paste/clear/blur/Next at once; a customer-written intro is never overwritten |
+| I10 | Live Polish test showed an invented "for families in the community" in a project | Release-blocking until explained | Exact output replays: identical to the 884640f server, impossible on the current code | See `docs/LIVE_FAILURE_2026-10-23.md`: stale-deploy suspected, build stamp added, replay tests added; confirm the deploy version before any paid retest |
 | I8 | Edit Fields did not highlight flagged project descriptions or job summaries | Important | Customer report | Highlighted with the "Added by AI" note |
 
 ## What was checked and found sound (no change)
@@ -92,6 +93,7 @@ Two automated tests keep this true: *every tracked file is public or blocked* an
 | 2 | Open the page with the console open: gate, guided builder, Try Sample; PDF button without a code | no "Refused to..." / Content-Security-Policy messages; the gate appears; nothing downloads |
 | 3 | iPhone Safari and Android Chrome: tap a field, step through the builder, open the editor, scroll to the bottom | no zoom jump; export buttons do not hide the last field |
 | 4 | `/.netlify/functions/check-code-supply` (see `docs/CODE_SUPPLY_EXPOSURE.md`) | 404/not reachable, or note the JSON for the follow-up fix |
+| 0 | **Which build is live? (do this before every paid test)** console `ResumeCore.GUARD_VERSION` and the `guard` field from `POST {}` to polish-resume (commands in `docs/LIVE_FAILURE_2026-10-23.md`) | both print `entry-scope-withhold-3`; Netlify shows the branch's published deploy at the latest commit |
 | 3b | **Android (and iPhone) Guided Builder step 1:** type `Seeking a Retail Sales Associate position.` into "Work you're looking for", then try `Retail Sales Associate`, a paste, and delete it; type your own sentence in the intro and change the role again | the intro shows one clean `Seeking a ... position` (never `Seeking a Seeking a`, never a fragment while typing), clears when you clear the role, and your own sentence is never overwritten (**automated test covers Chromium at 360x740 and 320x568; real Android keyboard not yet confirmed**) |
 | 5 | With your personal code: download a PDF and a Word file | files open; counter unchanged |
 

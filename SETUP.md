@@ -263,6 +263,8 @@ curl -sI https://<branch>--<site>.netlify.app/ | grep -iE 'content-security-poli
 ```
 Then open the page with the browser console open and click through the gate, the guided builder and Try Sample: there must be **no** "Refused to ..." / Content-Security-Policy messages. If the page breaks, remove the `Content-Security-Policy` line from `netlify.toml` and redeploy; the other protections do not depend on it. Also open `https://<site>/.netlify/functions/check-code-supply` once (production after release is side-effect free when 20 or more codes remain; on a branch deploy it uses the production database): it should not return a code count to an anonymous visitor (see `docs/CODE_SUPPLY_EXPOSURE.md`).
 
+**Which build is serving? (free; do this before every paid test).** Console on the branch site: `ResumeCore.GUARD_VERSION` (page) and `fetch('/.netlify/functions/polish-resume',{method:'POST',body:'{}'}).then(r=>r.json()).then(console.log)` (functions, the reply has `guard.version`). Both must show the current value (`entry-scope-withhold-3`); a missing value means an older deploy is being served. Also confirm in Netlify > Deploys that the branch's published deploy is the latest commit.
+
 **Zero-cost checks right after the build (no generation spent):**
 1. Enter `FG-ZZZZ-9999` at the gate: "We couldn't find that code." (proves the Supabase variables work).
 2. Open `/.netlify/functions/export-resume` and `/.netlify/functions/polish-resume` in the browser: each answers "Method Not Allowed" (proves the functions deployed).

@@ -12,6 +12,9 @@ const limits = require('./_lib/limits');
 const { isFirstInFlight } = require('./_lib/inflight');
 const Core = require('../../resume-core.js');
 
+// Which integrity layer produced this answer (also in every ai-outcome log line). Lets a stale deploy be spotted for free.
+const stamp = () => ({ version: Core.GUARD_VERSION, withholds: true, deploy: String(process.env.DEPLOY_ID || process.env.COMMIT_REF || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 12) || null });
+
 // "Polish My Resume with AI": turns the customer's own guided answers into clear resume wording.
 // PAID OPERATION, charged exactly like Analyze: ONE of the code's included generations, and only after a
 // validated result THAT MEANINGFULLY IMPROVES THE WORDING (at least one line actually reworded; capitals, punctuation and
@@ -141,7 +144,7 @@ exports.handler = async function(event) {
 
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
   const code = normalizeCode(rawCode);
-  if (!code) return json(401, { error: MSG.refresh });
+  if (!code) return json(401, { error: MSG.refresh, guard: stamp() });
   if (!CODE_RE.test(code)) return json(400, { error: MSG.badFormat });
   if (!resume || typeof resume !== 'object' || Array.isArray(resume)) return json(400, { error: 'Malformed request' });
   if (JSON.stringify(resume).length > cfg.RESUME_JSON_MAX_CHARS) return json(413, { error: 'That resume is too long to polish. Please shorten it and try again.' });
@@ -248,8 +251,8 @@ exports.handler = async function(event) {
     nochange.record(code);
     console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
       { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, withheld: withheld.length });
-    usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', reworded: 0, withheld: withheld.length });
-    const body = { noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+    usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: 0, withheld: withheld.length });
+    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
     if (rid) cachePut(cacheKey(code, rid), body);
     return json(200, body);
   }
@@ -277,9 +280,9 @@ exports.handler = async function(event) {
   if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
-  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'charged', reworded: changes.reworded, withheld: withheld.length });
+  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, withheld: withheld.length });
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
-  const body = { result: JSON.stringify(polished), unverified: [], withheld, changes, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
+  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
   if (rid) cachePut(cacheKey(code, rid), body);
   return json(200, body);
 };

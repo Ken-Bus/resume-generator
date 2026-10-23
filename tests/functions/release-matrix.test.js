@@ -323,7 +323,7 @@ test('release matrix against real SQL (AI provider mocked)', async (t) => {
       assert.equal(log.includes(secret), false, `a log line contains ${secret}`);
     const outcomes = w.lines.filter((l) => l.startsWith('ai-outcome ')).map((l) => JSON.parse(l.slice(11)));
     assert.deepEqual([...new Set(outcomes.map((o) => o.outcome))].sort(), ['charged', 'failed', 'flagged', 'nochange', 'ok']);
-    for (const o of outcomes) assert.deepEqual(Object.keys(o).sort(), ['fn', 'outcome', 'ref', 'reworded', 'withheld']);
+    for (const o of outcomes) assert.deepEqual(Object.keys(o).sort(), ['fn', 'guard', 'outcome', 'ref', 'reworded', 'withheld']);
   });
 
   await db.drop?.();

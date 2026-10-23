@@ -47,9 +47,9 @@ function record({ fn, model, provider, ms, ref, aborted, price }) {
 // One line per paid attempt saying how it ended, so cost can be split into charged / released-as-no-change / withheld / failed.
 // Same privacy rule as above: enum words, counts and the reservation id only.
 const OUTCOMES = new Set(['charged', 'nochange', 'flagged', 'failed', 'ok']);
-function outcome({ fn, ref, outcome: o, reworded, withheld }) {
+function outcome({ fn, ref, outcome: o, reworded, withheld, guard }) {
   try {
-    const line = { fn: FNS.has(fn) ? fn : 'unknown', outcome: OUTCOMES.has(o) ? o : 'unknown', reworded: count(reworded), withheld: count(withheld),
+    const line = { fn: FNS.has(fn) ? fn : 'unknown', outcome: OUTCOMES.has(o) ? o : 'unknown', reworded: count(reworded), withheld: count(withheld), guard: typeof guard === 'string' && /^[a-z0-9-]{1,40}$/.test(guard) ? guard : null,
       ref: typeof ref === 'string' && UUID_RE.test(ref) ? ref : null };
     console.log(`ai-outcome ${JSON.stringify(line)}`);
     return line;

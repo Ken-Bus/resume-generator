@@ -125,6 +125,11 @@
     return m ? Number(m[0]) : null;
   }
 
+  // Which generation of the factual-integrity layer this build contains. The page and the AI functions both read it from this one file,
+  // so a stale deploy is visible without spending a credit: in the browser console `ResumeCore.GUARD_VERSION`, and the same value comes
+  // back from the AI functions as `guard.version` (see SETUP.md 5b). Bump it whenever the rules for what an AI result may contain change.
+  const GUARD_VERSION = 'entry-scope-withhold-3';
+
   // "Work you're looking for" -> the one-line intro. Customers type a job title ("Retail Sales Associate") but also whole phrases
   // ("Seeking a Retail Sales Associate position.", "looking for a job as a cashier"). Strip our own framing from what they typed so it is
   // never said twice, then frame it once. Returns '' when nothing usable is left (an empty box, or only framing words such as "Seeking a").
@@ -148,5 +153,5 @@
     return `Seeking ${article} ${r} position`;
   }
 
-  return { blank, clean, hasContent, hasWritableText, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear, introFromTarget };
+  return { blank, clean, hasContent, hasWritableText, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear, introFromTarget, GUARD_VERSION };
 });
