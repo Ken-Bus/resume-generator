@@ -270,7 +270,7 @@ exports.handler = async function(event) {
     const guarded = integrity.guardResume(source, shaped, { mode: 'polish', vocabulary: target });
     polished = guarded.resume; withheld = guarded.withheld;
     changes = integrity.assessChange(source, polished);
-    score = scoring.score(source, polished);                              // what the ACCEPTED edits are worth (never the withheld ones)
+    score = scoring.score(source, polished, Core.clean(shaped));                              // what the ACCEPTED edits are worth (never the withheld ones)
   } catch (err) {
     const guardFault = !(err && err.name === 'AiError');                   // a bug in our own checks is not the customer's failure
     const providerFault = guardFault || isProviderFault(err);

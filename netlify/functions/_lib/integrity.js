@@ -542,7 +542,7 @@ function tidyList(list) {
   const seen = new Set(); const same = new Set();
   return arr(list).filter((x) => {
     const k = lineKey(x); if (!k) return false; if (seen.has(k)) return false; seen.add(k);
-    const w = [...new Set(contentStems(x))].sort().join(' '); if (w && same.has(w)) return false; if (w) same.add(w);     // "Ring up customers" and "Ring up customer" are one line
+    const w = [...new Set(contentStems(x))].sort().join(' ') + ((s(x).match(/\d[\d,.]*/g) || []).join('|') ? ` #${(s(x).match(/\d[\d,.]*/g) || []).join('|')}` : ''); if (w && same.has(w)) return false; if (w) same.add(w);     // "Ring up customers" and "Ring up customer" are one line
     return true;
   });
 }
@@ -598,7 +598,10 @@ function covered(origLine, newLines) {
     return h >= 1 && need.length - h <= 1 && ns.size - h <= 1;                    // one word for one word: only the verb differs
   });
 }
-const SAME_COVER = (st, have) => (SAME_AS[st] || []).some((x) => known(have, stem(x)));
+// Words that mean the same, looked up by stem and in BOTH directions ("grad" covers "graduate", "graduate" covers "grad"), so a reworded line is not mistaken for a lost duty.
+const SAME_STEM = {};
+Object.entries(SAME_AS).forEach(([k, list]) => list.forEach((x) => { (SAME_STEM[stem(k)] = SAME_STEM[stem(k)] || []).push(x); (SAME_STEM[stem(x)] = SAME_STEM[stem(x)] || []).push(k); }));
+const SAME_COVER = (st, have) => (SAME_STEM[st] || []).some((x) => known(have, stem(x)));
 function restoreDropped(orig, current) {
   const fix = (origList, getList, setList) => {
     const now = arr(getList()).map(s).filter((x) => x.trim()); const back = [];
@@ -639,7 +642,13 @@ function guardResume(original, output, options = {}) {
     withheld.push(...w.withheld); current = w.resume;
     if (pass === 3) current = JSON.parse(JSON.stringify(orig));          // cannot settle: fall back to the customer's own wording
   }
-  if (options.mode === 'polish') restoreDropped(orig, current);
+  if (options.mode === 'polish') {
+    restoreDropped(orig, current);
+    // The guard's own tidy: a list is cleaned of repeats only where the customer's list had none to begin with (repeats the customer wrote are the AI's to remove, and are scored as such).
+    const tidyLike = (list, origList) => { const o = arr(origList).map(s).filter((x) => x.trim()); return tidyList(o).length === o.length ? tidyList(list) : list; };
+    if (isObj(current.summary) && Array.isArray(current.summary.bullets)) current.summary.bullets = tidyLike(current.summary.bullets, isObj(orig.summary) ? orig.summary.bullets : []);
+    SECTIONS_.forEach((k) => arr(current[k]).forEach((e, i) => { if (isObj(e) && Array.isArray(e.bullets)) e.bullets = tidyLike(e.bullets, isObj(arr(orig[k])[i]) ? arr(orig[k])[i].bullets : []); }));
+  }
   if (options.mode === 'polish') tidyCase(current);
   // Keep only fields the resume model knows (drops unexpected keys, non-text values, empty rows).
   const resume = Core.clean(current);

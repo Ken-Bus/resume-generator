@@ -57,13 +57,16 @@ function scorePair(a, b, seen) {
 }
 
 // before / after: resume objects (the customer's answers and the ACCEPTED polish). -> { points, charge, threshold, by }
-function score(before, after) {
+// `aiAnswer` (optional): the AI's raw answer. A removed repeat is credited only when the AI itself left that line out, so tidying done by the guard
+// (restoring or de-duplicating lines around a withheld suggestion) can never earn a charge for work the AI did not do.
+function score(before, after, aiAnswer) {
+  const aiKeys = aiAnswer ? new Set(I.changeItems(aiAnswer, aiAnswer).map((it) => I.lineKey(it.b || it.a))) : null;
   const seen = new Set(); const by = { rewrite: 0, restructure: 0, correction: 0, specific: 0, repeat: 0, split: 0, added: 0 };
   let points = 0;
   const add = (kind, n) => { by[kind] += 1; points += n; };
   I.changeItems(before, after).forEach((it) => {
     if (it.kind === 'added') { if (it.split) add('split', 1); else add('added', 3); return; }
-    if (it.kind === 'dropped') { if (it.repeat) add('repeat', 1); return; }                  // each repeated line taken out is one repetition removed
+    if (it.kind === 'dropped') { if (it.repeat && !(aiKeys && aiKeys.has(I.lineKey(it.a)))) add('repeat', 1); return; }                  // each repeated line taken out is one repetition removed
     if (it.kind === 'unchanged' || it.kind === 'cosmetic') return;
     scorePair(it.a, it.b, seen).forEach(([kind, n]) => add(kind, n));
   });

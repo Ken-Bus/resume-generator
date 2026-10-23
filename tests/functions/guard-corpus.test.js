@@ -7,7 +7,8 @@ const { guardResume } = require('../../netlify/functions/_lib/integrity');
 const Core = require('../../resume-core.js');
 const { P, clone } = require('./personas');
 
-const run = (persona, [k, i, j], line) => { const src = Core.clean(P[persona]); const out = clone(src); out[k][i].bullets[j] = line; const g = guardResume(src, out, { mode: 'polish', vocabulary: 'customer service' }); return { kept: g.resume[k][i].bullets[j] === line, g }; };
+// kept = by presence: the guard may also remove the customer's own exact repeats, which moves the index
+const run = (persona, [k, i, j], line) => { const src = Core.clean(P[persona]); const out = clone(src); out[k][i].bullets[j] = line; const g = guardResume(src, out, { mode: 'polish', vocabulary: 'customer service' }); return { kept: g.resume[k][i].bullets.includes(line), g }; };
 
 const INVENTED = [   // [persona, where, line, what it invents]
   ['experienced', ['experience', 1, 0], 'Loaded and unloaded trucks quickly and safely', 'quality claim'],

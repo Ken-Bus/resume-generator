@@ -197,3 +197,12 @@ test('a verb swapped for another is not a lost duty (no duplicate of the origina
   const b = I.guardResume(Core.clean(src), Core.clean(out), { mode: 'polish', vocabulary: '' }).resume.experience[0].bullets;
   assert.equal(b.length, 3, JSON.stringify(b));
 });
+
+// A withheld line keeps the customer's own words, but not their misspellings: the spelling part of the AI's line is theirs and safe to apply.
+test('withholding a reach still applies the customer\'s spelling corrections (salvage)', () => {
+  const out = I.guardResume(Core.clean(job('Cashier', 'Fictional Grocery', ['stock the shelvs and help custmers find items'])),
+    Core.clean(job('Cashier', 'Fictional Grocery', ['Stocked the shelves and led a team of 12 to help customers find items'])), { mode: 'polish', vocabulary: '' });
+  const line = out.resume.experience[0].bullets[0];
+  assert.equal(out.withheld.length, 1);
+  assert.match(line, /shelves/); assert.match(line, /customers/); assert.doesNotMatch(line, /team|12|led/);
+});

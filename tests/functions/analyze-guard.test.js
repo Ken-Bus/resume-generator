@@ -29,7 +29,7 @@ test('Analyze: one at a time, replay-safe, guess-limited (real SQL, AI mocked)',
   const polish = (code, extra = {}) => hs.polish(post({ code, resume: { name: 'Jordan Ellis', summary: { tagline: '', bullets: [], skills: [] }, experience: [{ title: 'Retail Associate', company: 'Fictional Maple Market', start: '2023', end: '2026', bullets: ['loaded trucks and checked orders every morning', 'helped customers find what they needed on the shelves'] }] }, target: 'retail', ...extra }));
 
   await t.test('REGRESSION: two simultaneous Analyze requests (double-send, second tab) run ONE AI call and charge ONE generation', async () => {
-    reset(); const c = await seed(); ai.delayMs = 150;
+    reset(); const c = await seed(); ai.delayMs = 700;
     const rs = await Promise.all([parse(c), parse(c)]);
     assert.deepEqual(rs.map((r) => r.statusCode).sort(), [200, 409]);
     assert.equal(ai.calls, 1); assert.equal(ai.maxInflight, 1); assert.equal(await uses(c), 4);
@@ -37,15 +37,15 @@ test('Analyze: one at a time, replay-safe, guess-limited (real SQL, AI mocked)',
   });
 
   await t.test('five simultaneous Analyze requests on a five-generation code charge exactly one, not all five', async () => {
-    reset(); const c = await seed(); ai.delayMs = 150;
+    reset(); const c = await seed(); ai.delayMs = 700;
     const rs = await Promise.all([1, 2, 3, 4, 5].map(() => parse(c)));
     assert.equal(rs.filter((r) => r.statusCode === 200).length, 1); assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
   });
 
   await t.test('Analyze and Polish never overlap on one code, in either order, and the loser is free', async () => {
-    reset(); const c = await seed(); ai.delayMs = 150;
+    reset(); const c = await seed(); ai.delayMs = 700;
     const a = await Promise.all([parse(c), polish(c)]); assert.equal(a.filter((r) => r.statusCode === 200).length, 1); assert.equal(ai.calls, 1);
-    reset(); const d = await seed(); ai.delayMs = 150;
+    reset(); const d = await seed(); ai.delayMs = 700;
     const b = await Promise.all([polish(d), parse(d)]); assert.equal(b.filter((r) => r.statusCode === 200).length, 1); assert.equal(ai.calls, 1);
     assert.equal(await uses(c) + await uses(d) >= 7, true, 'at most one charge each');
   });
@@ -96,6 +96,15 @@ test('Analyze: one at a time, replay-safe, guess-limited (real SQL, AI mocked)',
     reset(); const ip = { 'x-nf-client-connection-ip': '203.0.113.20' };
     for (let i = 0; i < 30; i++) { const r = await hs.consume({ httpMethod: 'POST', headers: ip, body: JSON.stringify({ code: `FG-QQ${String(i).padStart(2, '0')}-QQQQ` }) }); assert.equal(r.statusCode, 200); }
     assert.equal((await hs.consume({ httpMethod: 'POST', headers: ip, body: JSON.stringify({ code: 'FG-QQQQ-QQQQ' }) })).statusCode, 429);
+  });
+
+  await t.test('Polish: guessing codes is limited per client too (30 unknown codes, then a stated wait), and a real customer on another connection is unaffected', async () => {
+    reset(); const real = await seed(); const ip = { 'x-nf-client-connection-ip': '203.0.113.40' }; const other = { 'x-nf-client-connection-ip': '203.0.113.41' };
+    const ask = (code, headers) => hs.polish({ httpMethod: 'POST', headers, body: JSON.stringify({ code, resume: { name: 'Test Person', contact: {}, experience: [{ title: 'Cashier', company: 'Fictional Grocery', start: '2019', end: '2024', bullets: ['stock shelves and help customers find items in the store'] }], education: [], summary: { bullets: [], skills: [] } } }) });
+    const guess = (i) => `FG-${'PQRSTUVWXY'[Math.floor(i / 10)]}${'ABCDEFGHJK'[i % 10]}PP-PPPP`;
+    for (let i = 0; i < 30; i++) assert.equal((await ask(guess(i), ip)).statusCode, 403);
+    const blocked = await ask('FG-PPPP-PPPP', ip); assert.equal(blocked.statusCode, 429);
+    assert.notEqual((await ask(real, other)).statusCode, 429);
   });
 
   await t.test('verify-license: guessing is limited per client (30 unknown or malformed codes), real customers on other connections are unaffected, and the wait is stated', async () => {
