@@ -20,6 +20,7 @@
 | I5 | `verify-license` had no throttle | Important | Code review | 30 failed lookups / 10 min per client (in memory) |
 | I6 | Release failure was a single attempt (a lapsed lease counts as a strike) | Important | Code review | One retry |
 | I7 | Pure deletions counted as "reworded" | Important | Matrix test | Reported as `dropped`; never charged |
+| I9 | Guided Builder step 1: typing a phrase such as "Seeking a S" in "Work you're looking for" produced "Seeking a Seeking a S position" in the one-line intro (Android acceptance test) | Important (customer-visible, every first impression) | Android report; reproduced by test | `ResumeCore.introFromTarget` strips the customer's own framing once and frames it once (a/an); typing is applied after a 700 ms pause, paste/clear/blur/Next at once; a customer-written intro is never overwritten |
 | I8 | Edit Fields did not highlight flagged project descriptions or job summaries | Important | Customer report | Highlighted with the "Added by AI" note |
 
 ## What was checked and found sound (no change)
@@ -91,6 +92,7 @@ Two automated tests keep this true: *every tracked file is public or blocked* an
 | 2 | Open the page with the console open: gate, guided builder, Try Sample; PDF button without a code | no "Refused to..." / Content-Security-Policy messages; the gate appears; nothing downloads |
 | 3 | iPhone Safari and Android Chrome: tap a field, step through the builder, open the editor, scroll to the bottom | no zoom jump; export buttons do not hide the last field |
 | 4 | `/.netlify/functions/check-code-supply` (see `docs/CODE_SUPPLY_EXPOSURE.md`) | 404/not reachable, or note the JSON for the follow-up fix |
+| 3b | **Android (and iPhone) Guided Builder step 1:** type `Seeking a Retail Sales Associate position.` into "Work you're looking for", then try `Retail Sales Associate`, a paste, and delete it; type your own sentence in the intro and change the role again | the intro shows one clean `Seeking a ... position` (never `Seeking a Seeking a`, never a fragment while typing), clears when you clear the role, and your own sentence is never overwritten (**automated test covers Chromium at 360x740 and 320x568; real Android keyboard not yet confirmed**) |
 | 5 | With your personal code: download a PDF and a Word file | files open; counter unchanged |
 
 **Then at most ONE generation credit (personal license, fictional data; check the counter first):** one Polish run on the fictional Taylor Rivera resume that includes the blank project description and the "Helped organize" bullet, plus a few plain lines.

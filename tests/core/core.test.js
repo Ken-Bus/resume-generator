@@ -89,3 +89,26 @@ test('sinceYear reads a year from free-form dates', () => {
   assert.equal(C.sinceYear('2008'), 2008);
   assert.equal(C.sinceYear('last summer'), null);
 });
+
+test('introFromTarget: one clean "Seeking a ... position" from a plain title or a whole phrase, never doubled, never a partial sentence', () => {
+  const f = C.introFromTarget;
+  const plain = {
+    'customer service': 'Seeking a customer service position',
+    'Retail Sales Associate': 'Seeking a Retail Sales Associate position',
+    'Seeking a Retail Sales Associate position.': 'Seeking a Retail Sales Associate position',
+    'seeking a retail sales associate position': 'Seeking a retail sales associate position',
+    'Seeking a Seeking a Retail Clerk position': 'Seeking a Retail Clerk position',
+    'Looking for a job as a cashier': 'Seeking a cashier position',
+    'I am looking for work as a barista': 'Seeking a barista position',
+    'Seeking an Office Assistant role': 'Seeking an Office Assistant position',
+    'Office assistant': 'Seeking an Office assistant position',
+    'HR assistant': 'Seeking an HR assistant position',
+    'unit clerk': 'Seeking a unit clerk position',
+    '  warehouse   associate  ': 'Seeking a warehouse associate position',
+  };
+  for (const [input, want] of Object.entries(plain)) assert.equal(f(input), want, input);
+  for (const framing of ['', '   ', 'Seeking', 'Seeking a', 'seeking an', 'Looking for', 'a', 'position', 'Seeking a position', '...', '—']) assert.equal(f(framing), '', JSON.stringify(framing));
+  for (const hostile of [null, undefined, 5, {}, ['x'], { toString: 'x' }]) assert.doesNotThrow(() => f(hostile));
+  for (const input of Object.keys(plain)) assert.doesNotMatch(f(input), /seeking.*seeking|\b(a|an) (a|an)\b|position position/i, input);
+  assert.equal(f(f('cashier')), 'Seeking a cashier position', 'feeding the result back in is stable');
+});

@@ -88,7 +88,7 @@ const Wiz = {
   },
 
   busy() { return !!(state.polish && state.polish.busy); },   // a paid polish is running: stay put
-  go(i) { if (Wiz.busy()) return; state.wizard.step = Math.max(0, Math.min(WIZ_STEPS.length - 1, i)); Wiz.render(); document.getElementById('panel-guide').scrollTop = 0; },
+  go(i) { if (Wiz.busy()) return; Wiz.applyTarget(); state.wizard.step = Math.max(0, Math.min(WIZ_STEPS.length - 1, i)); Wiz.render(); document.getElementById('panel-guide').scrollTop = 0; },
   next() { if (Wiz.busy()) return; if (state.wizard.step >= WIZ_STEPS.length - 1) return Wiz.finish(); Wiz.go(state.wizard.step + 1); },
   back() { if (Wiz.busy()) return; Wiz.go(state.wizard.step - 1); },
   finish() { renderEditFields(); switchPanel('edit'); document.getElementById('panel-edit').scrollTop = 0; renderEditPolish(); const card = document.getElementById('edit-polish'); if (card && card.scrollIntoView) card.scrollIntoView({ block: 'nearest' }); },   // start at the top, where AI polish is offered (and on screen even if the page itself was scrolled to reach this button)
@@ -120,15 +120,28 @@ const Wiz = {
     if (v !== 'no' && !state.data.experience.length) state.data.experience.push({ title: '', company: '', location: '', start: '', end: '', summary: '', bullets: [] });
     Wiz.render(); renderPreview();
   },
-  setTarget(v) {
-    const w = state.wizard; w.target = v;
+  // "Work you're looking for" fills the one-line intro, but only while the intro is empty or still our own fill (a customer's edit is never
+  // overwritten). Typing is applied after a short pause so a half-typed word never becomes a half-sentence; a paste, a keyboard
+  // suggestion, a clear, leaving the field or pressing Next applies at once. The intro field itself stays independently editable.
+  setTarget(v, ev) {
+    const w = state.wizard; const prev = w.target || ''; w.target = v;
+    clearTimeout(w.targetTimer);
+    // Keystrokes change the text by one character; a paste, a replaced word, a cleared box or a filled-in value changes it by more.
+    const typing = ev && /^(insertText|insertCompositionText|deleteContent|deleteWord|deleteSoft|deleteHard)/.test(ev.inputType || '') && Math.abs(v.length - prev.length) <= 1;
+    if (typing && v.trim()) { w.targetTimer = setTimeout(() => Wiz.applyTarget(), 700); return; }
+    Wiz.applyTarget();
+  },
+  applyTarget() {
+    const w = state.wizard; if (!w) return;
+    clearTimeout(w.targetTimer);
     const t = state.data.summary.tagline;
-    if (!t || t === w.autoTagline) {
-      w.autoTagline = v.trim() ? `Seeking a ${v.trim()} position` : '';
-      state.data.summary.tagline = w.autoTagline;
-      const el = document.getElementById('wiz-tagline'); if (el) el.value = w.autoTagline;
-      renderPreview();
-    }
+    if (t && t !== w.autoTagline) return;                       // the customer wrote or changed it: leave it alone
+    const next = ResumeCore.introFromTarget(w.target);
+    if (next === t) { w.autoTagline = next; return; }
+    w.autoTagline = next;
+    state.data.summary.tagline = next;
+    const el = document.getElementById('wiz-tagline'); if (el) el.value = next;
+    renderPreview();
   },
   addSinceLine(i) {
     const e = state.data.experience[i];
@@ -418,7 +431,7 @@ const Wiz = {
         <div class="wiz-title">What kind of work are you looking for?</div>
         <div class="wiz-help">A rough idea is fine. You can change it any time.</div>
         <label class="wiz-label">Work you&rsquo;re looking for <span class="wiz-optional">(optional)</span>
-          <input class="wiz-input" value="${esc(w.target)}" oninput="Wiz.setTarget(this.value)" placeholder="e.g. customer service, warehouse, office assistant"></label>
+          <input class="wiz-input" value="${esc(w.target)}" oninput="Wiz.setTarget(this.value, event)" onchange="Wiz.applyTarget()" placeholder="e.g. customer service, warehouse, office assistant"></label>
         <div class="wiz-label">Which sounds most like you? <span class="wiz-optional">(helps match the wording to you)</span></div>
         <div class="wiz-checks">
           ${opt('first', 'This is my first resume')}

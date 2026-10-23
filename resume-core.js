@@ -125,5 +125,28 @@
     return m ? Number(m[0]) : null;
   }
 
-  return { blank, clean, hasContent, hasWritableText, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear };
+  // "Work you're looking for" -> the one-line intro. Customers type a job title ("Retail Sales Associate") but also whole phrases
+  // ("Seeking a Retail Sales Associate position.", "looking for a job as a cashier"). Strip our own framing from what they typed so it is
+  // never said twice, then frame it once. Returns '' when nothing usable is left (an empty box, or only framing words such as "Seeking a").
+  function introFromTarget(value) {
+    let r = str(value).replace(/\s+/g, ' ').trim();
+    const lead = /^(?:(?:i\s*(?:am|['’]m)\s+)?(?:currently\s+)?(?:seeking|seek|looking\s+for|looking\s+to\s+find|searching\s+for|hoping\s+(?:to\s+find|for)|want(?:ing)?|need|applying\s+(?:for|to))\b[\s:,-]*)+/i;
+    const tail = /\s+(?:position|positions|role|roles|job|jobs|opportunity|opportunities|work)\s*[.!]*$/i;
+    for (let i = 0; i < 3; i++) {
+      const before = r;
+      r = r.replace(lead, '').replace(/^(?:a\s+job\s+as|a\s+position\s+as|a\s+role\s+as|work\s+as|employment\s+as|to\s+work\s+as|to\s+be)\b[\s:,-]*/i, '')
+        .replace(/^(?:a|an|the)\b\s*/i, '').replace(/^[\s:,.\-–—]+/, '').replace(tail, '').replace(/[\s.,;:!\-–—]+$/, '').trim();
+      if (r === before) break;
+    }
+    if (!/[\p{L}\p{N}]/u.test(r)) return '';
+    if (/^(?:a|an|the|as|for|to|of|in|at|position|positions|role|roles|job|jobs|work|opportunity|opportunities)$/i.test(r)) return '';
+    const first = r.split(' ')[0];
+    const vowelSound = /^(?:[aeio]|hon|hou)/i.test(first) && !/^(?:one|once)/i.test(first)
+      || /^u(?!ni|s[eu]|ti|k|r[aeou]|ber)/i.test(first)
+      || /^[AEFHILMNORSX][A-Z]{1,5}$/.test(first);                       // spoken letter by letter: "an HR assistant", "an LPN"
+    const article = vowelSound ? 'an' : 'a';
+    return `Seeking ${article} ${r} position`;
+  }
+
+  return { blank, clean, hasContent, hasWritableText, dateRange, contactLine, sections, pdfSafe, fileBase, sinceYear, introFromTarget };
 });
