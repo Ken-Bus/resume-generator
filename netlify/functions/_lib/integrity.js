@@ -51,25 +51,34 @@ const STOP = new Set(('a an and the or but if so than that this these those with
   'during while when where which who whom whose their our your his her its they them we you i me my it is are was were be been being am do does did done ' +
   'have has had having not no nor also each every all any some more most other such only own same very can could would should will may might must ' +
   'one two three four five six seven eight nine ten per daily weekly new old day days week weeks year years time times way ways part parts ' +
-  'applicant candidate skill skills position role job jobs work seeking looking interested entry level moving into').split(' '));
-const PLAIN_VERBS = new Set(('help assist support handle complete prepare organize maintain work operate use keep follow answer greet stock clean sort count pack load ' +
+  'applicant candidate skill skills position role job jobs work seeking looking interested entry level moving into ' +
+  'through throughout across between among around within upon via until since toward towards along near against beyond behind beside off out up down back ' +
+  'just then once both either neither yet because although however therefore there here again too even still already often always usually while whenever ' +
+  'what whatever whom how why whether').split(' '));
+const PLAIN_VERB_WORDS = (('help assist support handle complete prepare organize maintain work operate use keep follow answer greet stock clean sort count pack load ' +
   'check record communicate collect deliver serve make take give set put get find carry move place arrange review report write read speak talk listen ' +
-  'learn practice attend join visit offer provide show explain describe wipe stack ring process receive send respond ask').split(' '));
+  'learn practice attend join visit offer provide show explain describe wipe stack ring process receive send respond ask ' +
+  'welcome restock teach taught tidy scan bag label price sell sold assemble demonstrate showed kept wrote told made took gave found').split(' '));
 const stem = (w) => {
   let x = w.toLowerCase();
-  if (x.length > 3) x = x.replace(/(ing|ed|es|ly|er|s)$/, '');
+  if (x.length > 3) { for (let pass = 0; pass < 2 && x.length > 3; pass++) x = x.replace(/(ing|ed|es|ly|er|s)$/, ''); }      // twice, so "orders" and "order" meet
   x = x.replace(/([bdgmnprt])\1$/, '$1');                      // canned -> can, stopped -> stop
   return x.length > 4 ? x.replace(/(e|y)$/, '') : x;
 };
+// The list above is in base form; compare by stem, as the customer's words are ("organized" must match "organize").
+const PLAIN_VERBS = new Set([...PLAIN_VERB_WORDS, ...PLAIN_VERB_WORDS.map(stem)]);
 const wordsOf = (text) => s(text).toLowerCase().match(/[a-z]{3,}/g) || [];
 const stemSet = (text) => new Set(wordsOf(text).map(stem));
+
+// "used" -> "us" but "use" -> "use": a stem also matches with a final e added or removed.
+const known = (set, st) => set.has(st) || set.has(`${st}e`) || (st.endsWith('e') && set.has(st.slice(0, -1)));
 
 // Content words in `line` that the customer never used (and that are not plain function words or plain verbs).
 function newContentWords(line, originalStems, skip = new Set()) {
   const out = [];
   wordsOf(line).forEach((w) => {
     const st = stem(w);
-    if (STOP.has(w) || skip.has(w) || PLAIN_VERBS.has(st) || originalStems.has(st) || out.includes(w)) return;
+    if (STOP.has(w) || skip.has(w) || known(PLAIN_VERBS, st) || known(originalStems, st) || out.includes(w)) return;
     out.push(w);
   });
   return out;
@@ -129,6 +138,10 @@ const hasRoot = (text, root) => new RegExp(`\\b${root.replace(/[^a-z]/g, '')}`, 
 
 // scope = { text: the entry's own original text, lines: its original lines, blank: the field was empty in the customer's answers,
 //           stems: stems of the entry's own words (+ the customer's stated goal), globalStems: stems of the whole resume }
+const lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; };
+const nearSpelling = (w, o) => { const a = stem(w); const b = stem(o); return a.length >= 5 && b.length >= 5 && Math.abs(a.length - b.length) <= 1 && lev(a, b) <= 2; };
+
 function scopedReasons(line, scope) {
   const reasons = [];
   if (!scope) return reasons;
@@ -141,6 +154,12 @@ function scopedReasons(line, scope) {
     const fresh = newContentWords(line, scope.stems);
     const borrowed = fresh.filter((w) => scope.globalStems.has(stem(w)));
     if (borrowed.length >= 1 && fresh.length >= 2) reasons.push(`details from a different part of your resume: ${borrowed.slice(0, 3).map((d) => `“${d}”`).join(', ')}`);
+  }
+  // ONE new content word is enough to add a fact ("safely", "refunds", "hazards", "discrepancies"), so in AI Polish a word that this entry never
+  // used is a reason to withhold the line. A corrected spelling of a word the customer wrote ("recieve" -> "received") is not a new word.
+  if (scope.stems && scope.words) {
+    const fresh = newContentWords(line, scope.stems).filter((w) => !scope.words.some((o) => nearSpelling(w, o)));
+    if (fresh.length === 1) reasons.push(`a new detail that is not in this entry: “${fresh[0]}”`);
   }
   const seen = new Set();
   BENEFICIARY_RES.forEach((re) => { for (const m of s(line).matchAll(re)) {
@@ -239,7 +258,8 @@ function reconcile(original, output, options = {}) {
     const o0 = isObj(arr(orig[k])[i]) ? arr(orig[k])[i] : {};
     const lines = allText(o0).map((x) => s(x).trim()).filter(Boolean);
     const entryStems = stemSet(`${lines.join('\n')}\n${s(options.vocabulary)}`);
-    const scope = (blank) => ({ text: lines.join('\n'), lines, blank, stems: entryStems, globalStems: originalStems, foreign: foreignOf(k, i) });
+    const entryWords = wordsOf(`${lines.join('\n')}\n${s(options.vocabulary)}`);
+    const scope = (blank) => ({ text: lines.join('\n'), lines, blank, stems: entryStems, words: entryWords, globalStems: originalStems, foreign: foreignOf(k, i) });
     const hadBullets = arr(o0.bullets).some((b) => s(b).trim());
     arr(e.bullets).forEach((b, j) => check(b, `${k}.${i}.bullets.${j}`, scope(!hadBullets)));
     check(e.summary, `${k}.${i}.summary`, scope(!s(o0.summary).trim()));
@@ -251,7 +271,8 @@ function reconcile(original, output, options = {}) {
 
 // ── did the AI change anything the customer can see? ───────────────────────────────────────────────────────────────
 // Compares the customer's answers with the result, line by line, and reports how many lines were
-//   reworded  a real change in wording (different words, or a line added),
+//   reworded  a real rewrite (see classifyEdit), or a line added,
+//   minor     a one-word or filler-only touch-up: observed, never charged,
 //   dropped   a line removed (not an improvement on its own, so it never counts toward a charge),
 //   cosmetic  only capitals, punctuation or spacing differ,
 //   unchanged identical.
@@ -271,17 +292,61 @@ const textLines = (r) => {
 };
 const lineKey = (t) => s(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+// Word-level difference between two lines (lower-case words, punctuation ignored): the words only in `a` (del), only in `b` (ins), and how
+// many separate places the line changed (hunks). Longest-common-subsequence based; lines are short, so this is cheap.
+function wordDiff(x, y) {
+  const a = lineKey(x).split(' ').filter(Boolean); const b = lineKey(y).split(' ').filter(Boolean);
+  const L = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const del = []; const ins = []; let hunks = 0; let inHunk = false; let i = 0; let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && a[i] === b[j]) { inHunk = false; i++; j++; continue; }
+    if (!inHunk) { hunks++; inHunk = true; }
+    if (j >= b.length || (i < a.length && L[i + 1][j] >= L[i][j + 1])) del.push(a[i++]); else ins.push(b[j++]);
+  }
+  return { del, ins, hunks };
+}
+
+// What KIND of change is this line edit? (two different lines; the caller has already handled identical text)
+//   cosmetic  only capitals, punctuation or spacing differ
+//   minor     a touch-up that is not worth a generation: ONE word added, removed or swapped in one place, or only filler words
+//             ("and", "more", "with"...) changed. "Helped organize food" -> "Helped organize donated food" is minor.
+//   rewrite   anything else: two or more separate edits, a reordered or restructured sentence, several words replaced, a new line.
+// There is no length or word-count cut-off on the line: the test is the SHAPE of the edit, so the same edit is always judged the same way.
+function classifyEdit(x, y) {
+  if (lineKey(x) === lineKey(y)) return 'cosmetic';
+  const d = wordDiff(x, y);
+  if (d.hunks === 1 && d.del.length <= 1 && d.ins.length <= 1) return 'minor';
+  if (d.del.concat(d.ins).every((w) => STOP.has(w))) return 'minor';
+  return 'rewrite';
+}
+
+// Lines are matched by CONTENT inside their group (one entry's bullets, the skills list, a single field), not by position, so deleting a
+// duplicate in the middle of a list, or the AI re-ordering a list, does not make the following lines look rewritten.
+//   1. identical text pairs up first, then text identical except capitals/punctuation/spacing,
+//   2. each remaining new line pairs with the remaining old line it shares the most words with (nothing shared = a new line),
+//   3. old lines nobody pairs with are `dropped`.
+const groupOf = (where) => where.replace(/\.\d+$/, '');
+const byGroup = (lines) => { const m = new Map(); lines.forEach((l) => { const g = groupOf(l.where); if (!m.has(g)) m.set(g, []); m.get(g).push(l.text.trim()); }); return m; };
+const shared = (x, y) => { const d = wordDiff(x, y); return Math.max(lineKey(x).split(' ').length - d.del.length, 0); };
+
 function assessChange(before, after) {
-  const a = new Map(textLines(before).map((l) => [l.where, l.text.trim()]));
-  const b = new Map(textLines(after).map((l) => [l.where, l.text.trim()]));
-  const res = { reworded: 0, cosmetic: 0, unchanged: 0, dropped: 0 };
-  new Set([...a.keys(), ...b.keys()]).forEach((where) => {
-    const x = a.get(where); const y = b.get(where);
-    if (y === undefined) res.dropped++;                                          // a line was removed: reported, but deleting text is not an improvement
-    else if (x === undefined) res.reworded++;                                    // a line was added
-    else if (x === y) res.unchanged++;
-    else if (lineKey(x) === lineKey(y)) res.cosmetic++;
-    else res.reworded++;
+  const ga = byGroup(textLines(before)); const gb = byGroup(textLines(after));
+  const res = { reworded: 0, minor: 0, cosmetic: 0, unchanged: 0, dropped: 0 };
+  new Set([...ga.keys(), ...gb.keys()]).forEach((g) => {
+    const olds = (ga.get(g) || []).map((text) => ({ text, used: false })); const news = (gb.get(g) || []).map((text) => ({ text, used: false }));
+    const pair = (match, kind) => news.forEach((n) => { if (n.used) return; const o = olds.find((x) => !x.used && match(x.text, n.text)); if (o) { o.used = n.used = true; res[kind]++; } });
+    pair((x, y) => x === y, 'unchanged');
+    pair((x, y) => lineKey(x) === lineKey(y), 'cosmetic');
+    news.forEach((n) => {
+      if (n.used) return;
+      let best = null; let bestShared = 0;
+      olds.forEach((o) => { if (o.used) return; const sh = shared(o.text, n.text); if (sh > bestShared) { best = o; bestShared = sh; } });
+      n.used = true;
+      if (!best) { res.reworded++; return; }                                    // nothing in common with any old line: a new line
+      best.used = true; res[{ cosmetic: 'cosmetic', minor: 'minor', rewrite: 'reworded' }[classifyEdit(best.text, n.text)]]++;
+    });
+    res.dropped += olds.filter((o) => !o.used).length;                          // a line was removed: reported, but deleting text is not an improvement
   });
   return res;
 }
@@ -404,4 +469,4 @@ function groundAnalyzed(sourceText, parsed) {
   return { resume, unverified, removed };
 }
 
-module.exports = { reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };
+module.exports = { classifyEdit, wordDiff, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };

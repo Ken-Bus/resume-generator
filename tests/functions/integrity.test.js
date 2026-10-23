@@ -136,16 +136,16 @@ const TAYLOR = {
 };
 
 test('assessChange: an unchanged result reports nothing reworded; real rewording, cosmetic-only edits and added/removed lines are told apart', () => {
-  assert.deepEqual(assessChange(TAYLOR, clone(TAYLOR)), { reworded: 0, cosmetic: 0, unchanged: 5, dropped: 0 });
+  assert.deepEqual(assessChange(TAYLOR, clone(TAYLOR)), { reworded: 0, minor: 0, cosmetic: 0, unchanged: 5, dropped: 0 });
   const better = clone(TAYLOR); better.projects[0].bullets[0] = 'Asked classmates to donate canned food';
-  assert.deepEqual(assessChange(TAYLOR, better), { reworded: 1, cosmetic: 0, unchanged: 4, dropped: 0 });
+  assert.deepEqual(assessChange(TAYLOR, better), { reworded: 1, minor: 0, cosmetic: 0, unchanged: 4, dropped: 0 });
   const cosmetic = clone(TAYLOR); cosmetic.projects[0].bullets = ['Asked classmates to donate cans.', '  sorted and counted the cans '];
-  assert.deepEqual(assessChange(TAYLOR, cosmetic), { reworded: 0, cosmetic: 1, unchanged: 4, dropped: 0 });          // capital + full stop only; the 2nd line differs by spaces alone
+  assert.deepEqual(assessChange(TAYLOR, cosmetic), { reworded: 0, minor: 0, cosmetic: 1, unchanged: 4, dropped: 0 });          // capital + full stop only; the 2nd line differs by spaces alone
   const added = clone(TAYLOR); added.projects[0].bullets.push('Delivered the cans to the pantry');
   assert.equal(assessChange(TAYLOR, added).reworded, 1);
   const dropped = clone(TAYLOR); dropped.projects[0].bullets.pop();
-  assert.deepEqual(assessChange(TAYLOR, dropped), { reworded: 0, cosmetic: 0, unchanged: 4, dropped: 1 });   // deleting text is not an improvement: it never counts toward a charge
-  assert.deepEqual(assessChange(null, undefined), { reworded: 0, cosmetic: 0, unchanged: 0, dropped: 0 });            // junk in, no crash
+  assert.deepEqual(assessChange(TAYLOR, dropped), { reworded: 0, minor: 0, cosmetic: 0, unchanged: 4, dropped: 1 });   // deleting text is not an improvement: it never counts toward a charge
+  assert.deepEqual(assessChange(null, undefined), { reworded: 0, minor: 0, cosmetic: 0, unchanged: 0, dropped: 0 });            // junk in, no crash
 });
 
 test('assessChange ignores facts the guard restores (name, schools, dates): only wording the customer can see counts', () => {

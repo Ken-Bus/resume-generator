@@ -116,14 +116,14 @@ test('FAITHFUL improvements are preserved: kept exactly, counted as meaningful, 
   }
   // the customer's own ownership verbs are theirs to keep or improve
   const owner = clone(TAYLOR); owner.projects[0].bullets = ['Organized the canned food by type', 'Planned pickup times with the pantry'];
-  const r = polishCheck(owner, (o) => { o.projects[0].bullets = ['Organized the canned food by type for pickup', 'Planned pickup times with the pantry staff']; });
+  const r = polishCheck(owner, (o) => { o.projects[0].bullets = ['Organized the canned food by type for pickup', 'Planned the pickup times with the pantry']; });
   assert.deepEqual(r.unverified, []);
 });
 
 test('experienced and career-changer examples: honest tightening passes, inflation and invented results are caught', () => {
   const MICHAEL = Core.clean({ name: 'Michael Johnson', summary: { tagline: 'Warehouse associate', bullets: [], skills: ['Forklift safety'] },
     experience: [{ title: 'Shift Lead', company: 'Fictional Freight Co', start: '2015', end: 'Present', bullets: ['showed new people how to use the pallet jack', 'checked orders for accuracy', 'helped the dock team load trucks'] }] });
-  assert.deepEqual(polishCheck(MICHAEL, (o) => { o.experience[0].bullets = ['Showed new coworkers how to use the pallet jack', 'Checked orders for accuracy', 'Helped the dock team load trucks']; }).unverified, []);
+  assert.deepEqual(polishCheck(MICHAEL, (o) => { o.experience[0].bullets = ['Taught new people to use the pallet jack', 'Checked orders for accuracy', 'Helped the dock team load trucks']; }).unverified, []);
   const bad = flagged(polishCheck(MICHAEL, (o) => { o.experience[0].bullets[2] = 'Organized the dock team loading trucks, improving efficiency'; }));
   assert.match(bad['experience.0.bullets.2'], /responsibility that is not in this entry: “organized”/); assert.match(bad['experience.0.bullets.2'], /result or impact/);   // 'organized' was never in the original line
   const PRIYA = Core.clean({ name: 'Priya Nair', summary: { tagline: '', bullets: [], skills: ['Keeping records'] },

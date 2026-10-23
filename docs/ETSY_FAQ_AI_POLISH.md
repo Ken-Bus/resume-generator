@@ -10,7 +10,7 @@ A: Your access code includes 5 AI generations. A generation is used when the AI 
 
 **Q: If the AI Polish doesn't improve my resume, do I lose a generation?**
 
-A: No. When you choose "Polish My Resume with AI," the AI reviews your resume. A generation is used only if it makes meaningful improvements that stay true to your answers. If your wording is already clear and it finds nothing meaningful to improve, nothing is used, and your resume stays exactly as you wrote it. (Changing only capital letters, punctuation or spacing doesn't count as an improvement.)
+A: No. When you choose "Polish My Resume with AI," the AI reviews your resume. A generation is used only if it rewrites some of your wording in a way that stays true to your answers. Single-word touch-ups, capitals, punctuation and suggestions that add details you didn't give do not use a generation. If your wording is already clear and it finds nothing meaningful to improve, nothing is used, and your resume stays exactly as you wrote it. (Changing only capital letters, punctuation or spacing doesn't count as an improvement.)
 
 **Q: Will the AI add things I didn't say?**
 

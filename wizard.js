@@ -190,7 +190,7 @@ const Wiz = {
   setOutcome(type, data) {
     const p = Wiz.polishState();
     p.done = type === 'improved' ? (data || {}) : null;
-    p.noChange = type === 'nochange' ? { reason: (data && data.reason) === 'flagged' ? 'flagged' : 'unchanged', withheld: Array.isArray(data && data.withheld) ? data.withheld : [] } : null;
+    p.noChange = type === 'nochange' ? { reason: (data && data.reason) === 'flagged' ? 'flagged' : (data && data.reason) === 'minor' ? 'minor' : 'unchanged', withheld: Array.isArray(data && data.withheld) ? data.withheld : [] } : null;
     p.msg = type === 'error' ? data : ''; p.kind = type === 'error' ? 'err' : '';
   },
   // Polish is offered both on the Review step and at the top of the regular editor; both views read the same state.
@@ -378,7 +378,9 @@ const Wiz = {
       const wh = p.noChange.withheld || [];
       const list = wh.length ? `<ul style="margin:6px 0 0 16px;">${wh.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul>` : '';
       const usedLine = `<strong>No generation was used</strong>${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
-      result += p.noChange.reason === 'flagged'
+      result += p.noChange.reason === 'minor'
+        ? `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>Only tiny touch-ups were found.</strong> The AI changed a single word here and there, which isn’t worth a generation, so your wording is unchanged. ${usedLine} If you add more detail to your answers, you can try again.</div>`
+        : p.noChange.reason === 'flagged'
         ? `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>The AI’s suggestions were not used.</strong> It suggested changes, but they added details that are not in your answers, so your wording is unchanged. ${usedLine}${list}</div>`
         : `<div class="notice-box" id="${prefix}polish-nochange" role="status"><strong>No meaningful improvements were found.</strong> The AI reviewed your resume and your wording is unchanged, which often means your answers are already clear. ${usedLine} If you add or change some answers, you can try again.</div>`;
     }

@@ -190,13 +190,13 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     assert.equal(await uses(c), 5); assert.equal((await rsv(c))[0].status, 'released');
     // …and with ONE honest improvement alongside, that improvement is accepted and charged once; every fabrication is still gone
     reset(); clearCap(); const d = await seed();
-    ai.polishPayload = (src) => { const o = fabricate(src); o.projects[0].bullets = ['Organized a food drive that collected 1,200 cans', 'Sorted and counted the donated cans']; return o; };
+    ai.polishPayload = (src) => { const o = fabricate(src); o.projects[0].bullets = ['Organized a food drive that collected 1,200 cans', 'Counted and sorted the donated cans']; return o; };
     const g = parseBody(await polish(d)); const out = JSON.parse(g.result);
     assert.equal(out.name, 'Taylor Rivera');                                                                  // facts restored
     assert.deepEqual(out.experience, []);                                                                     // no work history is NOT an error, and none is invented
     assert.equal(out.education[0].degree, 'High School Diploma');
     assert.deepEqual(out.certifications, ANSWERS.certifications);
-    assert.deepEqual(out.projects[0].bullets, ['asked classmates to donate cans', 'Sorted and counted the donated cans']);   // the honest line is in, the 1,200-cans line is back to the customer's own
+    assert.deepEqual(out.projects[0].bullets, ['asked classmates to donate cans', 'Counted and sorted the donated cans']);   // the honest line is in, the 1,200-cans line is back to the customer's own
     const text = JSON.stringify(out); for (const bad of ['Dynamic leader', '300%', '1,200', 'Salesforce', 'Supervised', 'MBA', 'CDL', 'Big Retail']) assert.equal(text.includes(bad), false, bad);
     assert.deepEqual(g.unverified, []); assert.ok(g.withheld.length >= 3); assert.equal(g.charged, true); assert.equal(await uses(d), 4);
   });
@@ -234,10 +234,10 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
 
   await t.test('long-tenure worker: facts, dates and the single long job are preserved; reworded bullets are accepted', async () => {
     reset(); const c = await seed();
-    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets = ['Loaded and unloaded freight trucks', 'Checked orders for accuracy']; return o; };
+    ai.polishPayload = (src) => { const o = clone(src); o.experience[0].bullets = ['Trucks loaded', 'Orders checked']; return o; };
     const out = JSON.parse(parseBody(await polish(c, WORKER)).result);
     assert.deepEqual([out.experience[0].title, out.experience[0].company, out.experience[0].start, out.experience[0].end], ['Warehouse Associate', 'Fictional Freight Co', '2016', 'Present']);
-    assert.deepEqual(out.experience[0].bullets, ['Loaded and unloaded freight trucks', 'Checked orders for accuracy']);
+    assert.deepEqual(out.experience[0].bullets, ['Trucks loaded', 'Orders checked']);
   });
 
   await t.test('logs never contain the license code or the customer’s text, on success or failure', async () => {
@@ -341,7 +341,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
   // Meaningful = at least one line actually reworded. Capitals, punctuation and spacing alone do not count. Everything else
   // (reserve -> AI -> commit / release, throttle, one-at-a-time, Tailor tokens) is unchanged.
   const { ECHO } = require('./harness');
-  const improved = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays']; return o; };
+  const improved = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food', 'Counted and sorted the donated cans']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays']; return o; };
   const cosmetic = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate cans.', '  Sorted and counted the cans  ']; o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays.']; o.summary.tagline = 'Seeking a Customer Service position.'; return o; };
   const rows = async (c) => (await db.admin('select status, failure_counted fc from license_reservations where code=$1 order by created_at', [c])).rows;
   const watchWarn = () => { const logs = []; const orig = console.warn; console.warn = (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')); return { logs, stop: () => { console.warn = orig; } }; };
@@ -367,7 +367,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
       volunteer: [{ title: 'Volunteer', organization: 'Community Food Pantry', start: '2025', end: 'Present', bullets: ['Packed grocery boxes on Saturdays', 'Greeted families as they arrived'] }], awards: [] };
     try {
       const b = parseBody(await polish(c, plain));
-      assert.deepEqual(b.changes, { reworded: 0, cosmetic: 0, unchanged: 9, dropped: 0 }); assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.error, undefined);
+      assert.deepEqual(b.changes, { reworded: 0, minor: 0, cosmetic: 0, unchanged: 9, dropped: 0 }); assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.error, undefined);
       assert.equal(b.usesRemaining, 5); assert.equal(await uses(c), 5); assert.ok(w.logs.some((l) => /P201/.test(l) && /"unchanged":9/.test(l)));
     } finally { w.stop(); }
   });
@@ -408,7 +408,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     reset(); clearCap(); const c = await seed();
     ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets = ['Asked classmates to donate canned food for the food drive', 'Helped organize the food pickup']; o.volunteer[0].bullets[1] = 'Greeted arriving families'; return o; };
     const b = parseBody(await polish(c, TAYLOR_ENTRY));
-    assert.deepEqual(b.unverified, []); assert.ok(b.changes.reworded >= 3); assert.equal(b.usesRemaining, 4);
+    assert.deepEqual(b.unverified, []); assert.ok(b.changes.reworded >= 2); assert.equal(b.changes.minor, 1, 'the one-word swap next to them is a touch-up, not a rewrite'); assert.equal(b.usesRemaining, 4);
     assert.deepEqual(JSON.parse(b.result).projects[0].bullets, ['Asked classmates to donate canned food for the food drive', 'Helped organize the food pickup']);
   });
 
@@ -426,7 +426,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
       const r = await polish(c); const b = parseBody(r); const out = JSON.parse(b.result);
       assert.equal(r.statusCode, 200); assert.equal(b.charged, true); assert.notEqual(b.noChange, true);
       assert.deepEqual([b.changes.reworded, b.changes.cosmetic], [2, 1], JSON.stringify(b.changes));
-      assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Sorted and counted the donated cans']);   // integrity did not revert it
+      assert.deepEqual(out.projects[0].bullets, ['Asked classmates to donate canned food', 'Counted and sorted the donated cans']);   // integrity did not revert it
       assert.equal(b.usesRemaining, 4); assert.ok(b.tailorToken); assert.equal(await uses(c), 4); assert.deepEqual(await rows(c), [{ status: 'committed', fc: false }]);
       assert.equal(out.name, 'Taylor Rivera'); assert.equal(out.contact.email, ANSWERS.contact.email); assert.equal(out.education[0].school, 'Oakwood High School');
       assert.equal(w.logs.some((l) => /P201/.test(l)), false);

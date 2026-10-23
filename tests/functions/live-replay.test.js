@@ -66,10 +66,10 @@ test('Tailor applies the same entry-scoped guard to the same invention', () => {
 
 test('the build stamp: page and functions share one guard version, and it is bumped with the rules', () => {
   assert.match(Core.GUARD_VERSION, /^[a-z0-9-]{1,40}$/);
-  assert.equal(Core.GUARD_VERSION, 'entry-scope-withhold-3');
+  assert.equal(Core.GUARD_VERSION, 'entry-scope-withhold-4');
 });
 
-test('polish-resume against real SQL: the live result is accepted for bullet 3 only, charged once, never contains the invented claim, and says which guard produced it', async (t) => {
+test('polish-resume against real SQL: the live result is now FREE (only a one-word touch-up survives); a real rewrite beside it is charged once; the invented claim never appears', async (t) => {
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_live_replay');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
@@ -91,17 +91,33 @@ test('polish-resume against real SQL: the live result is accepted for bullet 3 o
     assert.equal(res.statusCode, 200); b = parseBody(res);
   } finally { w.restore && w.restore(); w.stop && w.stop(); }
 
-  const out = JSON.parse(b.result); const p = out.projects[0];
-  assert.equal(b.charged, true); assert.equal(b.usesRemaining, 4); assert.equal(await uses(), 4, 'one honest reword (bullet 3) is charged exactly once');
-  assert.equal(p.description, '', 'blank stays blank');
-  assert.equal(p.bullets[0], 'Asked classmates to donate canned food.');
-  assert.equal(p.bullets[2], 'Helped organize donated food for pickup.');
-  assert.equal(NOT_ALLOWED.test(JSON.stringify(out.projects)), false, 'the invented claim is not anywhere in the project');
-  assert.equal(out.volunteer[0].bullets[1], 'Greeted families as they arrived', 'the volunteer entry that really says it is untouched');
-  assert.deepEqual(b.unverified, [], 'nothing is "kept with a warning" any more');
+  // The reported result had exactly ONE accepted change left after the guard: "food for pickup" -> "donated food for pickup". That is a
+  // one-word touch-up, so the whole polish is free (the owner's decision after the live test) and nothing is applied.
+  assert.equal(b.noChange, true); assert.equal(b.charged, false); assert.equal(b.reason, 'flagged');
+  assert.equal(b.usesRemaining, 5); assert.equal(await uses(), 5, 'nothing is charged for a one-word touch-up');
+  assert.equal(b.result, undefined, 'and nothing is applied');
+  assert.deepEqual(b.changes, { reworded: 0, minor: 1, cosmetic: 0, unchanged: 6, dropped: 0 });
   assert.deepEqual(b.withheld.map((x) => x.where).sort(), ['projects.0.bullets.0', 'projects.0.description']);
-  assert.equal(JSON.stringify(b.withheld).includes('families in the community.'), false, 'the withheld text itself is not handed back');
+  assert.equal(JSON.stringify(b).includes('families in the community.'), false, 'the withheld text itself is not handed back');
+  assert.equal(JSON.stringify(b).includes('collect donated food'), false);
   assert.equal(b.guard.version, Core.GUARD_VERSION); assert.equal(b.guard.withholds, true);
+
+  // The same one-word touch-up on its own: free, reason "minor".
+  hs.polishModule._nochange._events.clear();
+  ai.polishPayload = (r) => { const o = clone(r); o.projects[0].bullets[2] = 'Helped organize donated food for pickup.'; return o; };
+  const solo = parseBody(await hs.polish(post({ code, resume: clone(TAYLOR), target: 'customer service', requestId: 'live-replay-0002' })));
+  assert.equal(solo.noChange, true); assert.equal(solo.reason, 'minor'); assert.equal(solo.charged, false); assert.equal(await uses(), 5); assert.match(solo.message, /small touch-ups/);
+
+  // …but a real rewrite next to the invented claims IS charged once, and the claims are still gone.
+  hs.polishModule._nochange._events.clear();
+  ai.polishPayload = (r) => { const o = LIVE(r); o.projects[0].bullets[2] = 'At pickup, helped organize the food'; return o; };
+  const mixed = parseBody(await hs.polish(post({ code, resume: clone(TAYLOR), target: 'customer service', requestId: 'live-replay-0003' })));
+  const out = JSON.parse(mixed.result); const p = out.projects[0];
+  assert.equal(mixed.charged, true); assert.equal(await uses(), 4);
+  assert.equal(p.description, ''); assert.equal(p.bullets[0], 'Asked classmates to donate canned food.'); assert.equal(p.bullets[2], 'At pickup, helped organize the food');
+  assert.equal(NOT_ALLOWED.test(JSON.stringify(out.projects)), false);
+  assert.equal(out.volunteer[0].bullets[1], 'Greeted families as they arrived', 'the volunteer entry that really says it is untouched');
+  assert.deepEqual(mixed.unverified, []);
 
   // The free version check: a request with no code spends nothing and reveals which guard this deploy runs.
   const probe = parseBody(await hs.polish(post({})));

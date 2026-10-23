@@ -106,7 +106,7 @@ test('FIRST-TIME applicant: invented leadership, scale, metrics, credentials, at
 
 test('EXPERIENCED worker: clearer wording of the same duties passes; promoted duties and metrics are flagged', () => {
   const ok = answer(EXPERIENCED, (o) => {
-    o.experience[0].bullets = ['Showed new coworkers how to use the pallet jack', 'Checked orders for accuracy', 'Kept the dock clean and safe'];
+    o.experience[0].bullets = ['Taught new people to use the pallet jack', 'Checked orders for accuracy', 'Kept the dock clean and safe'];
     o.experience[1].bullets = ['Loaded and unloaded freight trucks', 'Worked with the shipping team'];
   });
   assert.deepEqual(flagged(EXPERIENCED, ok), []);
@@ -206,10 +206,15 @@ test('the prompt tells the model what can still be improved in a clean, plain li
   assert.ok(text.includes('Do not add praise or personality words') && text.includes('Avoid these generic phrases'), 'style limits unchanged');
 });
 
+test('a one-word touch-up ("the cans" -> "the donated cans") is kept as written, never flagged, but is NOT a meaningful improvement', () => {
+  const out = clone(PLAIN); out.projects[0].bullets[1] = 'Sorted and counted the donated cans';
+  const r = reconcile(PLAIN, out, { vocabulary: 'customer service', keepBlankedText: true, entryScope: true });
+  assert.deepEqual(r.unverified, []); const a = assessChange(PLAIN, r.resume); assert.equal(a.reworded, 0); assert.equal(a.minor, 1);
+});
+
 test('guardrails keep an honest improvement of a plain line exactly as the AI wrote it: counted as meaningful, not reverted, not flagged', () => {
   const edits = {
     'detail from the same entry':  (o) => { o.projects[0].bullets[0] = 'Asked classmates to donate canned food for a local pantry'; },
-    'more specific object':        (o) => { o.projects[0].bullets[1] = 'Sorted and counted the donated cans'; },
     'merged short bullets':        (o) => { o.volunteer[0].bullets = ['Packed grocery boxes on Saturdays and greeted families as they arrived']; },
     'tightened wording':           (o) => { o.volunteer[0].bullets[1] = 'Greeted arriving families'; },
     'description as a sentence':   (o) => { o.projects[0].description = 'Collected canned food for a local pantry through a school drive'; }
@@ -228,5 +233,5 @@ test('the same guardrails still catch embellishment of those plain lines, and ca
     'praise': (o) => { o.volunteer[0].bullets[1] = 'Warmly greeted families with dedication'; } };
   for (const [name, edit] of Object.entries(bad)) { const out = clone(PLAIN); edit(out); assert.ok(reconcile(PLAIN, out, { keepBlankedText: true }).unverified.length >= 1, `${name} must be flagged`); }
   const caps = clone(PLAIN); caps.volunteer[0].bullets[0] = 'packed grocery boxes on saturdays.';
-  const r = reconcile(PLAIN, caps, { keepBlankedText: true }); assert.deepEqual(assessChange(PLAIN, r.resume), { reworded: 0, cosmetic: 1, unchanged: 8, dropped: 0 });
+  const r = reconcile(PLAIN, caps, { keepBlankedText: true }); assert.deepEqual(assessChange(PLAIN, r.resume), { reworded: 0, minor: 0, cosmetic: 1, unchanged: 8, dropped: 0 });
 });

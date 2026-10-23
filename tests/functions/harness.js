@@ -80,15 +80,26 @@ const GOOD_RESUME = { name: 'Jordan Ellis', contact: { email: 'jordan.ellis@exam
   experience: [{ title: 'Retail Associate', company: 'Fictional Maple Market', start: 'June 2023', end: 'August 2026', bullets: ['Assisted customers'] }],
   education: [], certifications: [], projects: [], awards: [] };
 
+// A genuine, FAITHFUL rewrite of one line: it adds no word, so the integrity checks accept it, and it changes the sentence's structure
+// ("X and Y" -> "Y and X"; "Counted the drawer at closing" -> "At closing, counted the drawer"), so it is a real rewrite and not a touch-up.
+function realReword(line) {
+  const t = String(line).trim().replace(/[.!]+$/, '');
+  const cap = (x) => x.replace(/^./, (c) => c.toUpperCase()); const low = (x) => x.replace(/^./, (c) => c.toLowerCase());
+  let m = /^(.+?)\s+and\s+(.+)$/i.exec(t); if (m) return `${cap(m[2])} and ${low(m[1])}`;
+  m = /^(.+)\s+((?:at|on|in|for|during|after|before)\s+[^,]+)$/i.exec(t); if (m) return `${cap(m[2])}, ${low(m[1])}`;
+  const w = t.split(/\s+/); if (w.length >= 2) return [cap(w[1]), low(w[0]), ...w.slice(2)].join(' ');       // swap the first two words: no new word, a real edit
+  return t;
+}
+
 // Polish replies. ECHO = the AI hands the customer's resume back untouched (the Taylor Rivera case).
 const ECHO = (r) => r;
 function REWORD_FIRST_BULLET(r) {
   const o = JSON.parse(JSON.stringify(r));
   for (const list of [o.summary && o.summary.bullets, ...['experience', 'projects', 'volunteer'].map((k) => (o[k] || []).map((e) => e.bullets))].flat().filter(Array.isArray)) {
     // A real but FAITHFUL change: it adds no new content word, number, beneficiary or role, so the integrity checks accept it.
-    if (list.length) { list[0] = `${list[0]} and more`; return o; }
+    if (list.length) { list[0] = realReword(list[0]); return o; }
   }
-  o.summary = { ...(o.summary || {}), tagline: `${(o.summary && o.summary.tagline) || 'Seeking work'} and more` };
+  o.summary = { ...(o.summary || {}), tagline: realReword((o.summary && o.summary.tagline) || 'Seeking work in retail') };
   return o;
 }
 
@@ -153,4 +164,4 @@ function captureLogs() {
   return { lines, restore: () => { console.error = orig; } };
 }
 
-module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS, ECHO, REWORD_FIRST_BULLET };
+module.exports = { H, loadHandlers, post, sleep, parseBody, installAi, captureLogs, GOOD_RESUME, FUNCS, ECHO, REWORD_FIRST_BULLET, realReword };

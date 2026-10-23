@@ -18,14 +18,14 @@ Checked and cleared: the AI response handling (`assertResumeShape`, reply parsin
 Most likely the branch deploy that served the test was **running an older build** (884640f or earlier), not the current one. Every layer of the current code was exercised and none can produce the result. I cannot prove which build served the test: this environment cannot reach Netlify, no function log or response body was supplied. Notably, `netlify.toml` first changed in be8f9b4 (publication rules and headers); if Netlify rejected that file the branch would keep serving the previous successful deploy. The file parses as valid TOML here; Netlify's own build log is the place to confirm.
 
 ## What changed (small, no new features)
-1. **A build stamp, so this can be checked for free.** `ResumeCore.GUARD_VERSION` (`entry-scope-withhold-3`) lives in `resume-core.js`, which the page and the AI functions both load. Polish replies carry `guard: { version, withholds, deploy }` (also on the no-code reply), and every `ai-outcome` log line carries `guard`.
+1. **A build stamp, so this can be checked for free.** `ResumeCore.GUARD_VERSION` (`entry-scope-withhold-4`) lives in `resume-core.js`, which the page and the AI functions both load. Polish replies carry `guard: { version, withholds, deploy }` (also on the no-code reply), and every `ai-outcome` log line carries `guard`.
 2. **Regression coverage that fails on the live result:** `tests/functions/live-replay.test.js` (guard, 9 data shapes, Tailor, real-SQL handler incl. charge-once and stamp) and `tests/ui/live-replay.test.js` (browser, desktop and Android width). The old "flag but keep" behaviour is pinned as the thing the pipeline must never use.
 3. No change to the integrity rules, charging, licensing, Tailor, export or security headers.
 
 ## Free check before any further paid test (no credit, about a minute)
 1. Netlify > Deploys > the branch: confirm the **published** deploy is commit `d4d480c` or later, with status "Published" (not failed). If a newer build failed, open its log and send me the error.
-2. Open `https://<branch-site>/.netlify/functions/polish-resume` in a browser tab: it must show `"guard":{"version":"entry-scope-withhold-3",...}` (no Console needed; a plain visit never reaches licensing or the AI). A bare `Method Not Allowed` with no `guard` = old functions.
-3. Page version: Console `ResumeCore.GUARD_VERSION` must print `entry-scope-withhold-3` (`undefined` = old page).
-4. Only then repeat the Taylor Polish (one credit). With the current build the description stays blank, bullet 1 stays as written, and the card lists "left out" items. The Netlify log line `ai-outcome` shows `"guard":"entry-scope-withhold-3"`.
+2. Open `https://<branch-site>/.netlify/functions/polish-resume` in a browser tab: it must show `"guard":{"version":"entry-scope-withhold-4",...}` (no Console needed; a plain visit never reaches licensing or the AI). A bare `Method Not Allowed` with no `guard` = old functions.
+3. Page version: Console `ResumeCore.GUARD_VERSION` must print `entry-scope-withhold-4` (`undefined` = old page).
+4. Only then repeat the Taylor Polish (one credit). With the current build the description stays blank, bullet 1 stays as written, and the card lists "left out" items. The Netlify log line `ai-outcome` shows `"guard":"entry-scope-withhold-4"`.
 
 (The first version of this check was a Console `fetch(...)` one-liner; it is replaced by the address check above. A `401` for a POST with no code is expected, and the reply is valid JSON that `r.json()` reads; see `docs/BUILD_CHECK_2026-10-23.md`.)

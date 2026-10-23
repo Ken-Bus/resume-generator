@@ -48,6 +48,7 @@ const MSG = {
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
   noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
+  minorOnly: 'The AI found only very small touch-ups (a single word here and there), which are not worth a generation, so your wording is unchanged and no generation was used.',
   flaggedOnly: 'The AI suggested changes, but every one of them added details that are not in your answers, so your wording is unchanged and no generation was used.',
   tooLong: 'This resume is too long to polish in one go (the AI could not finish it in time or space). You haven’t been charged. Try again with fewer or shorter entries, for example your most recent jobs first.',
   tooLongInput: 'This resume is too long to polish in one go. You haven’t been charged. Shorten it a little (fewer or shorter entries) and try again.',
@@ -104,6 +105,8 @@ HOW TO WRITE
 8. Write in the first-person-omitted resume style ("Helped customers find products", not "I helped customers find products").
 9. ${target ? `The person is looking for: "${target}". Where it is truthful, put the most relevant facts first and choose wording that fits that kind of work, using only the facts above.` : 'No target job was given, so keep the wording general.'}
 10. The one-line introduction (summary.tagline) may only restate the goal and strengths the person gave; if they gave neither, leave it as it is. Do not write a summary paragraph.
+
+11. Change a line only when the new version is clearly better for a reader. Do not swap one word for a synonym, add a single word, or change only capitals or punctuation: leave such lines exactly as written. If every line is already clear, return the resume unchanged.
 
 EXAMPLES of the difference (fictional)
 - Answer: "helped customers find stuff, put stuff on shelves"
@@ -248,12 +251,13 @@ exports.handler = async function(event) {
   // capped separately (_lib/nochange.js) so it cannot become unlimited free AI. Counts only go to the log (P201 / P202).
   if (changes.reworded === 0) {
     const flaggedOnly = withheld.length > 0;
+    const minorOnly = !flaggedOnly && changes.minor > 0;
     await license.safeRelease(supabase, reservation.reservationId, false);
     nochange.record(code);
     console.warn(flaggedOnly ? 'polish-resume: every change was withheld by the integrity checks; released, not charged' : 'polish-resume: result had NO wording changes; released, not charged',
       { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, withheld: withheld.length });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: 0, withheld: withheld.length });
-    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
+    const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : minorOnly ? 'minor' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : minorOnly ? MSG.minorOnly : MSG.noChange, withheld, changes, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
     if (rid) cachePut(cacheKey(code, rid), body);
     return json(200, body);
   }
