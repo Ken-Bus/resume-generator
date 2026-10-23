@@ -182,3 +182,18 @@ test('the headline: one new quality word (creative, experienced, bilingual, comp
   assert.equal(run('student who loves animals', 'Compassionate student who loves animals'), false);
   for (const [a, b] of [['i want a cashier job', 'I want a cashier job.'], ['looking for a job in a resturant or store', 'Looking for a job in a restaurant or store'], ['cashier with experiance', 'Cashier with experience'], ['i want a cashier job', 'Cashier seeking a retail job']]) assert.equal(run(a, b), true, b);
 });
+
+// ── duties are never lost: found when the independent corpus was run through the guard ────────────────────────────────────────────
+test('a unique duty the AI deletes is put back even when one of its words appears in another line ("cleaned tables" is not "served food to the tables")', () => {
+  const src = { ...blank(), name: 'T', experience: [{ title: 'Server', company: 'Fictional Diner', start: '2019', end: '2024', bullets: ['served food to the tables', 'cleaned tables', 'wash dishes sometimes', 'handled money'] }] };
+  const out = JSON.parse(JSON.stringify(src)); out.experience[0].bullets = ['Served food to the tables', 'Handled money'];                      // two real duties dropped
+  const g = I.guardResume(Core.clean(src), Core.clean(out), { mode: 'polish', vocabulary: '' });
+  const keys = g.resume.experience[0].bullets.map(K);
+  assert.ok(keys.some((k) => /clean/.test(k) && /table/.test(k)), 'cleaning tables is still there'); assert.ok(keys.some((k) => /dish/.test(k)), 'washing dishes is still there');
+});
+test('a verb swapped for another is not a lost duty (no duplicate of the original is put back beside the reworded line)', () => {
+  const src = { ...blank(), name: 'T', experience: [{ title: 'Clerk', company: 'Fictional Store', start: '2019', end: '2024', bullets: ['Filed paperwork each day', 'Did the register', 'Assisted customers at the register'] }] };
+  const out = JSON.parse(JSON.stringify(src)); out.experience[0].bullets = ['Handled paperwork each day', 'Operated the register', 'Handled customers at the register'];
+  const b = I.guardResume(Core.clean(src), Core.clean(out), { mode: 'polish', vocabulary: '' }).resume.experience[0].bullets;
+  assert.equal(b.length, 3, JSON.stringify(b));
+});
