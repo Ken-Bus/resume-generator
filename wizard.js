@@ -238,7 +238,7 @@ const Wiz = {
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
-        Wiz.setOutcome('improved', { unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [] });
+        Wiz.setOutcome('improved', { unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
         renderLicenseBadge(); renderEditFields(); renderPreview();
       } else {
         await Wiz.polishFailed(res.status, json);
@@ -365,14 +365,18 @@ const Wiz = {
       const used = `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
         result = `<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
-      } else
+      } else {
+      const c = p.done.changes || {}; const n = (k) => Number(c[k]) || 0; const lines = (k) => `${n(k)} line${n(k) === 1 ? '' : 's'}`;
+      const did = [n('reworded') ? `rewrote ${lines('reworded')}` : '', n('minor') ? `fixed spelling or a word in ${lines('minor')}` : '', n('cosmetic') ? `tidied capitals or punctuation in ${lines('cosmetic')}` : '', n('dropped') ? `combined or removed ${lines('dropped')} that repeated another` : ''].filter(Boolean);
       result = `<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
+        ${did.length ? `<div id="${prefix}polish-summary" style="margin-top:6px;"><strong>What changed:</strong> ${esc(did.join('; '))}.</div>` : ''}
         ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
         ${wh.length ? `<div class="notice-box" id="${prefix}polish-withheld"><strong>${wh.length} suggested change${wh.length === 1 ? ' was' : 's were'} left out.</strong> They added details that are not in your answers, so your own wording was kept there.
           <ul style="margin:6px 0 0 16px;">${wh.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
         ${unv.length ? `<div class="notice-box"><strong>Please check ${unv.length} line${unv.length === 1 ? '' : 's'}.</strong> The AI added something that wasn’t in your answers (marked yellow in Edit Fields). Keep only what is true.
           <ul style="margin:6px 0 0 16px;">${unv.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
         <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
+      }
     }
     if (p.noChange) {
       const wh = p.noChange.withheld || [];

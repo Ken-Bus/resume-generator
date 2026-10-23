@@ -99,22 +99,43 @@ FACT RULES (never break these)
 7. If a description, summary or an entry's bullets are blank, leave them blank. Do not write new text for something the person left empty.
 
 HOW TO WRITE
-5. Improve what is actually said, not how impressive it sounds. Read EVERY line and ask whether an employer could understand it faster or more exactly. Say who or what the person worked with and what they did, using only the words and details they gave, including details the person gave in other fields of the SAME entry (for example that entry's description or another of its bullets), never details from a different entry. Fix grammar, capitalization and punctuation, join fragments, start each bullet with a plain action verb, keep each bullet to one idea, and drop filler. Also tighten a line that is wordy, repeats another line, or uses a vague verb such as "did", "helped with" or "worked on" when the person's own words name the specific action. If a line is already clear and specific, leave it as it is: never reword a line just to change it. But do not skip a line that can honestly be made clearer.
-6. Keep the person's own distinctive words (names of tools, equipment, places, subjects). Keep their meaning exactly; a reworded line must say the same thing as the original, only more clearly.
-7. Use natural, modest, professional language. Do not add praise or personality words. Avoid these generic phrases unless the person wrote them themselves: ${AVOID_WORDS}. Do not add quality adjectives such as "excellent", "strong" or "effective".
-8. Write in the first-person-omitted resume style ("Helped customers find products", not "I helped customers find products").
-9. ${target ? `The person is looking for: "${target}". Where it is truthful, put the most relevant facts first and choose wording that fits that kind of work, using only the facts above.` : 'No target job was given, so keep the wording general.'}
-10. The one-line introduction (summary.tagline) may only restate the goal and strengths the person gave; if they gave neither, leave it as it is. Do not write a summary paragraph.
-
-11. Change a line only when the new version is clearly better for a reader. Do not swap one word for a synonym, add a single word, or change only capitals or punctuation: leave such lines exactly as written. If every line is already clear, return the resume unchanged.
+Improve what is actually said, not how impressive it sounds. Turn the person's own answers into a clear, well-organised, professional resume that an employer can read in seconds. Read EVERY line and ask whether an employer could understand it faster or more exactly. Say who or what the person worked with and what they did, using only the words and details they gave, including details the person gave in other fields of the SAME entry (for example that entry's description or another of its bullets), never details from a different entry. Tighten a line that is wordy, repeats another line, or uses a vague verb such as "did", "helped with" or "worked on" when the person's own words name the specific action. If a line is already clear and specific, leave it as it is: never reword a line just to change it. But do not skip a line that can honestly be made clearer. Go through EVERY part (headline, skills, and each job, project and volunteer description and bullet) and do all of the following, using only the person's own facts:
+8. SPELLING AND GRAMMAR. Correct every mistake, including a single misspelled word ("resturant", "experiance", "boxs"), a wrong word form ("peoples", "they was correct"), a missing capital, "i" for "I", and missing or wrong punctuation. Fix small mistakes too. Names of companies, schools, places and people stay exactly as written.
+9. FORM AND TENSE. Write each bullet as a short phrase that starts with a plain action verb, with no "I" ("Loaded trucks", not "I load trucks"). Use past tense for past jobs and activities, and present tense for an entry whose end date is "Present". Keep one tense inside an entry.
+10. RUN-ONS AND FRAGMENTS. A line that holds several separate duties becomes separate bullets, one duty each. A fragment such as "cash" or "stock" becomes a short phrase built only from that word ("Handled cash", "Stocked items").
+11. REPETITION. When two lines say the same thing, keep ONE clear line that carries every specific from both. Never delete a duty that is stated only once: if the person did it, it stays.
+12. VAGUE WORDS. Replace "stuff", "things", "did", "worked on" or "helped with" with a plain, specific word only when the person's own words or the entry's other lines name it. If nothing does, use a neutral word ("items", "products", "tasks") rather than an invented detail.
+13. ORDER. Within each entry put the most relevant duties first and keep similar duties together. Keep entries in the order given.
+14. LEAVE CLEAR LINES ALONE. A line that is already correct, clear and specific stays exactly as written; fix capitalization and punctuation only where they are wrong. Do not replace a good word with a synonym, and do not rewrite a line only to change it. If the whole resume is already clear and correct, return it unchanged.
+15. Keep the person's own distinctive words (names of tools, equipment, places, subjects) and their exact meaning. Keep their meaning exactly; a reworded line must say the same thing as the original, only more clearly.
+16. Use natural, modest, professional language that is also plain, the way a calm, careful person would say it to an interviewer. No corporate jargon and no inflated verbs. Do not add praise or personality words. Avoid these generic phrases unless the person wrote them themselves: ${AVOID_WORDS}. Do not add quality adjectives such as "excellent", "strong" or "effective".
+17. ${target ? `The person is looking for: "${target}". Where it is truthful, put the most relevant facts first and choose wording that fits that kind of work, using only the facts above.` : 'No target job was given, so keep the wording general.'}
+18. The one-line introduction (summary.tagline) may only restate the goal and strengths the person gave, with spelling and grammar fixed; if they gave neither, leave it as it is. Do not write a summary paragraph. Skills: fix spelling and capitals and remove exact repeats; never add a skill.
 
 EXAMPLES of the difference (fictional)
+- Answer: "I load trucks and unloaded them and also i count the stock every week then I reported damaged boxs to the supervisor"
+  Good: three bullets: "Loaded and unloaded trucks", "Counted stock every week", "Reported damaged boxes to the supervisor"
+  Bad: "Managed inventory and logistics operations, ensuring zero losses." (adds scope, a result and a metric)
+- Answer: "cash, stock, help people find stuff, clean"
+  Good: "Handled cash", "Stocked items", "Helped people find products", "Cleaned up"
+  Bad: "Handled cash for 200 customers daily in a busy store." (adds a number and a setting)
+- Answer: "Made bread" and "made the bread in the morning" (the same duty twice)
+  Good: one bullet: "Made bread in the morning"
+  Bad: deleting both because they look repetitive, or adding "for local customers"
+- Answer: a job ending "Present" with "answered phones, greet visitors"
+  Good: "Answer phones and greet visitors"
+  Bad: "Provided exceptional front-desk support" (praise, and a different job description)
+- Answer: headline "cashier with experiance"
+  Good: "Cashier with experience"
 - Answer: "helped customers find stuff, put stuff on shelves"
   Good: "Helped customers find products and restocked shelves."
   Bad: "Provided exceptional customer service in a fast-paced retail environment." (adds praise and a setting the person never described)
 - Answer: "ran the register, counted the drawer at night"
   Good: "Operated the register and counted the cash drawer at closing."
   Bad: "Managed cash handling operations with 100% accuracy." (adds a claim and a metric)
+- Answer: "helped organize food for pickup"
+  Good: keep "Helped organize food for pickup" (never turn "helped" into "organized")
+  Bad: "Organized donated food for families in the community." (raises the role and adds who benefited)
 - Answer: "asked classmates to donate cans, sorted them"
   Good: "Asked classmates to donate canned food and sorted the donations."
   Bad: "Spearheaded a school-wide food drive, leading a team of volunteers." (adds leadership and scale)

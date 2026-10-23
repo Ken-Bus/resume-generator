@@ -1,6 +1,6 @@
 # Writing-quality, factual-integrity and charging stress test (2026-10-23)
 
-Scope: one pass on `feature/guided-resume-and-export-fixes`. Fictional data, local Postgres, mocked AI, real Chromium. No paid Anthropic call, no personal generation spent, no customer data, nothing merged or deployed, no production migration, Etsy and Founder OS untouched. Guard version is now `entry-scope-withhold-4`.
+Scope: one pass on `feature/guided-resume-and-export-fixes`. Fictional data, local Postgres, mocked AI, real Chromium. No paid Anthropic call, no personal generation spent, no customer data, nothing merged or deployed, no production migration, Etsy and Founder OS untouched. Guard version is now `entry-scope-withhold-5`.
 
 ## 1. Personas and scenarios
 Ten applicants (`tests/functions/personas.js`): minimal first-timer; detailed first-timer (school, projects, volunteering); 20-year warehouse worker; career changer; returning after a long gap; several jobs + projects + certifications; sparse and badly written (typos, lower case); already well written; long resume at the application limit; incomplete / inconsistent / ambiguous (blank title, end before start, duplicate bullets, "various duties").
@@ -53,7 +53,7 @@ Full suite with database-backed tests enabled: **426 tests, 426 pass, 0 fail, 0 
 **Not yet; ready for the final owner acceptance run.** The defects found here (billing by position, double AI calls, weak guard) are fixed and covered, and the system is better than before this pass. The one thing automated tests cannot establish is how the real model behaves under the stricter rules and the new "rewrite" definition. Release after the checks below pass; if the live run shows many honest lines withheld, loosen only the one-new-word rule (a single-line change guarded by `tests/functions/guard-corpus.test.js`).
 
 ## 8. Minimum owner-only acceptance checks
-1. Netlify: branch deploy at this commit is Published. Open `/.netlify/functions/polish-resume` in a browser: `"version":"entry-scope-withhold-4"`; Console `ResumeCore.GUARD_VERSION` the same (free).
+1. Netlify: branch deploy at this commit is Published. Open `/.netlify/functions/polish-resume` in a browser: `"version":"entry-scope-withhold-5"`; Console `ResumeCore.GUARD_VERSION` the same (free).
 2. `SETUP.md` 5b publication/header commands; page loads with no console security messages; one phone pass (free).
-3. ONE generation, personal licence, fictional Taylor Rivera: Polish. Pass = no invented claim anywhere; the card lists what was left out; the counter drops by 1 only if some line was truly rewritten, otherwise it stays and the card says so; the Netlify `ai-outcome` line shows `"guard":"entry-scope-withhold-4"`.
+3. ONE generation, personal licence, fictional Taylor Rivera: Polish. Pass = no invented claim anywhere; the card lists what was left out; the counter drops by 1 only if some line was truly rewritten, otherwise it stays and the card says so; the Netlify `ai-outcome` line shows `"guard":"entry-scope-withhold-5"`.
 4. Download PDF and Word of the result (free): text matches the screen.

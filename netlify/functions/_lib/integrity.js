@@ -59,17 +59,31 @@ const PLAIN_VERB_WORDS = (('help assist support handle complete prepare organize
   'check record communicate collect deliver serve make take give set put get find carry move place arrange review report write read speak talk listen ' +
   'learn practice attend join visit offer provide show explain describe wipe stack ring process receive send respond ask ' +
   'welcome restock teach taught tidy scan bag label price sell sold assemble demonstrate showed kept wrote told made took gave found').split(' '));
+// Irregular past forms are the same word ("drove" is "drive"). "led", "built", "ran" and "won" are left out on purpose: they claim leadership,
+// ownership or an award and are judged separately.
+const IRREGULAR = { drove: 'drive', driven: 'drive', wrote: 'write', written: 'write', kept: 'keep', sold: 'sell', taught: 'teach', made: 'make', took: 'take', taken: 'take', gave: 'give', given: 'give',
+  found: 'find', held: 'hold', brought: 'bring', bought: 'buy', caught: 'catch', fed: 'feed', got: 'get', had: 'have', met: 'meet', paid: 'pay', sent: 'send', spoke: 'speak', stood: 'stand', told: 'tell',
+  swept: 'sweep', dealt: 'deal', sat: 'sit', did: 'do', done: 'do', went: 'go', came: 'come', saw: 'see', knew: 'know', chose: 'choose', began: 'begin', lost: 'lose', left: 'leave', put: 'put', read: 'read' };
 const stem = (w) => {
-  let x = w.toLowerCase();
+  let x = w.toLowerCase(); if (IRREGULAR[x]) x = IRREGULAR[x];
   if (x.length > 3) { for (let pass = 0; pass < 2 && x.length > 3; pass++) x = x.replace(/(ing|ed|es|ly|er|s)$/, ''); }      // twice, so "orders" and "order" meet
   x = x.replace(/([bdgmnprt])\1$/, '$1');                      // canned -> can, stopped -> stop
   return x.length > 4 ? x.replace(/(e|y)$/, '') : x;
 };
 // The list above is in base form; compare by stem, as the customer's words are ("organized" must match "organize").
 const PLAIN_VERBS = new Set([...PLAIN_VERB_WORDS, ...PLAIN_VERB_WORDS.map(stem)]);
+let NEUTRAL_STEMS = null;     // built once NEUTRAL exists (below)
 const wordsOf = (text) => s(text).toLowerCase().match(/[a-z]{3,}/g) || [];
 const stemSet = (text) => new Set(wordsOf(text).map(stem));
 
+// Plain nouns that name no particular fact: they replace a vague word ("stuff", "things") or restate the work. A line gaining one of them gains no
+// new claim. (Who benefited, where and how well are judged elsewhere.)
+const NEUTRAL = new Set('product products item items thing things task tasks duty duties supply supplies material materials goods merchandise equipment person people persons orders order area areas'.split(' '));
+// Words that mean the same as one the customer wrote, in a resume.
+const SAME_AS = { accurate: ['correct', 'right'], correct: ['accurate', 'right'], customer: ['customers'], store: ['shop'], shop: ['store'], assist: ['help'] };
+NEUTRAL_STEMS = new Set([...NEUTRAL, ...[...NEUTRAL].map(stem)]);
+// A word the customer's plain shorthand obviously refers to ("stock" -> shelves).
+const IMPLIED_BY = { shelv: ['stock'], shelf: ['stock'] };
 // "used" -> "us" but "use" -> "use": a stem also matches with a final e added or removed.
 const known = (set, st) => set.has(st) || set.has(`${st}e`) || (st.endsWith('e') && set.has(st.slice(0, -1)));
 
@@ -79,6 +93,7 @@ function newContentWords(line, originalStems, skip = new Set()) {
   wordsOf(line).forEach((w) => {
     const st = stem(w);
     if (STOP.has(w) || skip.has(w) || known(PLAIN_VERBS, st) || known(originalStems, st) || out.includes(w)) return;
+    if (known(NEUTRAL_STEMS, st) || (SAME_AS[w] || []).some((x) => known(originalStems, stem(x))) || (IMPLIED_BY[st] || []).some((x) => known(originalStems, stem(x)))) return;
     out.push(w);
   });
   return out;
@@ -140,8 +155,20 @@ const hasRoot = (text, root) => new RegExp(`\\b${root.replace(/[^a-z]/g, '')}`, 
 //           stems: stems of the entry's own words (+ the customer's stated goal), globalStems: stems of the whole resume }
 const lev = (a, b) => { const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)]); for (let j = 1; j <= b.length; j++) d[0][j] = j;
   for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[a.length][b.length]; };
-const nearSpelling = (w, o) => { const a = stem(w); const b = stem(o); return a.length >= 5 && b.length >= 5 && Math.abs(a.length - b.length) <= 1 && lev(a, b) <= 2; };
+// A misspelling of a word the customer wrote: close as written ("registar" / "register"), or close once endings are removed ("recieve" / "received").
+const closeBy = (a, b) => a.length >= 5 && b.length >= 5 && Math.abs(a.length - b.length) <= 1 && lev(a, b) <= 2;
+const nearSpelling = (w, o) => closeBy(w, o) || closeBy(stem(w), stem(o));
 
+// How often something was done is a fact. "daily", "every day", "weekly" are plain words (so the new-word test lets them through), but a
+// frequency the entry never stated is invented.
+const FREQ = [
+  [/\b(daily|every day|each day|per day|a day)\b/gi, /\b(daily|day|days)\b/i, 'daily'],
+  [/\b(weekly|every week|each week|per week|a week)\b/gi, /\b(weekly|week|weeks)\b/i, 'weekly'],
+  [/\b(monthly|every month|each month|per month)\b/gi, /\b(monthly|month|months)\b/i, 'monthly'],
+  [/\b(nightly|every night|each night)\b/gi, /\b(nightly|night|nights)\b/i, 'nightly'],
+  [/\b(hourly|every hour|each hour|per hour)\b/gi, /\b(hourly|hour|hours)\b/i, 'hourly'],
+  [/\b(every shift|each shift|per shift)\b/gi, /\b(shift|shifts)\b/i, 'every shift']
+];
 function scopedReasons(line, scope) {
   const reasons = [];
   if (!scope) return reasons;
@@ -161,6 +188,7 @@ function scopedReasons(line, scope) {
     const fresh = newContentWords(line, scope.stems).filter((w) => !scope.words.some((o) => nearSpelling(w, o)));
     if (fresh.length === 1) reasons.push(`a new detail that is not in this entry: “${fresh[0]}”`);
   }
+  FREQ.forEach(([re, evidence, label]) => { if (s(line).match(re) && !evidence.test(scope.text)) reasons.push(`how often is not in this entry: “${label}”`); });
   const seen = new Set();
   BENEFICIARY_RES.forEach((re) => { for (const m of s(line).matchAll(re)) {
     const who = m[1].toLowerCase(); const root = who.split(' ')[0].slice(0, 5);
@@ -330,12 +358,16 @@ const groupOf = (where) => where.replace(/\.\d+$/, '');
 const byGroup = (lines) => { const m = new Map(); lines.forEach((l) => { const g = groupOf(l.where); if (!m.has(g)) m.set(g, []); m.get(g).push(l.text.trim()); }); return m; };
 const shared = (x, y) => { const d = wordDiff(x, y); return Math.max(lineKey(x).split(' ').length - d.del.length, 0); };
 
-function assessChange(before, after) {
+// Every line of the comparison as an item: { kind, a (old text), b (new text) } with kind unchanged | cosmetic | minor | rewrite | added | dropped.
+// An `added` item also says whether it is a SPLIT of an existing line (all its content words come from one old line of the group), and a `dropped`
+// item whether it was a REPEAT (its content is still present in the group's new lines). assessChange counts them; the proposal in
+// docs/PROPOSAL_COLLECTIVE_CHARGING.md would weigh them. Pure.
+function changeItems(before, after) {
   const ga = byGroup(textLines(before)); const gb = byGroup(textLines(after));
-  const res = { reworded: 0, minor: 0, cosmetic: 0, unchanged: 0, dropped: 0 };
+  const items = [];
   new Set([...ga.keys(), ...gb.keys()]).forEach((g) => {
     const olds = (ga.get(g) || []).map((text) => ({ text, used: false })); const news = (gb.get(g) || []).map((text) => ({ text, used: false }));
-    const pair = (match, kind) => news.forEach((n) => { if (n.used) return; const o = olds.find((x) => !x.used && match(x.text, n.text)); if (o) { o.used = n.used = true; res[kind]++; } });
+    const pair = (match, kind) => news.forEach((n) => { if (n.used) return; const o = olds.find((x) => !x.used && match(x.text, n.text)); if (o) { o.used = n.used = true; items.push({ kind, a: o.text, b: n.text, group: g }); } });
     pair((x, y) => x === y, 'unchanged');
     pair((x, y) => lineKey(x) === lineKey(y), 'cosmetic');
     news.forEach((n) => {
@@ -343,11 +375,18 @@ function assessChange(before, after) {
       let best = null; let bestShared = 0;
       olds.forEach((o) => { if (o.used) return; const sh = shared(o.text, n.text); if (sh > bestShared) { best = o; bestShared = sh; } });
       n.used = true;
-      if (!best) { res.reworded++; return; }                                    // nothing in common with any old line: a new line
-      best.used = true; res[{ cosmetic: 'cosmetic', minor: 'minor', rewrite: 'reworded' }[classifyEdit(best.text, n.text)]]++;
+      if (!best) { const have = new Set(olds.flatMap((o) => contentStems(o.text))); const need = contentStems(n.text); items.push({ kind: 'added', b: n.text, group: g, split: need.length > 0 && need.every((st) => known(have, st)) }); return; }
+      best.used = true; items.push({ kind: classifyEdit(best.text, n.text), a: best.text, b: n.text, group: g });
     });
-    res.dropped += olds.filter((o) => !o.used).length;                          // a line was removed: reported, but deleting text is not an improvement
+    const newTexts = news.map((n) => n.text);
+    olds.filter((o) => !o.used).forEach((o) => items.push({ kind: 'dropped', a: o.text, group: g, repeat: covered(o.text, newTexts) }));
   });
+  return items;
+}
+
+function assessChange(before, after) {
+  const res = { reworded: 0, minor: 0, cosmetic: 0, unchanged: 0, dropped: 0 };
+  changeItems(before, after).forEach((it) => { res[{ rewrite: 'reworded', added: 'reworded', minor: 'minor', cosmetic: 'cosmetic', unchanged: 'unchanged', dropped: 'dropped' }[it.kind]]++; });
   return res;
 }
 
@@ -356,6 +395,7 @@ function assessChange(before, after) {
 // back to the customer's own wording (it is "withheld"), the result is re-checked until nothing is flagged, and only known resume fields
 // survive (so an unexpected key or a non-text value from the AI never reaches the page, a PDF or a Word file).
 // What was withheld is reported WITHOUT the AI's text, only where it was and why, so a withheld suggestion is never handed out for free.
+const SECTIONS_ = ['experience', 'volunteer', 'projects'];
 const SECTION_NAME = { experience: 'Job', volunteer: 'Activity', projects: 'Project' };
 const ENTRY_KEY = { experience: 'title', volunteer: 'title', projects: 'name' };
 
@@ -373,16 +413,28 @@ function describeWhere(orig, where) {
   return 'Resume';
 }
 
-// Putting ONE line back by position is only safe when the AI kept the lines in order. If it reordered them (Tailor does, on purpose) a
-// positional revert would duplicate one of the customer's lines and lose another, so the whole group is put back instead.
+// Putting ONE flagged line back. The AI often changes how many lines there are (it splits a run-on into separate bullets, merges repeats), so
+// "line 4" no longer means the customer's line 4. The flagged line is swapped for the customer's own line it came from (the one it shares the
+// most words with); with nothing in common it is dropped. The other lines of the entry are kept: one questionable word must not throw away a
+// whole entry's improvements. Tailor re-orders on purpose, so there the whole group is put back.
 const hasDuplicates = (list) => { const seen = new Set(); return arr(list).some((x) => { const k = lineKey(x); if (!k) return false; if (seen.has(k)) return true; seen.add(k); return false; }); };
 function revertGroup(current, original, index, groupOnly) {
   const ob = arr(original);
-  if (!groupOnly && arr(current).length === ob.length) {
-    const trial = arr(current).slice(); trial[index] = ob[index];
+  if (groupOnly) return JSON.parse(JSON.stringify(ob));
+  const cur = arr(current).slice();
+  if (cur.length === ob.length) {
+    const trial = cur.slice(); trial[index] = ob[index];
     if (!hasDuplicates(trial)) return trial;
   }
-  return JSON.parse(JSON.stringify(ob));
+  const bad = s(cur[index]); let best = -1; let bestShared = 0;
+  ob.forEach((o, k) => { const sh = shared(o, bad); if (sh > bestShared) { best = k; bestShared = sh; } });
+  cur[index] = best < 0 ? '' : ob[best];                                   // '' keeps the other indexes stable; empties are removed by tidyGroups
+  return cur;
+}
+// After all flagged lines are put back: remove the placeholders and any line that now appears twice.
+function tidyList(list) {
+  const seen = new Set();
+  return arr(list).filter((x) => { const k = lineKey(x); if (!k) return false; if (seen.has(k)) return false; seen.add(k); return true; });
 }
 
 function withholdFlagged(orig, resume, unverified, options = {}) {
@@ -410,7 +462,34 @@ function withholdFlagged(orig, resume, unverified, options = {}) {
     }
     withheld.push({ where: w, label: describeWhere(orig, w), kind: u.kind, reasons: arr(u.reasons).map(s) });
   });
+  if (!options.groupOnly && withheld.length) {
+    out.summary.bullets = tidyList(out.summary.bullets);
+    SECTIONS_.forEach((k) => arr(out[k]).forEach((e) => { if (isObj(e) && Array.isArray(e.bullets)) e.bullets = tidyList(e.bullets); }));
+  }
   return { resume: out, withheld };
+}
+
+// The AI may merge repeats and drop duplicates, but it may not delete something the customer actually did. An original line whose words are not
+// (mostly) found anywhere in the entry's new lines is put back. Words are compared by stem, so a merged, re-tensed or re-spelled line counts as kept.
+const TRIVIAL_STEMS = new Set(['work', 'do', 'help']);
+function contentStems(line) { return wordsOf(line).filter((w) => !STOP.has(w)).map(stem).filter((x) => !TRIVIAL_STEMS.has(x)); }
+function covered(origLine, newLines) {
+  const need = contentStems(origLine); if (!need.length) return true;
+  const have = new Set(newLines.flatMap(contentStems)); const haveWords = newLines.flatMap(wordsOf);
+  const hit = need.filter((st) => known(have, st) || haveWords.some((w) => nearSpelling(w, st)) || SAME_COVER(st, have)).length;
+  return hit / need.length >= 0.5;
+}
+const SAME_COVER = (st, have) => (SAME_AS[st] || []).some((x) => known(have, stem(x)));
+function restoreDropped(orig, current) {
+  const fix = (origList, getList, setList) => {
+    const now = arr(getList()).map(s).filter((x) => x.trim()); const back = [];
+    arr(origList).forEach((o, k) => { if (s(o).trim() && !covered(s(o), now)) back.push([k, s(o)]); });
+    if (!back.length) return;
+    const next = now.slice(); back.forEach(([k, line]) => next.splice(Math.min(k, next.length), 0, line)); setList(next);
+  };
+  const os = isObj(orig.summary) ? orig.summary : {};
+  if (isObj(current.summary)) fix(os.bullets, () => current.summary.bullets, (v) => { current.summary.bullets = v; });
+  SECTIONS_.forEach((k) => arr(orig[k]).forEach((o, i) => { const e = arr(current[k])[i]; if (isObj(o) && isObj(e)) fix(o.bullets, () => e.bullets, (v) => { e.bullets = v; }); }));
 }
 
 // mode: 'polish' (also keeps text the AI blanked) or 'tailor'. options.vocabulary: the customer's stated goal.
@@ -426,6 +505,7 @@ function guardResume(original, output, options = {}) {
     withheld.push(...w.withheld); current = w.resume;
     if (pass === 3) current = JSON.parse(JSON.stringify(orig));          // cannot settle: fall back to the customer's own wording
   }
+  if (options.mode === 'polish') restoreDropped(orig, current);
   // Keep only fields the resume model knows (drops unexpected keys, non-text values, empty rows).
   const resume = Core.clean(current);
   // Facts always come from the customer, whatever the AI sent.
@@ -469,4 +549,4 @@ function groundAnalyzed(sourceText, parsed) {
   return { resume, unverified, removed };
 }
 
-module.exports = { classifyEdit, wordDiff, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };
+module.exports = { changeItems, classifyEdit, wordDiff, stem, nearSpelling, known, covered, contentStems, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };

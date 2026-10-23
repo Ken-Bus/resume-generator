@@ -15,6 +15,7 @@ const { exportApi } = require('./export-api');
 const { pdfText, docxText } = require('../functions/files');
 const { realReword } = require('../functions/harness');
 const { P, clone } = require('../functions/personas');
+const { C: QC } = require('../functions/quality-corpus');
 const Core = require('../../resume-core.js');
 const integrity = require('../../netlify/functions/_lib/integrity');
 const GOOD = 'FG-TEST-AAAA';
@@ -195,4 +196,41 @@ test('SYSTEM STRESS (Chromium, simulated server built from the real guard and ch
     await s.page.waitForFunction(() => !state.aiBusy); assert.equal(sim.st.polishCalls, 1); assert.equal(sim.st.tailorCalls, 0); assert.equal(sim.st.uses, 4);
     await s.close();
   });
+  // ── writing quality in the browser: the whole before/after resume, and the downloads ──
+  for (const name of ['firstPoor', 'warehouse', 'retail', 'changer', 'gap', 'disorganized', 'incomplete']) {
+    await t.test(`[quality] ${name}: polish turns the rough resume into the corrected one on screen, in the summary card, in the PDF and in the Word file`, async () => {
+      const c = QC[name]; const ideal = Core.clean(c.after);
+      const sim = simServer({ parsed: () => clone(c.before), polish: () => clone(c.after), tailor: tailorSwap });
+      const s = await open(sim, name === 'warehouse' ? 'android' : 'desktop');
+      await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); switchPanel('edit'); }, c.before);
+      await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(150);
+      assert.equal(sim.st.uses, 4, 'one generation for a genuinely improved resume'); assert.match(await badge(s), /4 of 5/);
+      const shown = await s.page.evaluate(() => JSON.parse(JSON.stringify(ResumeCore.clean(state.data))));
+      assert.deepEqual(shown, ideal, 'the page shows exactly the accepted, corrected resume');
+      const card = await s.page.innerText('#edit-polish'); assert.match(card, /What changed:/); assert.doesNotMatch(card, /No wording changes/);
+      assert.equal(await s.page.locator('#edit-polish .wiz-err').count(), 0);
+      const pdf = pdfText(await download(s, '#btn-pdf')).replace(/\s+/g, ' ').toLowerCase(); const doc = docxText(await download(s, '#btn-word')).replace(/\s+/g, ' ').toLowerCase();
+      for (const b of ideal.experience.concat(ideal.volunteer, ideal.projects).flatMap((e) => e.bullets || [])) { assert.ok(pdf.includes(b.toLowerCase()), `PDF is missing "${b}"`); assert.ok(doc.includes(b.toLowerCase()), `Word is missing "${b}"`); }
+      for (const bad of ['resturant', 'yerabook', 'experiance', 'delivry', 'shelfs', 'boxs ']) { if (JSON.stringify(c.before).includes(bad.trim())) { assert.equal(pdf.includes(bad), false, `PDF still has ${bad}`); assert.equal(doc.includes(bad), false, `Word still has ${bad}`); } }
+      assert.match(await badge(s), /4 of 5/, 'downloading is free');
+      await s.close();
+    });
+  }
+  await t.test('[quality] a resume that is already clear is left alone: free, unchanged, and the card says nothing needed improving', async () => {
+    const c = QC.polished; const sim = simServer({ parsed: () => clone(c.before), polish: (r) => clone(r), tailor: tailorSwap }); const s = await open(sim);
+    await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); switchPanel('edit'); }, c.before);
+    const before = await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data)));
+    await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(100);
+    assert.equal(sim.st.uses, 5); assert.equal(await s.page.evaluate(() => JSON.stringify(ResumeCore.clean(state.data))), before); assert.match(await s.page.innerText('#polish-nochange, #edit-polish'), /No meaningful improvements/);
+    await s.close();
+  });
+  await t.test('[quality] CURRENT policy, stated plainly: six spelling fixes and nothing else are "tiny touch-ups" (free, nothing applied). The owner-approval proposal would charge and apply them', async () => {
+    const c = QC.spellingOnly; const sim = simServer({ parsed: () => clone(c.before), polish: () => clone(c.after), tailor: tailorSwap }); const s = await open(sim);
+    await s.page.evaluate((d) => { state.data = JSON.parse(JSON.stringify(d)); renderEditFields(); renderPreview(); switchPanel('edit'); }, c.before);
+    await s.page.click('#edit-polish-btn'); await s.page.click('#edit-polish-confirm'); await s.page.waitForFunction(() => !state.polish.busy); await s.page.waitForTimeout(100);
+    assert.equal(sim.st.uses, 5); assert.match(await s.page.innerText('#edit-polish'), /Only tiny touch-ups were found/);
+    assert.match(await s.page.innerText('#resume-preview'), /custmers/i, 'the misspellings are still there: this is the gap the proposal closes');
+    await s.close();
+  });
+
 });
