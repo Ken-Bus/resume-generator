@@ -21,7 +21,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_durable');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3); await H.applyMigration(db, H.MIG4);
   const ai = installAi({});
   Object.assign(process.env, { SUPABASE_URL: 'http://mock.invalid', SUPABASE_SERVICE_ROLE_KEY: 'mock', ANTHROPIC_API_KEY: 'mock', TAILOR_TOKEN_SECRET: SECRET, AI_TIMEOUT_MS: '1000' });
   // A new instance = new handler modules, new (empty) memory, new database connection pool. It is used once before the next one is created.
@@ -33,6 +33,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   const uses = async (c) => (await db.admin('select uses_remaining u from licenses where code=$1', [c])).rows[0].u;
   const rsv = async (c) => (await db.admin('select status from license_reservations where code=$1 order by created_at', [c])).rows.map((x) => x.status);
   const reset = () => { ai.mode = 'ok'; ai.delayMs = 0; ai.calls = 0; ai.maxInflight = 0; ai.polishPayload = null; fault.reserve = fault.commit = fault.finish = null; };
+  const noCopy = (c) => db.admin('delete from result_recovery where code = $1', [c]);
   const age = (c, interval) => db.admin(`update license_reservations set committed_at = now() - interval '${interval}', created_at = now() - interval '${interval}' where code = '${c}' and status = 'committed'`);
   const analyze = (hs, code, extra = {}) => hs.parse(post({ code, resumeText: TEXT, ...extra }));
   const polish = (hs, code, extra = {}, resume = RESUME) => hs.polish(post({ code, resume, target: 'retail', ...extra }));
@@ -50,6 +51,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   await t.test('POLISH: the same, through a restart (new pool, empty memory); the re-delivered tailoring token still works for the paid generation', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixAll; const A = await instance();
     const first = parseBody(await polish(A, c, { requestId: 'req-polish-0001' }));
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     assert.equal(first.charged, true); assert.equal(await uses(c), 4);
     const B = await instance();                                                                // "restart"
     const second = await polish(B, c, { requestId: 'req-polish-0001' }); const b = parseBody(second);
@@ -76,6 +78,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   await t.test('FINDING 1: a stale tab resubmitting the earlier request (same id, same input) is recovered free, never charged; Analyze behaves the same', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance();
     await analyze(A, c, { requestId: 'req-stale-0001' }); assert.equal(await uses(c), 4);
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     const stale = await analyze(B, c, { requestId: 'req-stale-0001' }); assert.equal(stale.statusCode, 200); assert.equal(parseBody(stale).recovered, 'regenerated'); assert.equal(await uses(c), 4);
     ai.calls = 0; const other = await analyze(B, c, { requestId: 'req-stale-0001', resumeText: `${TEXT} I also volunteered.` });
     assert.equal(other.statusCode, 409); assert.equal(parseBody(other).code, 'request_conflict'); assert.equal(ai.calls, 0); assert.equal(await uses(c), 4);
@@ -92,6 +95,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
 
   await t.test('FINDING 2: retention. A retry 2 hours later is still recovered; after 24 hours the id is refused as expired (no AI call, no charge, new id works); the input hash is erased', async () => {
     reset(); const c = await seed(); const A = await instance(); await analyze(A, c, { requestId: 'req-ret-0001' });
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     await age(c, '2 hours'); const B = await instance();
     const late = await analyze(B, c, { requestId: 'req-ret-0001' }); assert.equal(late.statusCode, 200); assert.equal(parseBody(late).recovered, 'regenerated'); assert.equal(await uses(c), 4, 'past the old 60-minute window and still never charged');
     await age(c, '25 hours'); ai.calls = 0; const C = await instance();
@@ -105,6 +109,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   await t.test('FAULT: the re-delivery fails (AI outage) -> 502, nothing charged, its turn is given back so the NEXT retry can still be re-delivered', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance();
     await analyze(A, c, { requestId: 'req-analyze-0002' });
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     ai.mode = 'http500'; const failed = await analyze(B, c, { requestId: 'req-analyze-0002' });
     assert.equal(failed.statusCode, 502); assert.equal(parseBody(failed).code, 'recovery_failed'); assert.match(parseBody(failed).error, /nothing more has been charged/); assert.match(parseBody(failed).supportRef, /^R-/); assert.equal(await uses(c), 4);
     ai.mode = 'ok'; const ok = await analyze(B, c, { requestId: 'req-analyze-0002' });
@@ -114,6 +119,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   await t.test('CONCURRENCY: five simultaneous retries of a lost reply across three cold instances: one re-delivery runs, the rest are told to wait, nothing is charged', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance(); const C = await instance(); const D = await instance();
     await analyze(A, c, { requestId: 'req-analyze-0003' }); ai.calls = 0; ai.delayMs = 400;
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     const rs = await Promise.all([B, C, D, B, C].map((hs) => analyze(hs, c, { requestId: 'req-analyze-0003' })));
     assert.equal(rs.filter((r) => r.statusCode === 200).length, 1); assert.equal(rs.filter((r) => r.statusCode === 409).length, 4);
     assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
@@ -122,7 +128,8 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   await t.test('FINDING 4: LIMIT. After three finished re-deliveries the customer gets a plain message with a non-secret support reference (no access code), no AI call, no charge, and a way forward; an EXHAUSTED code still re-delivers', async () => {
     reset(); const c = await seed(1); const A = await instance();
     await analyze(A, c, { requestId: 'req-analyze-0004' }); assert.equal(await uses(c), 0);
-    for (let i = 0; i < 3; i++) assert.equal((await analyze(await instance(), c, { requestId: 'req-analyze-0004' })).statusCode, 200);
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
+    for (let i = 0; i < 3; i++) { assert.equal((await analyze(await instance(), c, { requestId: 'req-analyze-0004' })).statusCode, 200); await noCopy(c); }          // each regeneration stores a new copy; remove it to keep testing the fallback
     ai.calls = 0; const last = await analyze(await instance(), c, { requestId: 'req-analyze-0004' }); const lb = parseBody(last);
     assert.equal(last.statusCode, 409); assert.equal(lb.code, 'recovery_limit'); assert.equal(lb.newRequest, true); assert.match(lb.supportRef, /^R-[0-9A-F]{8}$/);
     assert.match(lb.error, new RegExp(lb.supportRef)); assert.match(lb.error, /never your access code/); assert.equal(lb.error.includes(c), false); assert.equal(ai.calls, 0); assert.equal(await uses(c), 0);
@@ -131,6 +138,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
 
   await t.test('FINDING 4: an abandoned recovery (the worker died mid-recovery) does not abandon the customer: after its lease lapses the retry recovers, and the lapse is forgiven', async () => {
     reset(); const c = await seed(); const A = await instance(); await analyze(A, c, { requestId: 'req-lease-0001' });
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     for (let i = 0; i < 3; i++) {
       await db.admin("update license_reservations set redelivering_until = now() + interval '30 seconds', redelivery_count = redelivery_count + 1 where code=$1 and status='committed'", [c]);   // a recovery started and its worker died
       assert.equal((await analyze(await instance(), c, { requestId: 'req-lease-0001' })).statusCode, 409, 'while the lease is live the retry waits');
@@ -144,6 +152,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     fault.commit = true; const lost = await analyze(A, c, { requestId: 'req-fault-0001' }); fault.commit = null;                  // the charge could not be recorded
     assert.equal(lost.statusCode, 503); assert.equal(await uses(c), 5, 'nothing charged when the charge was not recorded');
     assert.equal((await analyze(A, c, { requestId: 'req-fault-0001' })).statusCode, 200); assert.equal(await uses(c), 4, 'the retry of an UNcommitted step is an ordinary step: charged once');
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     const B = await instance(); fault.reserve = true; const down = await analyze(B, c, { requestId: 'req-fault-0001' }); fault.reserve = null;
     assert.equal(down.statusCode, 503); assert.equal(await uses(c), 4, 'database down during a retry: calm message, nothing changes');
     fault.finish = true; const noFinish = await analyze(B, c, { requestId: 'req-fault-0001' }); fault.finish = null;                  // result produced, but freeing the recovery slot failed
@@ -205,6 +214,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   await t.test('RE-DELIVERY is never turned into a "free, nothing changed" reply: the step was paid, so even a lighter second answer is delivered (and still uncharged)', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixAll; const A = await instance(); const B = await instance();
     await polish(A, c, { requestId: 'req-polish-0005' }); assert.equal(await uses(c), 4);
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     ai.polishPayload = (r) => r;                                                         // the second run happens to find nothing to change
     const again = await polish(B, c, { requestId: 'req-polish-0005' }); const b = parseBody(again);
     assert.equal(again.statusCode, 200); assert.equal(b.charged, true); assert.ok(b.result); assert.notEqual(b.noChange, true); assert.equal(await uses(c), 4);
@@ -212,6 +222,7 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
 
   await t.test('FINDING 3: the AI is busy (429/529) or fails DURING a recovery: honest message, nothing charged, its turn is given back; recovered wording is labelled regenerated, an on-instance repeat is labelled exact and costs no AI call', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance(); await analyze(A, c, { requestId: 'req-rec-0001' });
+    await noCopy(c);                                                              // this test exercises the REGENERATION fallback (a step with no stored copy)
     ai.mode = 'http529'; const busy = parseBody(await analyze(B, c, { requestId: 'req-rec-0001' }));
     assert.equal(busy.code, 'recovery_failed'); assert.match(busy.error, /very busy/); assert.match(busy.error, /completed and counted/); assert.equal(await uses(c), 4);
     ai.mode = 'notjson'; const bad = parseBody(await analyze(B, c, { requestId: 'req-rec-0001' })); assert.equal(bad.code, 'recovery_failed'); assert.equal(await uses(c), 4);
@@ -253,16 +264,17 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     assert.equal((await db.admin('select count(*)::int n from license_reservations where code=$1 and request_key is not null', [c])).rows[0].n, 0);
   });
 
-  await t.test('MIGRATION MISSING: new code against a database without migration 03 answers a calm "try again" and charges nothing', async () => {
-    reset(); const bare = await H.freshDatabase('rg_durable_bare');
-    await bare.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(bare); await H.applyMigration(bare, H.MIG1); await H.applyMigration(bare, H.MIG2);
-    const code = newCode(); await H.seed(bare, [{ code, uses: 5, assigned: true }]);
-    const hs = loadHandlers(bare.pool('service_role', 5)); await hs.verify(post({ code: 'FG-ZZZZ-ZZZZ' })).catch(() => {});
-    const cap = captureLogs(); let r; try { r = await analyze(hs, code, { requestId: 'req-analyze-0006' }); } finally { cap.restore(); }
-    assert.equal(r.statusCode, 503); assert.equal((await bare.admin('select uses_remaining u from licenses where code=$1', [code])).rows[0].u, 5);
-    assert.equal(ai.calls, 0);
-    const old = await analyze(hs, code); assert.equal(old.statusCode, 200, 'without a request id the old call shape still works on the older database');
-    await bare.close();
+  await t.test('MIGRATIONS MISSING: new code against a database without migration 03 or 04 refuses BEFORE the AI is called, charges nothing, and says "try again" (keyed or not)', async () => {
+    for (const [label, migs] of [['neither 03 nor 04', [H.MIG1, H.MIG2]], ['03 but not 04', [H.MIG1, H.MIG2, H.MIG3]]]) {
+      reset(); const bare = await H.freshDatabase('rg_durable_bare'); await bare.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(bare); for (const m of migs) await H.applyMigration(bare, m);
+      const code = newCode(); await H.seed(bare, [{ code, uses: 5, assigned: true }]);
+      const hs = loadHandlers(bare.pool('service_role', 5)); await hs.verify(post({ code: 'FG-ZZZZ-ZZZZ' })).catch(() => {});
+      const cap = captureLogs(); let a, b, p; try { a = await analyze(hs, code, { requestId: 'req-analyze-0006' }); b = await analyze(hs, code); p = await polish(hs, code); } finally { cap.restore(); }
+      for (const r of [a, b, p]) assert.equal(r.statusCode, 503, label);
+      assert.equal((await bare.admin('select uses_remaining u from licenses where code=$1', [code])).rows[0].u, 5, `${label}: nothing charged`); assert.equal(ai.calls, 0, `${label}: no AI call, no Anthropic cost`);
+      assert.match(cap.lines.join('\n'), /migration 04|RESULT_ENCRYPTION_KEY|migration 03/, label);
+      await bare.close();
+    }
   });
 
   await db.close();

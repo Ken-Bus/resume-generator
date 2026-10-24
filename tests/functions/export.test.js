@@ -25,7 +25,7 @@ test('export-resume: server-enforced authorization (real SQL, no AI)', async (t)
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_export');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3); await H.applyMigration(db, H.MIG4);
   const hs = loadHandlers(db.pool('service_role', 40));
   const ex = hs.exportResume;
   const ai = installAi({});

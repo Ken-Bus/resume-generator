@@ -42,7 +42,7 @@ test('Guided Builder step 1: role field and one-line intro stay in sync without 
     await page.route('**/*', async (route) => {
       const url = route.request().url();
       if (url.includes('/.netlify/functions/')) {
-        const name = url.split('/.netlify/functions/')[1]; calls.push(name);
+        const name = url.split('/.netlify/functions/')[1]; if (name !== 'recover-result') calls.push(name);
         return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ valid: true, usesRemaining: 5, maxUses: 5 }) });
       }
       if (url.startsWith(base)) return route.continue();

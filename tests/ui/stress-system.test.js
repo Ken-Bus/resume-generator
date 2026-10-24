@@ -77,7 +77,7 @@ test('SYSTEM STRESS (Chromium, simulated server built from the real guard and ch
       const url = route.request().url();
       if (url.includes('/.netlify/functions/')) {
         const name = url.split('/.netlify/functions/')[1]; let body = null; try { body = JSON.parse(route.request().postData() || 'null'); } catch (e) {}
-        calls.push({ name, body }); const r = await (sim.api[name] || (() => ({ status: 500, json: { error: 'unmocked' } })))(body);
+        if (name !== 'recover-result') calls.push({ name, body }); const r = await (sim.api[name] || (() => ({ status: 500, json: { error: 'unmocked' } })))(body);
         if (r.raw) return route.fulfill({ status: r.status, headers: r.headers, body: Buffer.from(r.body || '', r.isBase64Encoded ? 'base64' : 'utf8') });
         return route.fulfill({ status: r.status, contentType: 'application/json', body: JSON.stringify(r.json) });
       }

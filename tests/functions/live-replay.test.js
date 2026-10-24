@@ -73,7 +73,7 @@ test('polish-resume against real SQL: the live result is now FREE and APPLIED (o
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const db = await H.freshDatabase('rg_live_replay');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3); await H.applyMigration(db, H.MIG4);
   const hs = loadHandlers(db.pool('service_role', 20));
   const ai = installAi({});
   Object.assign(process.env, { SUPABASE_URL: 'http://mock.invalid', SUPABASE_SERVICE_ROLE_KEY: 'mock', ANTHROPIC_API_KEY: 'mock', TAILOR_TOKEN_SECRET: SECRET, AI_TIMEOUT_MS: '1000' });

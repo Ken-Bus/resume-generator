@@ -197,6 +197,9 @@
   .wiz-err { background: #FFF3F0; border: 1px solid #FFCCBB; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #c0392b; line-height: 1.5; margin-top: 8px; }
   .flag-warn { border-color: #E0A800 !important; background: #FFFBEA !important; }
   .flag-note { font-size: 10px; color: #8a6d00; margin: -2px 0 4px; }
+  .save-status { margin: 6px 14px 0; font-size: 11px; color: #4b5563; line-height: 1.4; }
+  .save-status.warn { color: #8a4b00; background: #FFF4E5; border: 1px solid #F3C98B; border-radius: 4px; padding: 6px 8px; }
+  .draft-note { margin-top: 8px; font-size: 11px; color: #5b4a00; }
   .notice-box { background: #FFFBEA; border: 1px solid #F0DC9A; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #6b5300; margin: 8px 0; line-height: 1.5; }
   @media (max-width: 768px) { .wiz-preview-link { display: block; } }
   /* Frozen while a paid/AI step is running (see setAiBusy) */
@@ -245,7 +248,10 @@
 <div class="layout">
   <!-- LEFT PANEL -->
   <div class="left-panel">
+    <div id="recover-banner" class="notice-box" role="region" aria-label="Saved result" style="display:none; margin:10px 14px 0;"></div>
+    <div id="draft-banner" class="notice-box" role="region" aria-label="Saved draft" style="display:none; margin:10px 14px 0;"></div>
     <div id="restore-notice" class="notice-box" role="status" style="display:none; margin:10px 14px 0;"></div>
+    <div id="save-status" class="save-status" role="status" aria-live="polite" style="display:none;"></div>
     <div class="start-paths" id="start-paths">
       <div class="start-title">How would you like to start?</div>
       <button class="start-card" onclick="startGuided('first')" id="start-first"><strong>Create My First Resume</strong><span>No experience needed. We&rsquo;ll ask simple questions.</span></button>
@@ -439,78 +445,260 @@ let state = {
   pending: null,        // { fn, requestId, at } while a paid step may still be running or its answer may have been lost (kept across a reload)
 };
 
-// ── Keeping the customer's work safe ──────────────────────────────────────────────────────────────────────────────────
-// A refresh, an accidental close or a phone browser discarding a background tab must not erase a resume (or a paid AI result). The work is
-// kept in this TAB's own session storage (never sent anywhere, and gone when the tab is closed, which matters on a shared computer). It is saved a
-// moment after every change and again whenever the page is hidden or closed. If a paid step (Analyze / AI Polish) was running when the page went
-// away, its request id is kept too, so asking again reuses the same request and a step that already finished is not charged a second time
-// (best effort: see netlify/functions/_lib/replay.js).
-const WORK_KEY = 'fg_work_v1';
+// ── Keeping the customer's work safe ────────────────────────────────────────────────────────────────────────────────
+// An unfinished resume is saved AUTOMATICALLY on this device, so a refresh, an accidental close, a browser restart, a dead phone battery or a power
+// cut does not erase it. It is saved half a second after the customer stops typing, every 10 seconds while there are changes, and again when the page
+// is hidden or closed (the close events are a bonus, never the only protection). The most recent half second of typing can still be lost in a sudden
+// power failure, and the page says so.
+//
+//   * It stays on THIS device: it is never uploaded, and saving it costs nothing (no AI call, no generation).
+//   * It never contains an access code, a Tailor authorisation or any other credential. The few things tied to one tab (the access code, the Tailor
+//     authorisation, the id of an AI step still running) live in this tab's session storage instead and disappear with the tab.
+//   * It cannot overwrite newer work with an older copy: a window that has not changed anything never writes; a window whose copy is older than
+//     what another window saved stops saving and says so; and a saved draft from an earlier visit is never replaced until the customer chooses
+//     "Continue where I left off" or "Discard".
+//   * If the browser blocks or fills its storage the page keeps working and says plainly that nothing could be saved. It never claims a save that
+//     did not happen.
+//   * Shared computers: the draft is deleted after 14 days; the banner and the status line say where it is kept; Discard and Clear remove it.
+const DRAFT_KEY = 'fg_draft_v2';              // localStorage (survives closing the browser)
+const LEGACY_WORK_KEY = 'fg_work_v1';         // sessionStorage, earlier builds: imported once
+const TAB_KEY = 'fg_tab_v1', PENDING_KEY = 'fg_pending_v1', TAILOR_KEY = 'fg_tailor_v1';     // sessionStorage: this tab only
+const DRAFT_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const PENDING_MAX_AGE_MS = 10 * 60 * 1000;
+const SAVE_DELAY_MS = 500;
+const local = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } },
+  remove(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+};
+const TAB_ID = (() => { let t = store.get(TAB_KEY); if (!t) { t = Math.random().toString(36).slice(2) + Date.now().toString(36); store.set(TAB_KEY, t); } return t; })();
+const draftSync = { baseRev: 0, lastJson: null, savedAt: null, kind: 'device', failed: false, blocked: false, offered: false };
 let saveTimer = null;
+let discarding = false;
 function isUntouchedSample() { return !!state.sampleJson && JSON.stringify(state.data) === state.sampleJson; }
-function saveWork() {
+function hasWorkOnScreen() { return !!state.data && ResumeCore.hasContent(state.data) && !isUntouchedSample(); }
+
+// What a draft holds: the customer's own content and where they were. No credentials of any kind.
+function draftContent() {
+  const w = state.wizard ? { path: state.wizard.path, step: state.wizard.step, work: state.wizard.work, target: state.wizard.target, autoTagline: state.wizard.autoTagline, profile: state.wizard.profile, edu: state.wizard.edu } : null;
+  return {
+    v: 2, data: state.data, template: state.selectedTemplate.id, alt: !!state.useAltColor, panel: state.activePanel,
+    flags: [...state.flags], polishOriginal: state.polishOriginal, polishResult: state.polishResult, polishBaseline: state.polishBaseline, preTailor: state.preTailor,
+    wizard: w, resumeText: (document.getElementById('resume-input') || {}).value || '', jobText: (document.getElementById('job-desc-input') || {}).value || ''
+  };
+}
+function parseDraft(raw) {
+  let d = null; try { d = JSON.parse(raw || 'null'); } catch (e) { return null; }
+  if (!d || d.v !== 2 || !d.data || typeof d.data !== 'object' || !ResumeCore.hasContent(d.data)) return null;
+  if (!(Number(d.savedAt) > 0) || Date.now() - Number(d.savedAt) > DRAFT_MAX_AGE_MS) return null;       // too old to keep around on a possibly shared computer
+  return d;
+}
+function readStoredDraft() { return parseDraft(local.get(DRAFT_KEY)) || parseDraft(store.get(DRAFT_KEY)); }
+
+// The tab-only things. Saved with every save so a refresh of THIS tab keeps working exactly as before.
+function persistTabState() {
+  if (state.pending) store.set(PENDING_KEY, JSON.stringify(state.pending)); else store.remove(PENDING_KEY);
+  if (state.tailorToken) store.set(TAILOR_KEY, state.tailorToken); else store.remove(TAILOR_KEY);
+}
+
+function setSaveStatus() {
+  const el = document.getElementById('save-status'); if (!el) return;
+  let text = '', cls = '';
+  if (draftSync.blocked) { text = 'Not saved: another window on this device has newer changes. Nothing was overwritten. '; cls = 'warn'; }
+  else if (draftSync.failed) { text = 'Couldn’t save on this device (the browser’s storage is full or blocked). Please download your resume to keep a copy. '; cls = 'warn'; }
+  else if (draftSync.savedAt) {
+    const t = new Date(draftSync.savedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    text = draftSync.kind === 'tab' ? `Saved in this tab only at ${t} (this browser won’t keep it after you close the tab). ` : `Saved on this device at ${t}. `;
+  }
+  el.className = 'save-status' + (cls ? ' ' + cls : ''); el.style.display = text ? 'block' : 'none';
+  el.innerHTML = text ? `${esc(text)}${draftSync.blocked ? '<button class="wiz-link" onclick="saveThisWindowInstead()">Save this window’s version instead</button>' : ''}` : '';
+}
+function saveThisWindowInstead() { draftSync.blocked = false; const cur = readStoredDraft(); draftSync.baseRev = cur ? cur.rev : 0; saveWork(true); }
+
+function saveWork(force) {
   clearTimeout(saveTimer);
   if (discarding) return;
   try {
-    if (!state.data || !ResumeCore.hasContent(state.data) || isUntouchedSample()) { store.remove(WORK_KEY); return; }
-    const w = state.wizard ? { path: state.wizard.path, step: state.wizard.step, work: state.wizard.work, target: state.wizard.target, autoTagline: state.wizard.autoTagline, profile: state.wizard.profile, edu: state.wizard.edu } : null;
-    store.set(WORK_KEY, JSON.stringify({
-      v: 1, savedAt: Date.now(), data: state.data, template: state.selectedTemplate.id, alt: !!state.useAltColor, panel: state.activePanel,
-      flags: [...state.flags], polishOriginal: state.polishOriginal, polishResult: state.polishResult, polishBaseline: state.polishBaseline, preTailor: state.preTailor, tailorToken: state.tailorToken,
-      wizard: w, pending: state.pending || null,
-      resumeText: (document.getElementById('resume-input') || {}).value || '', jobText: (document.getElementById('job-desc-input') || {}).value || ''
-    }));
-  } catch (e) { /* storage full, blocked or private mode: the page works exactly as before, only without this safety net */ }
+    persistTabState();
+    if (!hasWorkOnScreen()) {                                    // nothing worth keeping: an empty window must never delete someone else's saved draft
+      const cur = readStoredDraft();
+      if (cur && cur.tab === TAB_ID && draftSync.savedAt) { local.remove(DRAFT_KEY); store.remove(DRAFT_KEY); draftSync.savedAt = null; draftSync.lastJson = null; }
+      setSaveStatus(); return;
+    }
+    const body = draftContent(); const json = JSON.stringify(body);
+    if (!force && json === draftSync.lastJson) return;            // nothing new: an idle window never writes
+    const cur = readStoredDraft();
+    if (cur && cur.tab !== TAB_ID && cur.rev > draftSync.baseRev) { draftSync.blocked = true; setSaveStatus(); return; }   // never overwrite newer (or not-yet-adopted) work
+    draftSync.blocked = false;
+    const rev = (cur ? cur.rev : 0) + 1;
+    const raw = JSON.stringify({ ...body, rev, tab: TAB_ID, savedAt: Date.now() });
+    let ok = local.set(DRAFT_KEY, raw), kind = 'device';
+    if (!ok) { ok = store.set(DRAFT_KEY, raw); kind = 'tab'; }    // localStorage blocked or full: keep it for this tab at least, and say so
+    if (ok) { draftSync.lastJson = json; draftSync.baseRev = rev; draftSync.savedAt = Date.now(); draftSync.kind = kind; draftSync.failed = false; }
+    else draftSync.failed = true;
+    setSaveStatus();
+  } catch (e) { draftSync.failed = true; setSaveStatus(); }
 }
-function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveWork, 300); }
-let discarding = false;
-// "Clear this saved copy": for a shared computer. It removes the stored copy AND starts the page over (otherwise the work still on screen would just be saved again).
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveWork, SAVE_DELAY_MS); }
+
+// "Clear this saved copy" (shared computers): removes everything this site keeps on the device AND starts the page over.
 function clearSavedWork() {
-  if (!confirm('Remove your resume from this tab and start fresh? Anything you have not downloaded will be gone.')) return;
-  discarding = true; store.remove(WORK_KEY); store.remove(LICENSE_STORAGE_KEY); location.reload();
+  if (!confirm('Remove your resume and access code from this browser and start fresh? Anything you have not downloaded will be gone.')) return;
+  discarding = true; local.remove(DRAFT_KEY); [DRAFT_KEY, LEGACY_WORK_KEY, PENDING_KEY, TAILOR_KEY, LICENSE_STORAGE_KEY].forEach((k) => store.remove(k)); location.reload();
 }
-function restoreWork() {
-  let w = null;
-  try { w = JSON.parse(store.get(WORK_KEY) || 'null'); } catch (e) { w = null; }
-  if (!w || w.v !== 1 || !w.data || typeof w.data !== 'object' || !ResumeCore.hasContent(w.data)) return false;
+
+function restoreWork(w, opts = {}) {
   try {
     state.data = w.data;
     const t = TEMPLATES.find(x => x.id === w.template); if (t) { state.selectedTemplate = t; state.selectedCategory = t.category; }
     state.useAltColor = !!w.alt;
     state.flags = new Set(Array.isArray(w.flags) ? w.flags : []);
     state.polishOriginal = w.polishOriginal || null; state.polishResult = w.polishResult || null; state.polishBaseline = w.polishBaseline || null; state.preTailor = w.preTailor || null;
-    state.tailorToken = typeof w.tailorToken === 'string' ? w.tailorToken : null;
-    if (w.resumeText) document.getElementById('resume-input').value = w.resumeText;
-    if (w.jobText) document.getElementById('job-desc-input').value = w.jobText;
+    if (typeof w.resumeText === 'string') document.getElementById('resume-input').value = w.resumeText;
+    if (typeof w.jobText === 'string') document.getElementById('job-desc-input').value = w.jobText;
     if (w.wizard && typeof w.wizard === 'object') state.wizard = { path: w.wizard.path, step: w.wizard.step, work: w.wizard.work, target: w.wizard.target || '', autoTagline: w.wizard.autoTagline || '', profile: w.wizard.profile, edu: Array.isArray(w.wizard.edu) ? w.wizard.edu : [] };
-    const fresh = w.pending && Date.now() - Number(w.pending.at) < PENDING_MAX_AGE_MS ? w.pending : null;
-    state.pending = fresh;
-    if (fresh && fresh.fn === 'polish' && typeof Wiz !== 'undefined') Wiz.polishState().requestId = fresh.requestId;
     renderCategoryTabs(); renderVariants(); renderEditFields(); renderPreview();
     if (state.wizard) Wiz.render();
     switchPanel(w.panel === 'guide' && !state.wizard ? 'edit' : (['paste', 'edit', 'guide'].includes(w.panel) ? w.panel : 'edit'));
     syncChrome();
+    draftSync.baseRev = Number(w.rev) || 0; draftSync.lastJson = JSON.stringify(draftContent()); draftSync.savedAt = Number(w.savedAt) || Date.now(); draftSync.kind = local.get(DRAFT_KEY) ? 'device' : 'tab'; draftSync.blocked = false;
     const n = document.getElementById('restore-notice');
-    if (n) {
-      n.innerHTML = `<strong>Welcome back.</strong> We kept your resume from this browser tab, so nothing you typed was lost. It is stored only in this tab (never sent anywhere) and disappears when you close it.${fresh ? ' Your last AI step (' + esc(fresh.fn === 'polish' ? 'AI Polish' : 'Analyze') + ') may have been interrupted when the page reloaded. Check the generations counter above. If you run the same step again now it reuses the same request, so a step that already finished should not be charged a second time.' : ''} <button class="wiz-link" onclick="clearSavedWork()">Clear this saved copy</button>`;
+    if (n && !opts.quiet) {
+      const fresh = state.pending;
+      n.innerHTML = `<strong>Welcome back.</strong> We kept your resume, so nothing you typed was lost. It is stored only on this device (never sent anywhere).${fresh ? ' Your last AI step (' + esc(fresh.fn === 'polish' ? 'AI Polish' : 'Analyze') + ') may have been interrupted when the page reloaded. Check the generations counter above. If you run the same step again now it reuses the same request, so a step that already finished should not be charged a second time.' : ''} <button class="wiz-link" onclick="clearSavedWork()">Clear this saved copy</button>`;
       n.style.display = 'block';
     }
     return true;
-  } catch (e) { clearSavedWork(); state.data = null; state.wizard = null; return false; }
+  } catch (e) { discardDraftQuietly(); state.data = null; state.wizard = null; return false; }
 }
+
+// A draft left by an EARLIER visit (a closed browser, another tab) is offered, never applied silently and never overwritten.
+function offerDraft(d) {
+  const el = document.getElementById('draft-banner'); if (!el) return;
+  draftSync.offered = true;
+  const when = new Date(d.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const who = d.data && d.data.name ? ` (${esc(d.data.name)})` : '';
+  el.innerHTML = `<strong>You have an unfinished resume saved on this device${who}.</strong> Last saved ${esc(when)}.
+    <div style="margin-top:8px;"><button class="btn-primary" style="width:auto;" onclick="continueDraft()" id="draft-continue">Continue where I left off</button>
+    <button class="wiz-link" onclick="discardDraft()" id="draft-discard">Discard it and start fresh</button></div>
+    <div class="draft-note">Your draft is kept only in this browser on this device. It is never uploaded, it is deleted after 14 days, and clearing your browser data removes it sooner. It does not follow you to another device. On a shared computer, choose Discard when you are finished. Changes made in the last half second before a sudden power loss may not be saved.</div>`;
+  el.style.display = 'block';
+}
+function hideDraftBanner() { const el = document.getElementById('draft-banner'); if (el) { el.style.display = 'none'; el.innerHTML = ''; } draftSync.offered = false; }
+function continueDraft() {
+  const d = readStoredDraft(); if (!d) { hideDraftBanner(); return; }
+  if (hasWorkOnScreen() && !confirm('Replace what is on screen with your saved resume? What is on screen now will not be kept.')) return;
+  hideDraftBanner(); restoreWork(d); persistTabState();
+}
+function discardDraftQuietly() { local.remove(DRAFT_KEY); store.remove(DRAFT_KEY); store.remove(LEGACY_WORK_KEY); draftSync.baseRev = 0; draftSync.lastJson = null; draftSync.savedAt = null; draftSync.blocked = false; }
+function discardDraft() {
+  if (!confirm('Delete the saved resume from this device? This cannot be undone.')) return;
+  discardDraftQuietly(); hideDraftBanner(); setSaveStatus(); scheduleSave();
+}
+
+// Start-up: restore this tab's own draft (a refresh) without asking; offer an earlier visit's draft; import an earlier build's tab draft once.
+function initDrafts() {
+  try {
+    const legacy = parseLegacy(store.get(LEGACY_WORK_KEY));
+    if (legacy) { store.remove(LEGACY_WORK_KEY); if (!readStoredDraft()) { const tabRaw = JSON.stringify({ ...legacy, rev: 1, tab: TAB_ID, savedAt: Date.now() }); if (!local.set(DRAFT_KEY, tabRaw)) store.set(DRAFT_KEY, tabRaw); } }
+  } catch (e) { /* an unreadable old draft is simply ignored */ }
+  try { const p = JSON.parse(store.get(PENDING_KEY) || 'null'); state.pending = p && Date.now() - Number(p.at) < PENDING_MAX_AGE_MS ? p : null; } catch (e) { state.pending = null; }
+  const tt = store.get(TAILOR_KEY); state.tailorToken = typeof tt === 'string' && tt ? tt : null;
+  const d = readStoredDraft(); if (!d) return;
+  if (d.tab === TAB_ID) {
+    restoreWork(d);
+    if (state.pending && state.pending.fn === 'polish' && typeof Wiz !== 'undefined') Wiz.polishState().requestId = state.pending.requestId;
+  } else offerDraft(d);
+}
+function parseLegacy(raw) {
+  let w = null; try { w = JSON.parse(raw || 'null'); } catch (e) { return null; }
+  if (!w || w.v !== 1 || !w.data || typeof w.data !== 'object' || !ResumeCore.hasContent(w.data)) return null;
+  const pend = w.pending && Date.now() - Number(w.pending.at) < PENDING_MAX_AGE_MS ? w.pending : null;
+  if (pend) store.set(PENDING_KEY, JSON.stringify(pend)); if (typeof w.tailorToken === 'string' && w.tailorToken) store.set(TAILOR_KEY, w.tailorToken);
+  return { v: 2, data: w.data, template: w.template, alt: !!w.alt, panel: w.panel, flags: w.flags || [], polishOriginal: w.polishOriginal || null, polishResult: w.polishResult || null, polishBaseline: w.polishBaseline || null, preTailor: w.preTailor || null, wizard: w.wizard || null, resumeText: w.resumeText || '', jobText: w.jobText || '' };
+}
+// ── Restoring a completed result (temporary encrypted copy kept by the server for up to 24 hours) ─────────────────────────────────────────────
+// If a paid Analyze / AI Polish finished but its reply never reached this browser (power cut, closed browser, lost connection), the finished result can
+// be restored with the access code the customer already entered. It costs nothing: no generation, no Tailor run, no AI call, and the resume is not
+// sent again. Results this device already received are not offered again.
+const RECEIVED_KEY = 'fg_received_v1';
+function readReceived() { try { const a = JSON.parse(local.get(RECEIVED_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+function rememberReceived(ref) {                                                // a short, non-secret reference of a result this device has already shown
+  if (!ref || typeof ref !== 'string') return;
+  const a = readReceived().filter((x) => x && x.ref !== ref && Date.now() - Number(x.at) < 2 * 24 * 3600 * 1000);
+  a.push({ ref, at: Date.now() }); local.set(RECEIVED_KEY, JSON.stringify(a.slice(-20)));
+}
+const refOf = (id) => `R-${String(id).replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+let recoverItems = [];
+async function checkRecoverable() {
+  if (!state.license.code) return;
+  try {
+    const res = await fetch('/.netlify/functions/recover-result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: state.license.code, action: 'list' }) });
+    if (!res.ok) return;                                                        // nothing to offer; never an error for the customer
+    const json = await res.json(); const got = new Set(readReceived().map((x) => x.ref));
+    recoverItems = (Array.isArray(json.results) ? json.results : []).filter((r) => r && typeof r.id === 'string' && !got.has(refOf(r.id)));
+    renderRecoverBanner();
+  } catch (e) { /* offline or blocked: simply nothing is offered */ }
+}
+function renderRecoverBanner(message) {
+  const el = document.getElementById('recover-banner'); if (!el) return;
+  if (!recoverItems.length && !message) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const fmt = (iso) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const rows = recoverItems.map((r) => `<div class="wiz-review-row"><div>${r.kind === 'polish' ? 'AI Polish' : 'Analyze'} finished ${esc(fmt(r.savedAt))} · kept until ${esc(fmt(r.expiresAt))}</div><button class="btn-primary" style="width:auto;" onclick="restoreResult('${esc(r.id)}')" id="restore-${esc(r.id)}">Restore my result</button></div>`).join('');
+  el.innerHTML = `${recoverItems.length ? `<strong>A finished result is saved for you.</strong> A step you already completed did not reach this screen. Restoring it does not use another generation, and you do not need to enter your resume again.${rows}<div class="draft-note">We keep a private, encrypted copy for up to 24 hours so a lost connection does not cost you. Only your access code unlocks it, and it is deleted automatically.</div>` : ''}${message ? `<div class="gate-error" style="display:block; margin-top:6px;" role="alert">${esc(message)}</div>` : ''}`;
+  el.style.display = 'block';
+}
+async function restoreResult(id) {
+  if (state.aiBusy) { renderRecoverBanner(AI_BUSY_TEXT); return; }
+  const btn = document.getElementById(`restore-${id}`); if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+  let json = null, res = null;
+  try {
+    res = await fetch('/.netlify/functions/recover-result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: state.license.code, action: 'fetch', id }) });
+    try { json = await res.json(); } catch (e) { json = null; }
+  } catch (e) { renderRecoverBanner('We couldn’t reach the server. Nothing has been used. Please check your connection and try again.'); return; }
+  let parsed = null; if (res.ok && json && json.result) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
+  if (!parsed) { recoverItems = recoverItems.filter((r) => r.id !== id); renderRecoverBanner((json && json.error) || 'We couldn’t restore that result. Nothing has been used.'); return; }
+  if (hasWorkOnScreen() && !confirm('Replace what is on screen with your saved result? You can undo this right afterwards.')) { renderRecoverBanner(); return; }
+  state.beforeRestore = hasWorkOnScreen() ? { ...draftContent(), rev: draftSync.baseRev, savedAt: Date.now() } : null;
+  const had = hasWorkOnScreen();
+  if (json.kind === 'polish') {
+    if (had) { if (!state.polishBaseline) state.polishBaseline = ResumeCore.clean(state.data); state.polishOriginal = ResumeCore.clean(state.data); } else { state.polishBaseline = null; state.polishOriginal = null; }
+    state.data = parsed; state.polishResult = JSON.parse(JSON.stringify(ResumeCore.clean(parsed))); state.preTailor = null; state.polish = null; state.sampleJson = null; state.wizard = null;
+    state.flags = new Set((Array.isArray(json.unverified) ? json.unverified : []).map((u) => String(u.text || '').trim()).filter(Boolean));
+    state.tailorToken = json.tailorToken || null;
+    if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining; if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+    renderLicenseBadge(); renderEditFields(); renderPreview(); switchPanel('edit'); syncChrome();
+  } else applyAnalyzeResult(json, parsed);
+  rememberReceived(json.supportRef || refOf(id));
+  recoverItems = recoverItems.filter((r) => r.id !== id); renderRecoverBanner();
+  const n = document.getElementById('restore-notice');
+  if (n) {
+    n.innerHTML = `<strong>Your saved result is back.</strong> ${esc(json.message || '')} It is exactly the result you completed${json.savedAt ? ' at ' + esc(new Date(json.savedAt).toLocaleString([], { hour: 'numeric', minute: '2-digit' })) : ''}. No generation was used.${state.beforeRestore ? ' <button class="wiz-link" onclick="undoRestore()" id="undo-restore">Undo: bring back what was here before</button>' : ''}`;
+    n.style.display = 'block';
+  }
+  scheduleSave();
+}
+function undoRestore() {
+  const snap = state.beforeRestore; if (!snap) return;
+  state.beforeRestore = null; restoreWork(snap, { quiet: true });
+  const n = document.getElementById('restore-notice'); if (n) { n.innerHTML = '<strong>Done.</strong> What was on screen before has been brought back. Your saved result is still available until it expires.'; n.style.display = 'block'; }
+  checkRecoverable(); scheduleSave();
+}
+
 // Leaving with a paid step running, or with a resume that has not been downloaded yet, asks first (the browser shows its own wording).
 let exportedSnapshot = null;
 function hasUnsavedWork() { return !discarding && !!state.data && ResumeCore.hasContent(state.data) && !isUntouchedSample() && JSON.stringify(state.data) !== exportedSnapshot; }
 window.addEventListener('beforeunload', (e) => { saveWork(); if (state.aiBusy || hasUnsavedWork()) { e.preventDefault(); e.returnValue = ''; } });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWork(); });
-window.addEventListener('pagehide', saveWork);
+window.addEventListener('pagehide', () => saveWork());
+window.addEventListener('freeze', () => saveWork());
+setInterval(() => { if (document.visibilityState === 'visible') saveWork(); }, 10000);        // a safety net while there are changes (it writes nothing when nothing changed)
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   renderCategoryTabs();
   renderVariants();
-  restoreWork();
+  initDrafts();
   initLicenseGate();
 }
 
@@ -687,6 +875,7 @@ async function verifyLicense(codeInput, opts = {}) {
       store.set(LICENSE_STORAGE_KEY, code);
       hideGate();
       renderLicenseBadge();
+      checkRecoverable();
       if (pendingGeneration) {
         const fn = pendingGeneration;
         pendingGeneration = null;
@@ -768,24 +957,7 @@ async function parseResume() {
       try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; }
     }
     if (parsed) {
-      state.data = parsed;
-      state.wizard = null; state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null; state.sampleJson = null;
-      // Numbers the AI put in that are not in the pasted text are shown in yellow for the customer to confirm.
-      const unverified = Array.isArray(json.unverified) ? json.unverified : [];
-      state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
-      const note = document.getElementById('analyze-notice');
-      const recovered = json.recovered ? `<div class="notice-box" id="recovered-notice" role="status"><strong>${json.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(json.message || '')}${json.supportRef ? ` <span class="support-ref">Reference: ${esc(json.supportRef)}</span>` : ''}</div>` : '';
-      if (note) note.innerHTML = recovered + (unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
-          <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '');
-      state.tailorToken = json.tailorToken || null;
-      document.getElementById('match-summary-box').style.display = 'none';
-      if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
-      if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
-      renderLicenseBadge();
-      renderEditFields();
-      renderPreview();
-      switchPanel('edit');
-      syncChrome();
+      applyAnalyzeResult(json, parsed);
       return;
     }
     await handleParseFailure(res.status, json);
@@ -800,6 +972,29 @@ async function parseResume() {
     document.getElementById('loading').style.display = 'none';
     saveWork();
   }
+}
+
+// Shows an Analyze result (fresh, or restored from the temporary recovery copy).
+function applyAnalyzeResult(json, parsed) {
+    state.data = parsed;
+    state.wizard = null; state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null; state.sampleJson = null;
+    // Numbers the AI put in that are not in the pasted text are shown in yellow for the customer to confirm.
+    const unverified = Array.isArray(json.unverified) ? json.unverified : [];
+    state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
+    const note = document.getElementById('analyze-notice');
+    const recovered = json.recovered ? `<div class="notice-box" id="recovered-notice" role="status"><strong>${json.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(json.message || '')}${json.supportRef ? ` <span class="support-ref">Reference: ${esc(json.supportRef)}</span>` : ''}</div>` : '';
+    if (note) note.innerHTML = recovered + (unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
+        <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '');
+    state.tailorToken = json.tailorToken || null;
+    document.getElementById('match-summary-box').style.display = 'none';
+    if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
+    if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+    renderLicenseBadge();
+    renderEditFields();
+    renderPreview();
+    switchPanel('edit');
+    syncChrome();
+  rememberReceived(json.supportRef);
 }
 
 // Failed analyses are not charged; this only explains what happened and refreshes the counter.

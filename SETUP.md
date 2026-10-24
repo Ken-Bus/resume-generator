@@ -57,6 +57,8 @@ _AI model, thinking setting, caps and the privacy-safe `ai-usage` log: see `docs
 | `AI_TIMEOUT_MS` | **set to `50000`** (§2.3) | Abort an AI call after this long. Must sit below the Netlify function timeout (documented as 60 s) |
 | `TAILOR_TOKEN_SECRET` | yes, for tailoring | Random secret, at least 32 characters (§2.1). If missing or short, analysis still works but tailoring is disabled and a warning is logged |
 | `TAILOR_TOKEN_SECRET_PREVIOUS` | only during a rotation | The old secret, still **accepted** (never used to sign) so customers are not logged out (§2.1) |
+| `RESULT_ENCRYPTION_KEY` | yes, once migration 04 is live | Dedicated random secret, at least 32 characters, **different from** `TAILOR_TOKEN_SECRET`. Without it Analyze and AI Polish are refused (503) before any AI call and nothing is charged. Set it BEFORE deploying this version. See `docs/MIGRATION_04_RECOVERY_PACKAGE.md` |
+| `RESULT_ENCRYPTION_KEY_PREVIOUS` | only during a rotation | The old key, accepted for opening existing copies (they expire within 24 h) |
 | `CODE_SUPPLY_THRESHOLD` | optional (default 20) | Replenish when fewer unassigned codes remain |
 | `CODE_SUPPLY_BATCH_SIZE` | optional (default 100) | Codes generated per replenishment |
 | `ALERT_WEBHOOK_URL` | optional | Any HTTP webhook receiver for the zero-supply alert. Unset = only written to the function log |

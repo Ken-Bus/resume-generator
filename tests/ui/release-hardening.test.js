@@ -59,7 +59,7 @@ test('release hardening (Chromium, production security headers, mocked endpoints
       if (url.includes('/.netlify/functions/')) {
         const name = url.split('/.netlify/functions/')[1];
         let body = null; try { body = JSON.parse(route.request().postData() || 'null'); } catch (e) {}
-        calls.push({ name, body });
+        if (name !== 'recover-result') calls.push({ name, body });
         const r = await (api[name] || (() => ({ status: 500, json: { error: 'unmocked' } })))(body, calls.filter((c) => c.name === name).length);
         if (r.delay) await new Promise((x) => setTimeout(x, r.delay));
         if (r.raw) return route.fulfill({ status: r.status, headers: r.headers, body: Buffer.from(r.body || '', r.isBase64Encoded ? 'base64' : 'utf8') });

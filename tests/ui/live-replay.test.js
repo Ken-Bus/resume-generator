@@ -89,6 +89,7 @@ test('live replay in the browser: the invented "families in the community" never
 test('the owner\'s browser checks: the guard label is readable by the Console, the page sends its version on every paid request, and a refused stale page shows a plain message', async (t) => {
   if (unavailable(t)) return;
   process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'mock';
+  process.env.RESULT_ENCRYPTION_KEY = process.env.RESULT_ENCRYPTION_KEY || 'test-result-key-test-result-key-0123456789';
   const release = require('../../netlify/functions/_lib/release');
   const polishFn = require('../../netlify/functions/polish-resume');
   const { chromium } = require(PW);

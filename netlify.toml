@@ -5,6 +5,10 @@
 [functions."check-code-supply"]
   schedule = "@daily"
 
+# Removes expired recovery copies (migration 04). Expired copies are already unreadable; this only tidies the table.
+[functions."purge-recovery"]
+  schedule = "@hourly"
+
 # ── What is public ─────────────────────────────────────────────────────────────────────────────────────────────────
 # `publish = "."` serves the whole repository root, so anything not blocked below is downloadable. The customer page needs exactly:
 #   index.html, wizard.js, resume-core.js, templates.js, 404.html     (and the functions under /.netlify/functions/*)

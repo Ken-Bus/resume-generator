@@ -242,6 +242,7 @@ const Wiz = {
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
+        if (json.charged !== false) rememberReceived(json.supportRef);          // this device has the result: the "restore" offer will not show it again
         Wiz.setOutcome('improved', { recovered: json.recovered || null, recoveredMessage: json.message || '', supportRef: json.supportRef || '', free: json.charged === false, unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
         renderLicenseBadge(); renderEditFields(); renderPreview();
       } else {

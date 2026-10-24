@@ -2,6 +2,8 @@
 //   1. @supabase/supabase-js  -> a thin adapter that sends rpc()/from().select() to the local database
 //      as service_role (so the grants in the migrations are genuinely exercised);
 //   2. global fetch           -> the AI provider, with scripted failure modes. No network, no real key.
+// The dedicated secret that encrypts the temporary recovery copy (migration 04). Test value only.
+process.env.RESULT_ENCRYPTION_KEY = process.env.RESULT_ENCRYPTION_KEY || 'test-result-key-test-result-key-0123456789';
 const Module = require('module');
 const path = require('path');
 const H = require('../db/helpers');

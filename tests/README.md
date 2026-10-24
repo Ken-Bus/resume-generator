@@ -56,3 +56,9 @@ Never point these tests at a real Supabase project.
 - `functions/durable-idempotency.test.js`: independent instances: conflicts, stale tab, overlap, retention, limit, leases, fault injection, recovery honesty, unauthorized roles, privacy.
 - `ui/recovery.test.js` (Chromium): what the customer sees and can do next for recovered results, refusals, the recovery limit and a failed recovery.
 
+## Local drafts and temporary encrypted recovery suites (migration 04)
+
+- `tests/db/result-recovery.test.js`: real SQL; atomic charge + copy, scoping, 24 h ceiling, expiry on read, purge, rollback.
+- `tests/functions/result-recovery.test.js`: handlers; fail-closed without the key or migration, exact-copy replay, unauthorized/guessing/rate limits, no sensitive logging.
+- `tests/ui/drafts.test.js`, `tests/ui/restore-result.test.js`: Chromium (desktop and Android viewport); autosave, newer-wins, blocked storage, no credentials in drafts, Restore my result.
+- Do not run suites concurrently (they share one local PostgreSQL and timing-sensitive limiters).

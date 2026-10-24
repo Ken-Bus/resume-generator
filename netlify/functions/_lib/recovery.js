@@ -44,4 +44,30 @@ const RECOVERED = {
   regenerated: 'Your earlier step was completed and counted, but its result did not reach you. We prepared a fresh version for the same resume, so the wording may differ from the first one. No additional generation was used.'
 };
 
-module.exports = { reference, blocked, failed, RECOVERED };
+// ── the stored, exact copy (migration 04) ────────────────────────────────────────────────────────────────────────────
+const vault = require('./vault');
+const tokens = require('./token');
+const license = require('./license');
+
+// The response a customer gets when a completed step is restored. A new Tailor authorization is signed for the SAME paid generation: it adds no
+// Tailor runs (the allowance is counted in the database against that generation), it only lets the page use the ones that remain.
+function restoredBody(fn, payload, row, { secret, ttl, guard }) {
+  const tailorToken = tokens.isUsable(secret) ? tokens.sign(secret, row.id, ttl) : null;
+  const common = { result: payload.result, unverified: Array.isArray(payload.unverified) ? payload.unverified : [], usesRemaining: row.remaining, maxUses: row.maximum, tailorToken,
+    recovered: 'exact', message: RECOVERED.exact, supportRef: reference(row.id), saved: true, kind: fn, savedAt: row.created_at, expiresAt: row.expires_at };
+  return fn === 'polish'
+    ? { guard, ...common, withheld: Array.isArray(payload.withheld) ? payload.withheld : [], changes: payload.changes || null, points: payload.points, threshold: payload.threshold, charged: true }
+    : common;
+}
+
+// -> the restored response for THIS code's step, or null (no copy, expired, other code's step, wrong kind, cannot be opened). Never throws; logs no content.
+async function exactFor({ supabase, code, stepId, fn, secret, ttl, guard }) {
+  let row;
+  try { row = await license.fetchRecoverable(supabase, code, stepId); } catch (e) { return null; }
+  if (!row || (fn && row.fn !== fn)) return null;                       // fn = null means "whatever kind this step was" (the restore endpoint)
+  let payload;
+  try { payload = JSON.parse(vault.open(row, { recordId: row.id, fn: row.fn })); } catch (e) { console.error('recovery: a stored copy could not be opened', { ref: 'R301' }); return null; }
+  return restoredBody(row.fn, payload, row, { secret, ttl, guard });
+}
+
+module.exports = { reference, blocked, failed, RECOVERED, restoredBody, exactFor };

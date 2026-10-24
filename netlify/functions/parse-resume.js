@@ -10,6 +10,7 @@ const usage = require('./_lib/usage');
 const { isFirstInFlight } = require('./_lib/inflight');
 const replay = require('./_lib/replay');
 const recovery = require('./_lib/recovery');
+const vault = require('./_lib/vault');
 const { makeLimiter, clientIp } = require('./_lib/rate');
 
 // Guessing codes through this endpoint: an unknown or malformed code counts against the client (best effort, in memory; see _lib/rate.js).
@@ -44,6 +45,12 @@ exports.handler = async function(event) {
     return json(500, { error: MSG.server });
   }
 
+  // A generation is never charged without its temporary encrypted recovery copy (migration 04), so without the dedicated secret nothing paid runs.
+  if (!vault.ready()) {
+    console.error('parse-resume: RESULT_ENCRYPTION_KEY is missing or shorter than 32 characters; paid steps are refused so that no generation is charged without a recovery copy', { ref: 'A110' });
+    return json(503, { error: MSG.server });
+  }
+
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
   const { code: rawCode, resumeText, clientGuard, requestId } = parsed.body;
@@ -73,6 +80,10 @@ exports.handler = async function(event) {
       const hit = replay.get('analyze', code, rid, resumeText);
       if (hit) { try { if (await license.readLicense(supabase, code)) return json(200, { ...hit, recovered: 'exact', message: recovery.RECOVERED.exact }); } catch (e) { /* fall through to the normal path */ } }
     }
+    if (!(await license.recoveryReady(supabase))) {
+      console.error('parse-resume: migration 04 (result recovery) is not applied; paid steps are refused so that no generation is charged without a recovery copy. Apply supabase/migrations/20261024_04_result_recovery.sql BEFORE deploying this code.', { ref: 'A112' });
+      return json(503, { error: MSG.server });
+    }
     reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('analyze', rid, resumeText));
   } catch (err) {
     // 42883 / PGRST202 = the function does not exist, i.e. the database migration has not been applied yet.
@@ -98,6 +109,11 @@ exports.handler = async function(event) {
   }
   if (reservation.outcome === 'busy' || reservation.outcome === 'replay_busy') {
     return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  }
+  // The step was paid: if its exact stored result exists it is returned as it was (no AI call, no charge, no recovery turn used).
+  if (reservation.outcome === 'replay' || reservation.outcome === 'replay_busy' || reservation.outcome === 'replay_limit') {
+    const exact = await recovery.exactFor({ supabase, code, stepId: reservation.reservationId, fn: 'analyze', secret: process.env.TAILOR_TOKEN_SECRET, ttl: cfg.TAILOR_TOKEN_TTL_SECONDS });
+    if (exact) { if (reservation.outcome === 'replay') await license.finishRedelivery(supabase, reservation.reservationId, false); return json(200, exact); }
   }
   const refused = recovery.blocked(reservation, 'analyze'); if (refused) return json(refused.status, refused.body);
   // 'replay': this very step was already paid for (the reply was lost and the retry reached another instance or a restarted one). The AI runs
@@ -145,13 +161,20 @@ exports.handler = async function(event) {
     return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
-  // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
-  let committed = redelivery ? { outcome: 'already_committed', remaining: reservation.remaining, maximum: reservation.maximum } : undefined;
+  // 3. Charge only now, and only together with the encrypted recovery copy (one database transaction). Commit is idempotent, so one retry is safe.
+  let sealed;
+  try { sealed = vault.seal(JSON.stringify({ result: resultText, unverified }), { recordId: reservation.reservationId, fn: 'analyze' }); }
+  catch (err) {
+    console.error('parse-resume: the recovery copy could not be prepared; nothing was charged', { ref: 'A111', reservation: reservation.reservationId });
+    await giveBack(false);
+    return json(503, { error: MSG.notCharged });
+  }
+  let committed;
   for (let attempt = 0; attempt < 2 && !committed; attempt++) {
     try {
-      committed = await license.commit(supabase, reservation.reservationId);
+      committed = await license.commitWithResult(supabase, reservation.reservationId, 'analyze', sealed);
     } catch (err) {
-      console.error('parse-resume: commit attempt failed', { reservation: reservation.reservationId, attempt });
+      console.error('parse-resume: commit attempt failed', { reservation: reservation.reservationId, attempt, reason: safeReason(err) });
     }
   }
   if (!committed) {
@@ -184,7 +207,9 @@ exports.handler = async function(event) {
     unverified,
     usesRemaining: committed.remaining,
     maxUses: committed.maximum,
-    tailorToken
+    tailorToken,
+    saved: committed.saved === true, savedUntil: committed.expiresAt || null,          // the page promises a recovery copy only when saved is true
+    supportRef: recovery.reference(reservation.reservationId)
   };
   if (redelivery) return json(200, { ...body, recovered: 'regenerated', message: recovery.RECOVERED.regenerated, supportRef: recovery.reference(reservation.reservationId) });
   if (rid) replay.put('analyze', code, rid, resumeText, body);

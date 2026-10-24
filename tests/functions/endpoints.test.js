@@ -14,7 +14,7 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
 
   const db = await H.freshDatabase('rg_fn');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3); await H.applyMigration(db, H.MIG4);
   await H.seed(db, [{ code: 'FG-CUST-0001', uses: 3, assigned: true, buyer: 'customer@example.com' }]);
   const pool = db.pool('service_role', 40);
   const hs = loadHandlers(pool);
@@ -132,16 +132,16 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
   });
 
   await t.test('commit retries safely: one transient commit failure still charges exactly once', async () => {
-    reset(); const c = await seed(); const realCommit = hs.license.commit; let n = 0;
-    hs.license.commit = async (...a) => { if (n++ === 0) { await realCommit(...a); throw new Error('response lost'); } return realCommit(...a); };
-    const r = await callParse(c); hs.license.commit = realCommit;
+    reset(); const c = await seed(); const realCommit = hs.license.commitWithResult; let n = 0;
+    hs.license.commitWithResult = async (...a) => { if (n++ === 0) { await realCommit(...a); throw new Error('response lost'); } return realCommit(...a); };
+    const r = await callParse(c); hs.license.commitWithResult = realCommit;
     assert.equal(r.statusCode, 200); assert.equal(await uses(c), 4);        // landed once, retried idempotently
   });
 
   await t.test('commit failing twice => 503, released, not charged', async () => {
-    reset(); const c = await seed(); const realCommit = hs.license.commit;
-    hs.license.commit = async () => { throw new Error('db down'); };
-    const r = await callParse(c); hs.license.commit = realCommit;
+    reset(); const c = await seed(); const realCommit = hs.license.commitWithResult;
+    hs.license.commitWithResult = async () => { throw new Error('db down'); };
+    const r = await callParse(c); hs.license.commitWithResult = realCommit;
     assert.equal(r.statusCode, 503); assert.equal(await uses(c), 5); assert.deepEqual((await rsv(c)).map(x => x.status), ['released']);
   });
 
@@ -175,8 +175,8 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
   await t.test('privacy: failure responses and logs never contain the license code, resume text or internal error detail', async () => {
     reset(); const c = await seed(); const logs = captureLogs();
     ai.mode = 'throw'; const r1 = await callParse(c);
-    ai.mode = 'ok'; const realCommit = hs.license.commit; hs.license.commit = async () => { throw new Error('SECRET_INTERNAL_DETAIL'); };
-    const r2 = await callParse(c); hs.license.commit = realCommit; logs.restore();
+    ai.mode = 'ok'; const realCommit = hs.license.commitWithResult; hs.license.commitWithResult = async () => { throw new Error('SECRET_INTERNAL_DETAIL'); };
+    const r2 = await callParse(c); hs.license.commitWithResult = realCommit; logs.restore();
     for (const r of [r1, r2]) for (const needle of [c, 'Jordan', 'Maple', 'SECRET_INTERNAL_DETAIL', 'socket hang up', SECRET]) assert.ok(!r.body.includes(needle), `response leaked ${needle}`);
     for (const l of logs.lines) for (const needle of [c, 'Jordan', 'Maple', SECRET]) assert.ok(!l.includes(needle), `log leaked ${needle}: ${l}`);
   });

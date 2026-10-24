@@ -68,6 +68,7 @@ const MSG = {
 
 const replay = require('./_lib/replay');
 const recovery = require('./_lib/recovery');
+const vault = require('./_lib/vault');
 const inputOf = (source, target, profile) => JSON.stringify({ r: source, t: target, p: profile });
 const cacheKey = (code, id, input) => ['polish', code, id, input];
 function cacheGet(k) { return replay.get(...k); }
@@ -171,6 +172,11 @@ exports.handler = async function(event) {
     console.error('polish-resume: AI key not configured', { ref: 'P101' });
     return json(500, { error: refMsg('P101'), ref: 'P101' });
   }
+  // A generation is never charged without its temporary encrypted recovery copy (migration 04), so without the dedicated secret nothing paid runs.
+  if (!vault.ready()) {
+    console.error('polish-resume: RESULT_ENCRYPTION_KEY is missing or shorter than 32 characters; paid steps are refused so that no generation is charged without a recovery copy', { ref: 'P110' });
+    return json(503, { error: refMsg('P110'), ref: 'P110' });
+  }
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
@@ -226,6 +232,10 @@ exports.handler = async function(event) {
 
   let reservation;
   try {
+    if (!(await license.recoveryReady(supabase))) {
+      console.error('polish-resume: migration 04 (result recovery) is not applied; paid steps are refused so that no generation is charged without a recovery copy. Apply supabase/migrations/20261024_04_result_recovery.sql BEFORE deploying this code.', { ref: 'P112' });
+      return json(503, { error: refMsg('P112'), ref: 'P112' });
+    }
     reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, inputOf(source, target, profile)));
   } catch (err) {
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
@@ -246,6 +256,11 @@ exports.handler = async function(event) {
     }, { 'Retry-After': String(wait) });
   }
   if (reservation.outcome === 'busy' || reservation.outcome === 'replay_busy') return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  // The step was paid: if its exact stored result exists it is returned as it was (no AI call, no charge, no recovery turn used).
+  if (reservation.outcome === 'replay' || reservation.outcome === 'replay_busy' || reservation.outcome === 'replay_limit') {
+    const exact = await recovery.exactFor({ supabase, code, stepId: reservation.reservationId, fn: 'polish', secret: process.env.TAILOR_TOKEN_SECRET, ttl: cfg.TAILOR_TOKEN_TTL_SECONDS, guard: stamp() });
+    if (exact) { if (reservation.outcome === 'replay') await license.finishRedelivery(supabase, reservation.reservationId, false); return json(200, exact); }
+  }
   const refused = recovery.blocked(reservation, 'polish'); if (refused) return json(refused.status, refused.body);
   // 'replay': this very polish was already paid for (the reply was lost and the retry reached another or a restarted instance). The AI runs
   // again to re-deliver the result; nothing more is charged.
@@ -326,11 +341,18 @@ exports.handler = async function(event) {
     return json(200, body);
   }
 
-  // 3. Charge only now. Commit is idempotent, so one retry after a transient error is safe.
-  let committed = redelivery ? { outcome: 'already_committed', remaining: reservation.remaining, maximum: reservation.maximum } : undefined;
+  // 3. Charge only now, and only together with the encrypted recovery copy (one database transaction). Commit is idempotent, so one retry is safe.
+  let sealed;
+  try { sealed = vault.seal(JSON.stringify({ result: JSON.stringify(polished), withheld, changes, points: score.points, threshold: score.threshold }), { recordId: reservation.reservationId, fn: 'polish' }); }
+  catch (err) {
+    console.error('polish-resume: the recovery copy could not be prepared; nothing was charged', { ref: 'P111', reservation: reservation.reservationId });
+    await giveBack(false);
+    return json(503, { error: `${MSG.notCharged} (ref P111)`, ref: 'P111' });
+  }
+  let committed;
   for (let attempt = 0; attempt < 2 && !committed; attempt++) {
-    try { committed = await license.commit(supabase, reservation.reservationId); }
-    catch (err) { console.error('polish-resume: commit attempt failed', { reservation: reservation.reservationId, attempt }); }
+    try { committed = await license.commitWithResult(supabase, reservation.reservationId, 'polish', sealed); }
+    catch (err) { console.error('polish-resume: commit attempt failed', { reservation: reservation.reservationId, attempt, reason: safeReason(err) }); }
   }
   if (!committed) {
     console.error('polish-resume: charge could not be recorded', { ref: 'P106', reservation: reservation.reservationId });
@@ -352,7 +374,7 @@ exports.handler = async function(event) {
   if (redelivery) await license.finishRedelivery(supabase, reservation.reservationId, true);
   usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: redelivery ? 'redelivered' : 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
-  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
+  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken, saved: committed.saved === true, savedUntil: committed.expiresAt || null, supportRef: recovery.reference(reservation.reservationId) };
   if (redelivery) return json(200, { ...body, recovered: 'regenerated', message: recovery.RECOVERED.regenerated, supportRef: recovery.reference(reservation.reservationId) });   // fresh wording: said so, and not cached as "the original"
   if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
   return json(200, body);

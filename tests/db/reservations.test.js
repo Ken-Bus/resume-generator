@@ -53,6 +53,11 @@ test('DB-backed regression tests', async (t) => {
     assert.equal((await live.admin("select count(*)::int n from pg_proc where proname='reserve_license_use'")).rows[0].n, 1, 'one reserve function only (no ambiguous overload)');
   });
 
+  await t.test('migration 04 (temporary encrypted result recovery) applies on top, twice, and touches no license row', async () => {
+    await H.applyMigration(live, H.MIG4); await H.applyMigration(live, H.MIG4);
+    assert.deepEqual(await H.fingerprint(live), before);
+  });
+
   await t.test('every new function is server-only; the reservation table is closed to anon/authenticated', async () => {
     for (const f of Object.values(FN)) {
       assert.equal(await H.canExecute(live, 'anon', f), false, `anon must not run ${f}`);

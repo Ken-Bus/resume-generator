@@ -31,6 +31,41 @@ async function finishRedelivery(supabase, reservationId, ok) {
   } catch (e) { console.error('finish_redelivery failed; the turn lapses on its own', { reservation: reservationId }); }
 }
 
+// Commit the generation AND store the encrypted recovery copy in ONE database transaction (migration 04). `sealed` = vault.seal(...).
+// If either part fails nothing is charged. result.saved is true only when a copy exists for this step.
+async function commitWithResult(supabase, reservationId, fn, sealed) {
+  const d = await one(supabase, 'commit_license_use_with_result', {
+    p_reservation_id: reservationId, p_fn: fn, p_kid: sealed.kid, p_salt: sealed.salt, p_iv: sealed.iv, p_ct: sealed.ct
+  });
+  if (!d) throw new Error('commit_license_use_with_result returned no row');
+  return { outcome: d.outcome, remaining: d.remaining, maximum: d.maximum, saved: d.result_saved === true, expiresAt: d.expires_at };
+}
+
+// What this code could restore (no content), and the encrypted copy of one step. Both only ever see this code's own rows and never expired ones.
+async function listRecoverable(supabase, code) {
+  const { data, error } = await supabase.rpc('list_recoverable_results', { p_code: code });
+  if (error) throw error;
+  return Array.isArray(data) ? data : [];
+}
+async function fetchRecoverable(supabase, code, id) {
+  const d = await one(supabase, 'fetch_recoverable_result', { p_code: code, p_id: id });
+  return d || null;
+}
+// Is migration 04 applied? Asked before any paid step so that a deployment without it refuses BEFORE the AI is called (no cost, no charge).
+// A positive answer is remembered for the life of the instance; a negative one is asked again next time.
+let recoverySchemaOk = false;
+async function recoveryReady(supabase) {
+  if (recoverySchemaOk) return true;
+  const { error } = await supabase.rpc('list_recoverable_results', { p_code: 'FG-PROBE-0000' });
+  if (error) { if (error.code === '42883' || error.code === 'PGRST202' || error.code === '42P01') return false; throw error; }
+  recoverySchemaOk = true; return true;
+}
+async function purgeRecoverable(supabase) {
+  const { data, error } = await supabase.rpc('purge_recoverable_results', {});
+  if (error) throw error;
+  return Number(data) || 0;
+}
+
 async function commit(supabase, reservationId) {
   const d = await one(supabase, 'commit_license_use', { p_reservation_id: reservationId });
   if (!d) throw new Error('commit_license_use returned no row');
@@ -77,4 +112,4 @@ async function readLicense(supabase, code) {
   return data;
 }
 
-module.exports = { reserve, finishRedelivery, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };
+module.exports = { reserve, finishRedelivery, commitWithResult, listRecoverable, fetchRecoverable, purgeRecoverable, recoveryReady, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };

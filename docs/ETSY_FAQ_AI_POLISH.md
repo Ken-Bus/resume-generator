@@ -28,9 +28,13 @@ A: Paste a job description and the AI adjusts the emphasis and wording of your r
 
 A: If the AI can't finish, nothing is used. Your counter always shows how many generations you have left. If your screen refreshes or your phone loses signal while the AI is working, your resume is still there when the page comes back, and pressing the same button again for the same resume recovers that step instead of using a second generation. Within a day, the app tells you plainly when it has prepared a fresh version of your result (the wording may differ from the first one). If you change your resume and press the button again, that is a new request, and the app tells you so before anything else happens. If the AI service itself is very busy you will be told to wait a minute and try again. If a generation ever goes missing, message us with the reference code shown on the screen (it looks like R-1A2B3C4D). Never send your access code or your resume.
 
-**Q: Is my resume kept if I refresh the page?**
+**Q: Is my resume kept if I refresh the page, close the browser, or lose power?**
 
-A: Yes, within the same browser tab. A copy of your resume is kept in your own browser tab so a refresh does not lose your work. It is not sent anywhere, and it disappears when you close the tab. On a shared computer, use "Clear this saved copy" (shown when your work is restored) or simply close the tab.
+A: Yes. While you work, the app saves your draft automatically in your own browser, on your own device, a moment after you stop typing. If you refresh, close the browser, or your device shuts off, the app offers "Continue where I left off" the next time you open it (or "Start fresh" if you would rather not). Saving the draft never uses an AI generation. If power is lost, the last few seconds of typing may not have been saved. Your draft is never uploaded, it is deleted after 14 days, and it does not follow you to another phone or computer. It is also removed if you clear your browser data. On a shared or public computer, use "Clear this saved copy" when you are done. Your access code is never kept in the draft.
+
+**Q: I used a generation but lost the result (the page closed, my phone died). Do I lose it?**
+
+A: No. When an AI Analyze or AI Polish generation finishes, the app keeps one encrypted copy of that result for up to 24 hours so you can get it back. Open the app on the same device or a different one, enter the same access code you bought with, and choose "Restore my result." Getting it back does not use another generation. (AI Tailor results are not kept this way; Tailor is already included with each generation.) The copy is encrypted before it is stored and can be opened only with your access code. Our systems stop returning it after 24 hours and a cleanup job deletes it. Because of how server backups work, a scrambled (encrypted) copy may remain in a backup for a short time after that, and it cannot be read or restored in the app. We do not keep your original pasted resume, or the instructions sent to the AI, for this feature.
 
 **Q: Can I use a very long resume?**
 
@@ -46,7 +50,7 @@ A: If the AI has reviewed your resume several times in a row and found nothing w
 
 **Q: Are my resume and access code kept private?**
 
-A: Your resume text is sent to the AI service to be processed and to our server to build your PDF or Word file. We do not store it or write it to our logs. (A copy stays in your own browser tab, as described above.)
+A: Your resume text is sent to the AI service to be processed and to our server to build your PDF or Word file. We do not write your resume or your access code to our logs. Two things are kept, both described above: an automatic draft in your own browser on your own device (never uploaded; deleted after 14 days), and, only after an AI Analyze or AI Polish generation is used, one encrypted copy of that result on our server for up to 24 hours so you can get it back. Encrypted copies may remain in system backups for a short time after they expire and cannot be read there. Never send your access code or your resume to us in a message.
 
 ## Short version (for the description's "HOW IT WORKS" section, one line)
 

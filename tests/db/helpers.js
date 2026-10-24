@@ -53,6 +53,7 @@ async function applyMigration(db, file) { await db.admin(sqlFile('supabase', 'mi
 const MIG1 = '20261020_01_license_reservations.sql';
 const MIG2 = '20261020_02_revoke_public_execute_consume_license_use.sql';
 const MIG3 = '20261023_03_request_idempotency.sql';
+const MIG4 = '20261024_04_result_recovery.sql';
 
 async function seed(db, rows) {            // rows: [{code, uses, max, assigned, buyer}]
   for (const r of rows) {
@@ -70,4 +71,4 @@ async function canExecute(db, role, fnSignature) {
   return r.rows[0].ok;
 }
 
-module.exports = { available, freshDatabase, liveState, applyMigration, seed, fingerprint, canExecute, sqlFile, SUPABASE_DEFAULT_PRIVS, MIG1, MIG2, MIG3, ADMIN };
+module.exports = { available, freshDatabase, liveState, applyMigration, seed, fingerprint, canExecute, sqlFile, SUPABASE_DEFAULT_PRIVS, MIG1, MIG2, MIG3, MIG4, ADMIN };
