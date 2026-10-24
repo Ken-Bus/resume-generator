@@ -54,11 +54,13 @@ The Etsy FAQ draft has been updated to match. **No Etsy listing was changed.**
 | Area | Suite | Result |
 |---|---|---|
 | SQL (real PostgreSQL 16): atomic charge+copy, scope, expiry, 24 h CHECK, purge, rollback | `tests/db/result-recovery.test.js` | 8 pass |
-| Handlers: seal/commit, exact-copy replay, fail-closed, unauthorized/guessing/rate limits, no-leak logging | `tests/functions/result-recovery.test.js` | 20 pass |
+| Handlers: seal/commit, exact-copy replay, fail-closed, unauthorized/guessing/rate limits, no-leak logging | `tests/functions/result-recovery.test.js` | 21 pass |
 | Local drafts in Chromium (desktop + Android viewport) | `tests/ui/drafts.test.js` | 12 pass |
 | Restore my result in Chromium | `tests/ui/restore-result.test.js` | 8 pass |
-| Full release run | `tests/run-release.js` | 643 pass, 0 fail, 0 skip |
+| Full release run | `tests/run-release.js` | 644 pass, 0 fail, 0 skip |
 
 Verified locally: all of the above. Simulated: Anthropic (mocked), Supabase client (mock over real SQL). **Not verified:** Netlify scheduled-function execution, real Supabase/PostgREST behavior and permissions, production key configuration, backup behavior, cross-device behavior on real phones, power-loss durability of `localStorage`.
 
 Known note: one run of "B2 parse: concurrent failing bursts" failed once (6 vs 5 AI calls) while another suite was running concurrently; it passed on every isolated rerun and in the final full run. It exercises timing-sensitive per-instance limiters; do not run suites concurrently.
+
+Mutation checks on the new logic (run on a scratch copy; 9 mutants): killed — read ignores expiry, fetch not scoped to the code, 48 h ceiling, purge keeps expired rows, vault without authenticated data, short key accepted, lookup rate limit removed, local draft never expires. One survivor, "list shows expired rows", is an equivalent mutant: the list function deletes the caller's expired rows first, so the extra filter is redundant (the fetch path, which returns content, is covered and killed).

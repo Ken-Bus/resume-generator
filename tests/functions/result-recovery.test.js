@@ -134,6 +134,13 @@ test('result recovery through the real handlers and real SQL (AI mocked)', async
     assert.equal((await A.recover({ httpMethod: 'POST', body: JSON.stringify({ code: owner, action: 'list', pad: 'x'.repeat(5000) }) })).statusCode, 413);
   });
 
+  await t.test('HAMMERING IS LIMITED per client: even valid lookups stop after 30 in a minute (the database is not a free probe), another client is unaffected', async () => {
+    reset(); const owner = await seed(); const A = await instance(); const hammer = { 'x-nf-client-connection-ip': '203.0.113.91' }; const other = { 'x-nf-client-connection-ip': '203.0.113.92' };
+    for (let i = 0; i < 30; i++) assert.equal((await rec(A, { code: owner, action: 'list' }, hammer)).statusCode, 200);
+    const blocked = await rec(A, { code: owner, action: 'list' }, hammer); assert.equal(blocked.statusCode, 429); assert.ok(blocked.headers['Retry-After']);
+    assert.equal((await rec(A, { code: owner, action: 'list' }, other)).statusCode, 200);
+  });
+
   await t.test('GUESSING IS LIMITED per client: after 30 misses the client is told to wait (no database lookups), the real customer on another connection is unaffected', async () => {
     reset(); const owner = await seed(); const A = await instance(); await analyze(A, owner); const bad = { 'x-nf-client-connection-ip': '203.0.113.77' }; const good = { 'x-nf-client-connection-ip': '203.0.113.78' };
     for (let i = 0; i < 30; i++) assert.equal((await rec(A, { code: owner, action: 'fetch', id: '11111111-1111-4111-8111-111111111111' }, bad)).statusCode, 404);
