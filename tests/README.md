@@ -62,3 +62,4 @@ Never point these tests at a real Supabase project.
 - `tests/functions/result-recovery.test.js`: handlers; fail-closed without the key or migration, exact-copy replay, unauthorized/guessing/rate limits, no sensitive logging.
 - `tests/ui/drafts.test.js`, `tests/ui/restore-result.test.js`: Chromium (desktop and Android viewport); autosave, newer-wins, blocked storage, no credentials in drafts, Restore my result.
 - Do not run suites concurrently (they share one local PostgreSQL and timing-sensitive limiters).
+- `tests/db/migration04-verification.test.js`: runs `docs/MIGRATION_04_PREFLIGHT.sql` and `docs/MIGRATION_04_POSTCHECK.sql` read-only against every database state, injects 11 defects the post-check must catch, and proves the 03 + 04 forward / rollback sequence leaves balances and reservations untouched.

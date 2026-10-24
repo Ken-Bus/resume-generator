@@ -32,6 +32,8 @@ Also changed: `parse-resume.js`, `polish-resume.js`, `_lib/license.js`, `_lib/re
 
 ## 4. Deployment runbook (OWNER ONLY — nothing here was done)
 
+**Combined sequence, read-only preflight/post-check SQL, key instructions and the PASS / FAIL / STOP checklist: `docs/MIGRATION_04_RELEASE_VERIFICATION.md` (authoritative where it differs from the short list below).**
+
 Order matters; an app deployed before steps 1–2 refuses Analyze/Polish (503, no charge), which is safe but customer-visible.
 
 1. Review this package and the migration SQL.

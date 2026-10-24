@@ -285,12 +285,17 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
   });
 
   await t.test('B2 parse: concurrent failing bursts cannot exceed budget + uses remaining in total AI calls', async () => {
-    reset(); const c = await seed(); ai.mode = 'truncated'; ai.delayMs = 40;
-    for (let burst = 0; burst < 6; burst++) await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
+    // A burst of 20 simultaneous requests usually lets exactly one reach the AI, but not always: in about 1 in 100 bursts every request yields to another
+    // ("busy", nothing charged, no AI call) and in about 1 in 5 two run one after the other. So "6 bursts = 6 failures" is NOT guaranteed (documented
+    // in docs/MIGRATION_04_RELEASE_VERIFICATION.md section 4). Keep bursting until the database budget engages (HTTP 429), then check the real invariants.
+    reset(); const c = await seed(); ai.mode = 'truncated'; ai.delayMs = 40; let throttled = false;
+    for (let burst = 0; burst < 20 && !throttled; burst++) throttled = (await Promise.all(Array.from({ length: 20 }, () => callParse(c)))).some((r) => r.statusCode === 429);
+    assert.ok(throttled, 'the per-code failure budget engaged within 20 bursts');
     assert.ok(ai.calls <= 6 + 5, `AI calls ${ai.calls} must stay within budget (6) + uses remaining (5)`);
-    const before = ai.calls; await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
-    assert.equal(ai.calls, before);                                                // once throttled, no further AI calls at all
-    assert.equal(await uses(c), 5);
+    const before = ai.calls; const after = await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
+    assert.ok(after.every((r) => r.statusCode === 429), 'once throttled every request is refused');
+    assert.equal(ai.calls, before, 'once throttled, no further AI calls at all');
+    assert.equal(await uses(c), 5, 'failed attempts never cost a generation');
   });
 
   await t.test('B2 parse: a throttled code costs a customer nothing and does not block the page flow (counts reported)', async () => {
