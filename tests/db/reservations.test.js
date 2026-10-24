@@ -354,46 +354,75 @@ test('DB-backed regression tests', async (t) => {
     assert.deepEqual(await cols(fresh, 'license_reservations'), await cols(live, 'license_reservations'));
   });
 
-  // ---- migration 03 behaviour (SQL level) ----
-  await t.test('durable idempotency: a repeat of a COMMITTED keyed step is answered replay, never reserves, never charges; other inputs and keys are new steps', async () => {
-    const c = await fresh2(5); const keyed = async (key, input, code = c) => (await q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [code, key, input])).rows[0];
-    const a = await keyed('k-1', 'in-A'); assert.equal(a.outcome, 'reserved');
+  // ---- migration 03 behaviour (SQL level): the decision table of reserve_license_use when a request key is supplied ----
+  const keyedCall = (c, key, input, lease = 45) => q('select * from public.reserve_license_use($1,$2,900,6,30,$3,$4)', [c, lease, key, input]).then((r) => r.rows[0]);
+  const age = (id, interval) => live.admin(`update license_reservations set committed_at = now() - interval '${interval}', created_at = now() - interval '${interval}' where id = '${id}'`);
+
+  await t.test('decision table 1: a keyed step in flight, then committed: the same id + same input is replay/busy, a different input is a CONFLICT, another id is new, and none of it charges', async () => {
+    const c = await fresh2(5);
+    const a = await keyedCall(c, 'k-1', 'in-A'); assert.equal(a.outcome, 'reserved');
+    assert.equal((await keyedCall(c, 'k-1', 'in-A')).outcome, 'replay_busy', 'the same id while it is still running: an overlapping duplicate');
+    assert.equal((await keyedCall(c, 'k-1', 'in-B')).outcome, 'key_conflict', 'the same id with other input while it runs');
+    assert.equal((await q("select count(*)::int n from license_reservations where code=$1 and status='reserved'", [c])).rows[0].n, 1, 'neither refusal created a reservation');
     assert.equal((await commit(a.reservation_id)).outcome, 'committed'); assert.equal(await remaining(c), 4);
-    const b = await keyed('k-1', 'in-A'); assert.equal(b.outcome, 'replay'); assert.equal(b.reservation_id, a.reservation_id); assert.equal(await remaining(c), 4);
-    assert.equal((await q("select count(*)::int n from license_reservations where code=$1 and status='reserved'", [c])).rows[0].n, 0);
-    assert.equal((await keyed('k-1', 'in-A')).outcome, 'replay_busy', 'a re-delivery is already running');
+    const r = await keyedCall(c, 'k-1', 'in-A'); assert.equal(r.outcome, 'replay'); assert.equal(r.reservation_id, a.reservation_id);
+    assert.equal((await keyedCall(c, 'k-1', 'in-A')).outcome, 'replay_busy', 'a re-delivery is already running');
     await q('select public.finish_redelivery($1,true)', [a.reservation_id]);
-    assert.equal((await keyed('k-1', 'in-B')).outcome, 'reserved', 'same key but the customer changed the text: a new step');
-    assert.equal((await keyed('k-2', 'in-A')).outcome, 'reserved', 'another key: a new step');
-    assert.equal(await remaining(c), 4, 'replays and reservations alone never charge');
+    assert.equal((await keyedCall(c, 'k-1', 'in-B')).outcome, 'key_conflict', 'SAME ID, DIFFERENT INPUT: refused, never a new chargeable step');
+    assert.equal((await keyedCall(c, 'k-2', 'in-B')).outcome, 'reserved', 'a new id is a new operation');
+    assert.equal(await remaining(c), 4, 'nothing above charged anything');
   });
 
-  await t.test('durable idempotency: a failed re-delivery gives its turn back; three successful re-deliveries then a stated limit; an exhausted license still re-delivers', async () => {
-    const c = await fresh2(1); const keyed = async () => (await q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [c, 'k-9', 'in-Z'])).rows[0];
-    const a = await keyed(); assert.equal((await commit(a.reservation_id)).outcome, 'committed'); assert.equal(await remaining(c), 0);
-    for (let i = 0; i < 3; i++) { assert.equal((await keyed()).outcome, 'replay'); await q('select public.finish_redelivery($1,$2)', [a.reservation_id, i === 0 ? false : true]); }
-    assert.equal((await keyed()).outcome, 'replay');                         // the failed first attempt was given back: that was attempt 3 of 3
+  await t.test('decision table 2: retention. 23h59m is still recoverable; at 24h the id is EXPIRED (refused, not charged) and the input hash is erased; the id stays refused afterwards', async () => {
+    const c = await fresh2(5); const a = await keyedCall(c, 'k-ret', 'in-R'); await commit(a.reservation_id);
+    await age(a.reservation_id, '23 hours 59 minutes');
+    assert.equal((await keyedCall(c, 'k-ret', 'in-R')).outcome, 'replay', 'inside the window');
     await q('select public.finish_redelivery($1,true)', [a.reservation_id]);
-    assert.equal((await keyed()).outcome, 'replay_limit');
-    assert.equal(await remaining(c), 0);
-  });
-
-  await t.test('durable idempotency: simultaneous repeats on separate connections produce exactly one re-delivery', async () => {
-    const c = await fresh2(5); const first = (await q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [c, 'k-5', 'in-Y'])).rows[0];
-    await commit(first.reservation_id);
-    const pools = [1, 2, 3, 4, 5, 6].map(() => live.pool('service_role', 1));
-    const out = await Promise.all(pools.map((p) => p.query('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [c, 'k-5', 'in-Y']).then((r) => r.rows[0].outcome)));
-    assert.equal(out.filter((o) => o === 'replay').length, 1); assert.equal(out.filter((o) => o === 'replay_busy').length, 5);
+    assert.notEqual((await q('select input_hash from license_reservations where id=$1', [a.reservation_id])).rows[0].input_hash, null, 'still kept inside the window');
+    await age(a.reservation_id, '24 hours 1 minute');
+    assert.equal((await keyedCall(c, 'k-ret', 'in-R')).outcome, 'key_expired', 'same input, after the window: refused, never charged');
+    assert.equal((await keyedCall(c, 'k-ret', 'in-OTHER')).outcome, 'key_expired', 'and a different input is refused the same way');
+    const row = (await q('select input_hash, request_key from license_reservations where id=$1', [a.reservation_id])).rows[0];
+    assert.equal(row.input_hash, null, 'the input hash was erased once the window passed'); assert.equal(row.request_key, 'k-ret', 'the id itself is kept so a stale id stays refused');
+    await age(a.reservation_id, '400 days'); assert.equal((await keyedCall(c, 'k-ret', 'in-R')).outcome, 'key_expired', 'a year-old id is still refused');
     assert.equal(await remaining(c), 4);
-    await Promise.all(pools.map((p) => p.end()));
   });
 
-  await t.test('durable idempotency: the key rows hold only hashes the caller supplied, expire after an hour, and the table stays closed to anon/authenticated', async () => {
-    const c = await fresh2(5); const a = (await q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [c, 'k-7', 'in-X'])).rows[0];
-    await commit(a.reservation_id);
-    await live.admin("update license_reservations set committed_at = now() - interval '61 minutes' where id=$1".replace('$1', `'${a.reservation_id}'`));
-    assert.equal((await q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [c, 'k-7', 'in-X'])).rows[0].outcome, 'reserved', 'after an hour a repeat is an ordinary new step');
-    for (const f of ['public.finish_redelivery(uuid,boolean)', 'public.reserve_license_use(text,integer,integer,integer,integer,text,text)']) {
+  await t.test('decision table 3: leases and limits. A failed re-delivery gives its turn back; an abandoned lease is noted and forgiven (at most 2); three finished re-deliveries then a stated limit; an exhausted code still re-delivers', async () => {
+    const c = await fresh2(1); const a = await keyedCall(c, 'k-9', 'in-Z'); await commit(a.reservation_id); assert.equal(await remaining(c), 0);
+    assert.equal((await keyedCall(c, 'k-9', 'in-Z')).outcome, 'replay'); await q('select public.finish_redelivery($1,false)', [a.reservation_id]);   // failed: turn given back
+    assert.equal((await q('select redelivery_count n from license_reservations where id=$1', [a.reservation_id])).rows[0].n, 0);
+    for (let i = 0; i < 2; i++) {                                                                                                   // two abandoned leases (worker died): forgiven
+      assert.equal((await keyedCall(c, 'k-9', 'in-Z')).outcome, 'replay');
+      await live.admin(`update license_reservations set redelivering_until = now() - interval '1 second' where id='${a.reservation_id}'`);
+    }
+    for (let i = 0; i < 3; i++) { assert.equal((await keyedCall(c, 'k-9', 'in-Z')).outcome, 'replay', `finished re-delivery ${i + 1}`); await q('select public.finish_redelivery($1,true)', [a.reservation_id]); }
+    const last = await keyedCall(c, 'k-9', 'in-Z'); assert.equal(last.outcome, 'replay_limit'); assert.equal(last.reservation_id, a.reservation_id, 'the committed step id is returned so a support reference can be shown');
+    assert.equal((await q('select redelivery_lapses n from license_reservations where id=$1', [a.reservation_id])).rows[0].n, 2, 'each abandoned lease is noted when the next call finds it');
+    assert.equal(await remaining(c), 0, 'an exhausted code was re-delivered and never charged');
+  });
+
+  await t.test('decision table 4: simultaneous repeats on separate connections produce exactly one re-delivery; simultaneous conflicting repeats all refuse', async () => {
+    const c = await fresh2(5); const first = await keyedCall(c, 'k-5', 'in-Y'); await commit(first.reservation_id);
+    const pools = [1, 2, 3, 4, 5, 6].map(() => live.pool('service_role', 1));
+    const call = (p, input) => p.query('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', [c, 'k-5', input]).then((r) => r.rows[0].outcome);
+    const same = await Promise.all(pools.map((p) => call(p, 'in-Y')));
+    assert.equal(same.filter((o) => o === 'replay').length, 1); assert.equal(same.filter((o) => o === 'replay_busy').length, 5);
+    await q('select public.finish_redelivery($1,true)', [first.reservation_id]);
+    const mixed = await Promise.all(pools.map((p, i) => call(p, i % 2 ? 'in-Y' : 'in-Other')));
+    assert.deepEqual([...new Set(mixed.filter((_, i) => i % 2 === 0))], ['key_conflict']); assert.equal(mixed.filter((o) => o === 'replay').length, 1);
+    assert.equal(await remaining(c), 4); await Promise.all(pools.map((p) => p.end()));
+  });
+
+  await t.test('purge_idempotency_hashes erases old input hashes everywhere, drops keys of unpaid rows, keeps keys of paid rows, is server-only', async () => {
+    const c = await fresh2(5); const paid = await keyedCall(c, 'k-p1', 'in-1'); await commit(paid.reservation_id);
+    const unpaid = await keyedCall(c, 'k-p2', 'in-2'); await q('select public.release_license_use($1,false)', [unpaid.reservation_id]);
+    const n0 = (await q('select public.purge_idempotency_hashes() as n')).rows[0].n; assert.equal(n0, 0, 'nothing is old enough yet');
+    await live.admin(`update license_reservations set created_at = now() - interval '25 hours', committed_at = case when committed_at is null then null else now() - interval '25 hours' end where code='${c}'`);
+    assert.ok((await q('select public.purge_idempotency_hashes() as n')).rows[0].n >= 3);
+    const rows = (await q('select id, input_hash, request_key from license_reservations where code=$1', [c])).rows;
+    assert.ok(rows.every((r) => r.input_hash === null)); assert.equal(rows.find((r) => r.id === paid.reservation_id).request_key, 'k-p1'); assert.equal(rows.find((r) => r.id === unpaid.reservation_id).request_key, null);
+    for (const f of ['public.purge_idempotency_hashes()', 'public.finish_redelivery(uuid,boolean)', 'public.reserve_license_use(text,integer,integer,integer,integer,text,text)']) {
       assert.equal(await H.canExecute(live, 'anon', f), false); assert.equal(await H.canExecute(live, 'authenticated', f), false); assert.equal(await H.canExecute(live, 'service_role', f), true);
     }
   });

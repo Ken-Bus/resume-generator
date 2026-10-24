@@ -220,7 +220,7 @@ const Wiz = {
         body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId, clientGuard: ResumeCore.GUARD_VERSION })
       });
       let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
-      definite = json !== null && res.status !== 409 && res.status < 500;  // a cut-off body, 409 (busy) or a server error may mean the answer was lost: keep the id
+      definite = json !== null && (res.status !== 409 || json.newRequest === true) && res.status < 500;  // a cut-off body, 409 (busy) or a server error may mean the answer was lost: keep the id. A refusal asking for a NEW request ends this id
       let parsed = null;
       if (res.ok && json && json.result && json.noChange !== true) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
       if (res.ok && json && json.noChange === true) {
@@ -242,7 +242,7 @@ const Wiz = {
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
-        Wiz.setOutcome('improved', { free: json.charged === false, unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
+        Wiz.setOutcome('improved', { recovered: json.recovered || null, recoveredMessage: json.message || '', supportRef: json.supportRef || '', free: json.charged === false, unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
         renderLicenseBadge(); renderEditFields(); renderPreview();
       } else {
         await Wiz.polishFailed(res.status, json);
@@ -274,6 +274,8 @@ const Wiz = {
       if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
       renderLicenseBadge(); p.requestId = null; return;
     }
+    if (json && json.newRequest === true) { p.requestId = null; await refreshLicenseCounter(); return; }   // spent on other input, too old, or out of recoveries: the next press is a deliberate NEW request
+    if (json && json.code === 'recovery_failed') { await refreshLicenseCounter(); return; }                // the paid step is still waiting to be recovered: keep the id for the retry
     if (status === 409) return;                                             // something is already running: keep the id
     p.requestId = null;                                                     // a definite, uncharged failure: next try is a fresh request
     await refreshLicenseCounter();
@@ -381,13 +383,14 @@ const Wiz = {
     let result = '';
     if (p.done && state.polishOriginal) {
       const parts = Wiz.changedParts(); const unv = p.done.unverified || []; const wh = p.done.withheld || [];
-      const used = p.done.free ? `No generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}: these were small fixes, so they are free.` : `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
+      const recNote = p.done.recovered ? `<div class="notice-box" id="${prefix}polish-recovered" role="status"><strong>${p.done.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(p.done.recoveredMessage || '')}${p.done.supportRef ? ` <span class="support-ref">Reference: ${esc(p.done.supportRef)}</span>` : ''}</div>` : '';
+      const used = p.done.recovered ? `No additional generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.` : p.done.free ? `No generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}: these were small fixes, so they are free.` : `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
-        result = `<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
+        result = `${recNote}<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
       } else {
       const c = p.done.changes || {}; const n = (k) => Number(c[k]) || 0; const lines = (k) => `${n(k)} line${n(k) === 1 ? '' : 's'}`;
       const did = [n('reworded') ? `rewrote ${lines('reworded')}` : '', n('minor') ? `fixed spelling or a word in ${lines('minor')}` : '', n('cosmetic') ? `tidied capitals or punctuation in ${lines('cosmetic')}` : '', n('dropped') ? `combined or removed ${lines('dropped')} that repeated another` : ''].filter(Boolean);
-      result = `<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
+      result = `${recNote}<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
         ${did.length ? `<div id="${prefix}polish-summary" style="margin-top:6px;"><strong>What changed:</strong> ${esc(did.join('; '))}.</div>` : ''}
         ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
         ${wh.length ? `<div class="notice-box" id="${prefix}polish-withheld"><strong>${wh.length} suggested change${wh.length === 1 ? ' was' : 's were'} left out.</strong> They added details that are not in your answers, so your own wording was kept there.

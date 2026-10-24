@@ -60,7 +60,7 @@ test('Analyze: one at a time, replay-safe, guess-limited (real SQL, AI mocked)',
     reset(); const c = await seed();
     const a = parseBody(await parse(c, { requestId: 'analyze-req-0001' }));
     const again = parseBody(await parse(c, { requestId: 'analyze-req-0001' }));
-    assert.deepEqual(again, a); assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
+    const { recovered, message, ...sameBody } = again; assert.deepEqual(sameBody, a); assert.equal(recovered, 'exact', 'a restored paid result says so'); assert.match(message, /exactly as it was/); assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
     assert.equal(JSON.stringify(a).includes(c), false, 'the code is never echoed');
     await parse(c, { requestId: 'analyze-req-0002' }); assert.equal(ai.calls, 2); assert.equal(await uses(c), 3);
   });

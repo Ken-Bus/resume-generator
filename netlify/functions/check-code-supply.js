@@ -10,6 +10,9 @@ const BATCH_SIZE = parseInt(process.env.CODE_SUPPLY_BATCH_SIZE || '100', 10);
 exports.handler = async function() {
   try {
     const supabase = getSupabaseClient();
+    // Daily privacy housekeeping (migration 03): erase request-input hashes older than 24 hours. Best effort: it never blocks the code supply,
+    // and it is skipped quietly while the migration is not applied yet.
+    try { const { error } = await supabase.rpc('purge_idempotency_hashes'); if (error && error.code !== '42883' && error.code !== 'PGRST202') console.warn('check-code-supply: hash housekeeping failed'); } catch (e) { console.warn('check-code-supply: hash housekeeping failed'); }
     const { count, error: countError } = await supabase
       .from('licenses')
       .select('code', { count: 'exact', head: true })

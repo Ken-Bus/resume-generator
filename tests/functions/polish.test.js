@@ -140,7 +140,7 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
   await t.test('retry with the same requestId after a finished polish returns the same result and is NOT charged again; a new id is a new charge', async () => {
     reset(); const c = await seed();
     const a = await polish(c, ANSWERS, { requestId: 'req-aaaa-1111' }); const b = await polish(c, ANSWERS, { requestId: 'req-aaaa-1111' });
-    assert.equal(a.statusCode, 200); assert.equal(b.statusCode, 200); assert.equal(a.body, b.body);
+    assert.equal(a.statusCode, 200); assert.equal(b.statusCode, 200); { const { recovered, message, ...same } = JSON.parse(b.body); assert.deepEqual(same, JSON.parse(a.body)); assert.equal(recovered, 'exact'); }
     assert.equal(await uses(c), 4); assert.equal(ai.calls, 1);
     assert.equal((await polish(c, ANSWERS, { requestId: 'req-bbbb-2222' })).statusCode, 200);
     assert.equal(await uses(c), 3); assert.equal(ai.calls, 2);

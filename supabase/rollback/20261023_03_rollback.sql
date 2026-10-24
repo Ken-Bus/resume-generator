@@ -2,17 +2,18 @@
 -- never run automatically. Use it only if the owner decides to remove the durable-idempotency feature after applying migration 03.
 --
 -- What it does (one transaction, idempotent):
---   * removes finish_redelivery and the 7-argument reserve_license_use;
+--   * removes purge_idempotency_hashes, finish_redelivery and the 7-argument reserve_license_use;
 --   * recreates the 5-argument reserve_license_use exactly as migration 01 defined it, with the same server-only privileges.
 -- What it deliberately does NOT do:
 --   * it does not touch `licenses` (balances) or any committed/released reservation row: nothing a customer paid for is changed;
---   * it keeps the four new columns on license_reservations (request_key, input_hash, redelivery_count, redelivering_until). They are inert
+--   * it keeps the five new columns on license_reservations (request_key, input_hash, redelivery_count, redelivering_until, redelivery_lapses). They are inert
 --     without the new function, cost nothing, and keeping them means re-applying migration 03 later needs no data migration.
 -- Order when rolling back: redeploy the previous Netlify build FIRST (the new build sends request keys and would answer "try again" against
 -- the rolled-back database; it never charges), then run this file.
 
 begin;
 
+drop function if exists purge_idempotency_hashes();
 drop function if exists finish_redelivery(uuid, boolean);
 drop function if exists reserve_license_use(text, integer, integer, integer, integer, text, text);
 

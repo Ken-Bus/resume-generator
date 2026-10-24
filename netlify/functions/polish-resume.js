@@ -52,7 +52,6 @@ const MSG = {
   notFound: 'We couldn’t find that code.',
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
-  replayLimit: 'This step was already completed and counted on your code, but its result could not be delivered after several tries. Nothing more has been charged. Please message us with your access code and we will make it right.',
   nothing: 'Add a few answers first (for example what you did in a job, a project, or your skills), then try again.',
   sparse: 'There isn’t enough detail for the AI to improve yet, and it will not make anything up to fill the gap. Add a few words about what you did (what you worked with, and what you did each day), then try again. Nothing was used.',
   aiBusy: 'The AI service is very busy right now. You haven’t been charged. Please wait a minute or two and try again. Your resume is still here.',
@@ -68,9 +67,11 @@ const MSG = {
 };
 
 const replay = require('./_lib/replay');
-const cacheKey = (code, id) => ['polish', code, id];
+const recovery = require('./_lib/recovery');
+const inputOf = (source, target, profile) => JSON.stringify({ r: source, t: target, p: profile });
+const cacheKey = (code, id, input) => ['polish', code, id, input];
 function cacheGet(k) { return replay.get(...k); }
-function cachePut(k, body) { replay.put(...k, body); }
+function cachePut(k, body) { replay.put(...k.slice(0, 4), body); }
 
 // Who is this resume for? The customer can say (first resume / worked before / changing to different work); otherwise it
 // follows from the answers. Only these three values are ever used, so the field cannot inject text into the prompt.
@@ -204,9 +205,10 @@ exports.handler = async function(event) {
 
   // A repeat of a polish that already finished returns the same result, uncharged.
   if (rid) {
-    const hit = cacheGet(cacheKey(code, rid));
+    const hit = cacheGet(cacheKey(code, rid, inputOf(source, target, profile)));
     if (hit) {
-      try { if (await license.readLicense(supabase, code)) return json(200, hit); } catch (e) { /* fall through to the normal path */ }
+      // only a PAID result needs explaining; a free one is simply the same answer again
+      try { if (await license.readLicense(supabase, code)) return json(200, hit.charged === true ? { ...hit, recovered: 'exact', message: recovery.RECOVERED.exact } : hit); } catch (e) { /* fall through to the normal path */ }
     }
   }
 
@@ -224,7 +226,7 @@ exports.handler = async function(event) {
 
   let reservation;
   try {
-    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, JSON.stringify({ r: source, t: target, p: profile })));
+    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, inputOf(source, target, profile)));
   } catch (err) {
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
     console.error(missing
@@ -244,7 +246,7 @@ exports.handler = async function(event) {
     }, { 'Retry-After': String(wait) });
   }
   if (reservation.outcome === 'busy' || reservation.outcome === 'replay_busy') return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
-  if (reservation.outcome === 'replay_limit') return json(409, { error: MSG.replayLimit, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  const refused = recovery.blocked(reservation, 'polish'); if (refused) return json(refused.status, refused.body);
   // 'replay': this very polish was already paid for (the reply was lost and the retry reached another or a restarted instance). The AI runs
   // again to re-deliver the result; nothing more is charged.
   const redelivery = reservation.outcome === 'replay';
@@ -294,6 +296,7 @@ exports.handler = async function(event) {
     console.error('polish-resume: generation failed', { ref: guardFault ? 'P107' : undefined, reservation: reservation.reservationId, reason: guardFault ? safeReason(err) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
+    if (redelivery) return json(502, recovery.failed(reservation, 'polish', isBusy(err)));
     return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
@@ -311,7 +314,7 @@ exports.handler = async function(event) {
       console.warn('polish-resume: accepted changes are below the charging threshold; applied free, not charged', { ref: 'P203', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
       usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'free', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
       const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: false, appliedFree: true, message: MSG.appliedFree, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
-      if (rid) cachePut(cacheKey(code, rid), body);
+      if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
       return json(200, body);
     }
     const flaggedOnly = withheld.length > 0;                               // some suggestions were left out, and nothing was left to apply
@@ -319,7 +322,7 @@ exports.handler = async function(event) {
       { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
     const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, points: score.points, threshold: score.threshold, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
-    if (rid) cachePut(cacheKey(code, rid), body);
+    if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
     return json(200, body);
   }
 
@@ -350,7 +353,8 @@ exports.handler = async function(event) {
   usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: redelivery ? 'redelivered' : 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
   const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken };
-  if (rid) cachePut(cacheKey(code, rid), body);
+  if (redelivery) return json(200, { ...body, recovered: 'regenerated', message: recovery.RECOVERED.regenerated, supportRef: recovery.reference(reservation.reservationId) });   // fresh wording: said so, and not cached as "the original"
+  if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
   return json(200, body);
 };
 

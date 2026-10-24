@@ -385,6 +385,7 @@ alter table license_reservations add column if not exists request_key text;
 alter table license_reservations add column if not exists input_hash text;
 alter table license_reservations add column if not exists redelivery_count integer not null default 0 check (redelivery_count >= 0);
 alter table license_reservations add column if not exists redelivering_until timestamptz;
+alter table license_reservations add column if not exists redelivery_lapses integer not null default 0 check (redelivery_lapses >= 0);
 create index if not exists license_reservations_request_idx on license_reservations (code, request_key) where request_key is not null;
 
 drop function if exists reserve_license_use(text, integer, integer, integer, integer);
@@ -433,27 +434,45 @@ begin
    where r.code = p_code and r.status in ('released', 'expired')
      and r.created_at < now() - interval '30 days';
 
-  -- Durable repeat protection. The page sends one request key per logical step and reuses it when a reply is lost. If a paid step with this
-  -- key was already COMMITTED for this very input, the customer has paid for it: no second reservation and no second charge. The caller gets
-  -- 'replay' (re-deliver the result without charging; the AI runs again, nothing is stored of the customer's text), 'replay_busy' (a re-delivery
-  -- of it is already running) or 'replay_limit' (re-delivered too many times; ask the customer to contact us). This works across serverless
-  -- instances, restarts and cold starts because the fact lives in the database, under the same row lock as every other reservation.
+  -- Data minimisation: the input hash of a step is only useful while the step can still be re-delivered (24 hours).
+  update license_reservations r set input_hash = null
+   where r.code = p_code and r.input_hash is not null and coalesce(r.committed_at, r.created_at) < now() - interval '24 hours';
+
+  -- Durable repeat protection (see the header for the full decision table). This works across serverless instances, restarts and cold starts
+  -- because the facts live in the database, under the same row lock as every other reservation.
   if p_request_key is not null then
     select * into prior from license_reservations r
-     where r.code = p_code and r.request_key = p_request_key and r.status = 'committed'
-       and r.input_hash is not distinct from p_input_hash
-       and r.committed_at > now() - interval '60 minutes'
-     order by r.committed_at desc limit 1;
+     where r.code = p_code and r.request_key = p_request_key
+       and (r.status = 'committed' or (r.status = 'reserved' and r.expires_at > now()))
+     order by (r.status = 'committed') desc, r.created_at desc limit 1;
     if found then
-      if prior.redelivering_until is not null and prior.redelivering_until > now() then
-        return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
-      elsif prior.redelivery_count >= 3 then
-        return query select 'replay_limit'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+      if prior.status = 'reserved' then
+        -- the same request id is already running (a double send, a second tab, a retry while the first is still working)
+        if prior.input_hash is distinct from p_input_hash then
+          return query select 'key_conflict'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        else
+          return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        end if;
+      elsif prior.committed_at <= now() - interval '24 hours' then
+        return query select 'key_expired'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+      elsif prior.input_hash is distinct from p_input_hash then
+        return query select 'key_conflict'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
       else
-        update license_reservations r
-           set redelivery_count = r.redelivery_count + 1, redelivering_until = now() + make_interval(secs => greatest(lease, 60))
-         where r.id = prior.id;
-        return query select 'replay'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        if prior.redelivering_until is not null and prior.redelivering_until <= now() then
+          -- a re-delivery that started and never finished (the worker died): note it so it is not held against the customer
+          update license_reservations r set redelivery_lapses = r.redelivery_lapses + 1, redelivering_until = null
+           where r.id = prior.id returning * into prior;
+        end if;
+        if prior.redelivering_until is not null then
+          return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        elsif prior.redelivery_count - least(prior.redelivery_lapses, 2) >= 3 then
+          return query select 'replay_limit'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        else
+          update license_reservations r
+             set redelivery_count = r.redelivery_count + 1, redelivering_until = now() + make_interval(secs => greatest(lease, 60))
+           where r.id = prior.id;
+          return query select 'replay'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        end if;
       end if;
       return;
     end if;
@@ -538,9 +557,32 @@ begin
 end;
 $$;
 
+-- Daily housekeeping (called by check-code-supply): erase input hashes older than 24 hours for EVERY code, and drop the request key from rows that
+-- were never paid (released / expired). Returns the number of rows touched. Idempotent.
+create or replace function purge_idempotency_hashes()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  n integer; m integer;
+begin
+  update license_reservations r set input_hash = null
+   where r.input_hash is not null and coalesce(r.committed_at, r.created_at) < now() - interval '24 hours';
+  get diagnostics n = row_count;
+  update license_reservations r set request_key = null
+   where r.request_key is not null and r.status in ('released', 'expired') and r.created_at < now() - interval '24 hours';
+  get diagnostics m = row_count;
+  return n + m;
+end;
+$$;
+
 revoke execute on function reserve_license_use(text, integer, integer, integer, integer, text, text) from public, anon, authenticated;
 revoke execute on function finish_redelivery(uuid, boolean)                                          from public, anon, authenticated;
+revoke execute on function purge_idempotency_hashes()                                                 from public, anon, authenticated;
 grant  execute on function reserve_license_use(text, integer, integer, integer, integer, text, text) to service_role;
 grant  execute on function finish_redelivery(uuid, boolean)                                          to service_role;
+grant  execute on function purge_idempotency_hashes()                                                 to service_role;
 
 commit;

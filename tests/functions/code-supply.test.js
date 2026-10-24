@@ -4,10 +4,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const Module = require('module');
 
-let unassigned = 50; const inserted = [];
+let unassigned = 50; const inserted = []; const rpcCalls = []; let purgeError = null;
 const origLoad = Module._load;
 Module._load = function (request, ...rest) {
-  if (request === '@supabase/supabase-js') return { createClient: () => ({ from: () => ({
+  if (request === '@supabase/supabase-js') return { createClient: () => ({ rpc: async (fn) => { rpcCalls.push(fn); if (purgeError === 'throw') throw new Error('boom'); return { data: 0, error: purgeError }; }, from: () => ({
     select: () => ({ eq: async () => ({ count: unassigned, error: null }) }),
     insert: (rows) => ({ select: async () => { inserted.push(...rows); unassigned += rows.length; return { data: rows.map((r) => ({ code: r.code })), error: null }; } })
   }) }) };
@@ -33,4 +33,12 @@ test('low supply: the pool is topped up, the response still reveals no counts, t
 test('the response never contains a code, a count, or an error detail', async () => {
   unassigned = 0; inserted.length = 0; const c = capture(); let r; try { r = await handler(); } finally { c.restore(); }
   assert.equal(r.body, '{"ok":true}'); assert.equal(inserted.some((x) => r.body.includes(x.code)), false);
+});
+
+test('daily housekeeping: the scheduled run erases old request-input hashes (migration 03), and a failing or missing housekeeping function never blocks the code supply', async () => {
+  for (const [err, label] of [[null, 'ok'], [{ code: '42883' }, 'migration not applied'], [{ code: 'XX000' }, 'database error'], ['throw', 'exception']]) {
+    unassigned = 3; inserted.length = 0; rpcCalls.length = 0; purgeError = err; const c = capture(); let r; try { r = await handler(); } finally { c.restore(); }
+    assert.deepEqual(rpcCalls, ['purge_idempotency_hashes'], label); assert.equal(r.statusCode, 200, label); assert.equal(inserted.length, 100, `${label}: the code pool was still topped up`);
+  }
+  purgeError = null;
 });

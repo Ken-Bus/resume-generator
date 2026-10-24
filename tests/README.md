@@ -49,3 +49,10 @@ Never point these tests at a real Supabase project.
 - `functions/durable-idempotency.test.js`: independent "instances" (freshly loaded handlers with empty memory and their own connection pool) against one real Postgres. A charged Analyze or Polish whose reply is lost and retried on a cold instance is not charged again and is re-delivered; changed input or another request id is a new step; failed re-delivery gives its turn back; simultaneous retries produce one re-delivery; limit of three; a request id is never honoured for another code; only two hashes are stored (privacy); an older page without request ids behaves as before; new code against a database without migration 03 answers 503 and charges nothing; provider 429/529 is a calm "very busy" message with no server-side retry.
 - `db/reservations.test.js` also proves migration 03 applies twice, keeps the 5-argument call working, leaves license rows untouched, is server-only, and that `schema.sql` and the migrations end in the same shape.
 
+## Migration 03 hardening suites (revision 2)
+- `db/reservations.test.js`: the full decision table of `reserve_license_use` with a request key (replay, busy, limit, **conflict**, **expired**), retention at the boundary (23 h 59 m, 24 h 1 m, 400 days), abandoned and failed leases, concurrent identical and conflicting retries, the daily purge.
+- `db/migration03-review.test.js`: original production code on four database states, permissions, migration under load, crash/restart, rollback and roll-forward, and the runbook itself (the preflight file is read-only and identifies every state; the no-AI smoke test behaves as documented).
+- `functions/compat-matrix.test.js`: previous application (from git history) and this branch against every database state.
+- `functions/durable-idempotency.test.js`: independent instances: conflicts, stale tab, overlap, retention, limit, leases, fault injection, recovery honesty, unauthorized roles, privacy.
+- `ui/recovery.test.js` (Chromium): what the customer sees and can do next for recovered results, refusals, the recovery limit and a failed recovery.
+

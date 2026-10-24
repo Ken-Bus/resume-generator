@@ -26,11 +26,14 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
   Object.assign(process.env, { SUPABASE_URL: 'http://mock.invalid', SUPABASE_SERVICE_ROLE_KEY: 'mock', ANTHROPIC_API_KEY: 'mock', TAILOR_TOKEN_SECRET: SECRET, AI_TIMEOUT_MS: '1000' });
   // A new instance = new handler modules, new (empty) memory, new database connection pool. It is used once before the next one is created.
   const instances = [];
-  const instance = async () => { const hs = loadHandlers(db.pool('service_role', 10)); instances.push(hs); await hs.verify(post({ code: 'FG-ZZZZ-ZZZZ' })).catch(() => {}); return hs; };
+  const fault = { reserve: null, commit: null, finish: null };                       // fault injection: a function name -> throw once matched
+  const faulty = (pool) => { const q = pool.query.bind(pool); pool.query = async (sql, p) => { for (const [k, re] of [['reserve', /reserve_license_use/], ['commit', /commit_license_use/], ['finish', /finish_redelivery/]]) if (fault[k] && re.test(sql)) throw Object.assign(new Error(`injected ${k} failure`), { code: '08006' }); return q(sql, p); }; return pool; };
+  const instance = async () => { const hs = loadHandlers(faulty(db.pool('service_role', 10))); instances.push(hs); await hs.verify(post({ code: 'FG-ZZZZ-ZZZZ' })).catch(() => {}); return hs; };
   const seed = async (uses = 5) => { const c = newCode(); await H.seed(db, [{ code: c, uses, assigned: true }]); return c; };
   const uses = async (c) => (await db.admin('select uses_remaining u from licenses where code=$1', [c])).rows[0].u;
   const rsv = async (c) => (await db.admin('select status from license_reservations where code=$1 order by created_at', [c])).rows.map((x) => x.status);
-  const reset = () => { ai.mode = 'ok'; ai.delayMs = 0; ai.calls = 0; ai.maxInflight = 0; ai.polishPayload = null; };
+  const reset = () => { ai.mode = 'ok'; ai.delayMs = 0; ai.calls = 0; ai.maxInflight = 0; ai.polishPayload = null; fault.reserve = fault.commit = fault.finish = null; };
+  const age = (c, interval) => db.admin(`update license_reservations set committed_at = now() - interval '${interval}', created_at = now() - interval '${interval}' where code = '${c}' and status = 'committed'`);
   const analyze = (hs, code, extra = {}) => hs.parse(post({ code, resumeText: TEXT, ...extra }));
   const polish = (hs, code, extra = {}, resume = RESUME) => hs.polish(post({ code, resume, target: 'retail', ...extra }));
 
@@ -50,26 +53,60 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     assert.equal(first.charged, true); assert.equal(await uses(c), 4);
     const B = await instance();                                                                // "restart"
     const second = await polish(B, c, { requestId: 'req-polish-0001' }); const b = parseBody(second);
-    assert.equal(second.statusCode, 200); assert.equal(b.charged, true); assert.equal(JSON.parse(b.result).experience[0].bullets[0], FIXED[0]);
+    assert.equal(second.statusCode, 200); assert.equal(b.charged, true); assert.equal(JSON.parse(b.result).experience[0].bullets[0], FIXED[0]); assert.equal(b.recovered, 'regenerated'); assert.match(b.message, /may differ/);
     assert.equal(b.usesRemaining, 4); assert.equal(await uses(c), 4); assert.deepEqual(await rsv(c), ['committed']);
     const tailor = await B.tailor(post({ resumeData: JSON.parse(b.result), tailorToken: b.tailorToken, jobDescription: 'Retail clerk: cash handling and customer service.' }));
     assert.notEqual(tailor.statusCode, 401, 'the paid generation can still be tailored after a re-delivery');
   });
 
-  await t.test('a different request id, or the customer changing the text, is a NEW step and is charged normally', async () => {
+  await t.test('FINDING 1: another request id is a NEW operation (charged); the SAME id with edited text is REFUSED (nothing charged, no AI call) and a fresh id then works', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixAll; const A = await instance(); const B = await instance();
     await polish(A, c, { requestId: 'req-polish-0002' }); assert.equal(await uses(c), 4);
     await polish(B, c, { requestId: 'req-polish-0003' }); assert.equal(await uses(c), 3, 'another request id: another step');
     const edited = clone(RESUME); edited.experience[0].bullets = [...BASE.slice(0, 3), 'Answered questons about prices and returns'];
     ai.polishPayload = (r) => { const o = clone(r); o.experience[0].bullets = [FIXED[0], FIXED[1], FIXED[2], 'Answered questions about prices and returns']; return o; };
-    await polish(B, c, { requestId: 'req-polish-0002' }, edited); assert.equal(await uses(c), 2, 'same id but different text: a new step, never a stale result');
+    ai.calls = 0; const clash = await polish(B, c, { requestId: 'req-polish-0002' }, edited); const cb = parseBody(clash);
+    assert.equal(clash.statusCode, 409); assert.equal(cb.code, 'request_conflict'); assert.equal(cb.newRequest, true); assert.match(cb.error, /has changed since an earlier polish/); assert.match(cb.supportRef, /^R-[0-9A-F]{8}$/);
+    assert.equal(ai.calls, 0, 'refused before any AI call'); assert.equal(await uses(c), 3, 'and before any charge');
+    const same = await polish(A, c, { requestId: 'req-polish-0002' }, edited);                // the first instance too: its memory cannot serve the old result for new input
+    assert.equal(same.statusCode, 409, 'a cache on the instance that did the original work does not serve stale output for edited input');
+    const fresh = await polish(B, c, { requestId: 'req-polish-0009' }, edited); assert.equal(fresh.statusCode, 200); assert.equal(await uses(c), 2, 'the deliberate new operation is charged normally');
+  });
+
+  await t.test('FINDING 1: a stale tab resubmitting the earlier request (same id, same input) is recovered free, never charged; Analyze behaves the same', async () => {
+    reset(); const c = await seed(); const A = await instance(); const B = await instance();
+    await analyze(A, c, { requestId: 'req-stale-0001' }); assert.equal(await uses(c), 4);
+    const stale = await analyze(B, c, { requestId: 'req-stale-0001' }); assert.equal(stale.statusCode, 200); assert.equal(parseBody(stale).recovered, 'regenerated'); assert.equal(await uses(c), 4);
+    ai.calls = 0; const other = await analyze(B, c, { requestId: 'req-stale-0001', resumeText: `${TEXT} I also volunteered.` });
+    assert.equal(other.statusCode, 409); assert.equal(parseBody(other).code, 'request_conflict'); assert.equal(ai.calls, 0); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('FINDING 1: overlapping operations with one id: same input -> one runs, the other waits; different input -> the second is refused; one charge in total', async () => {
+    reset(); const c = await seed(); const A = await instance(); const B = await instance(); ai.delayMs = 400;
+    const [r1, r2] = await Promise.all([analyze(A, c, { requestId: 'req-over-0001' }), (async () => { await new Promise((x) => setTimeout(x, 100)); return analyze(B, c, { requestId: 'req-over-0001' }); })()]);
+    assert.deepEqual([r1.statusCode, r2.statusCode], [200, 409]); assert.match(parseBody(r2).error, /already in progress/); assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
+    ai.delayMs = 400; const d = await seed();
+    const [x1, x2] = await Promise.all([analyze(A, d, { requestId: 'req-over-0002' }), (async () => { await new Promise((x) => setTimeout(x, 100)); return analyze(B, d, { requestId: 'req-over-0002', resumeText: `${TEXT} More.` }); })()]);
+    assert.equal(x1.statusCode, 200); assert.equal(x2.statusCode, 409); assert.equal(parseBody(x2).code, 'request_conflict'); assert.equal(await uses(d), 4);
+  });
+
+  await t.test('FINDING 2: retention. A retry 2 hours later is still recovered; after 24 hours the id is refused as expired (no AI call, no charge, new id works); the input hash is erased', async () => {
+    reset(); const c = await seed(); const A = await instance(); await analyze(A, c, { requestId: 'req-ret-0001' });
+    await age(c, '2 hours'); const B = await instance();
+    const late = await analyze(B, c, { requestId: 'req-ret-0001' }); assert.equal(late.statusCode, 200); assert.equal(parseBody(late).recovered, 'regenerated'); assert.equal(await uses(c), 4, 'past the old 60-minute window and still never charged');
+    await age(c, '25 hours'); ai.calls = 0; const C = await instance();
+    const old = await analyze(C, c, { requestId: 'req-ret-0001' }); const ob = parseBody(old);
+    assert.equal(old.statusCode, 409); assert.equal(ob.code, 'request_expired'); assert.equal(ob.newRequest, true); assert.match(ob.error, /more than a day old/); assert.equal(ai.calls, 0); assert.equal(await uses(c), 4);
+    const row = (await db.admin("select input_hash, request_key from license_reservations where code=$1 and status='committed'", [c])).rows[0];
+    assert.equal(row.input_hash, null); assert.match(row.request_key, /^[0-9a-f]{64}$/);
+    assert.equal((await analyze(C, c, { requestId: 'req-ret-0002' })).statusCode, 200); assert.equal(await uses(c), 3, 'a new id is a new, deliberate operation');
   });
 
   await t.test('FAULT: the re-delivery fails (AI outage) -> 502, nothing charged, its turn is given back so the NEXT retry can still be re-delivered', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance();
     await analyze(A, c, { requestId: 'req-analyze-0002' });
     ai.mode = 'http500'; const failed = await analyze(B, c, { requestId: 'req-analyze-0002' });
-    assert.equal(failed.statusCode, 502); assert.equal(await uses(c), 4);
+    assert.equal(failed.statusCode, 502); assert.equal(parseBody(failed).code, 'recovery_failed'); assert.match(parseBody(failed).error, /nothing more has been charged/); assert.match(parseBody(failed).supportRef, /^R-/); assert.equal(await uses(c), 4);
     ai.mode = 'ok'; const ok = await analyze(B, c, { requestId: 'req-analyze-0002' });
     assert.equal(ok.statusCode, 200); assert.ok(parseBody(ok).result); assert.equal(await uses(c), 4);
   });
@@ -82,12 +119,38 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
   });
 
-  await t.test('LIMIT: after three re-deliveries the customer gets a clear message (no further AI, no charge); an EXHAUSTED code still re-delivers its paid step', async () => {
+  await t.test('FINDING 4: LIMIT. After three finished re-deliveries the customer gets a plain message with a non-secret support reference (no access code), no AI call, no charge, and a way forward; an EXHAUSTED code still re-delivers', async () => {
     reset(); const c = await seed(1); const A = await instance();
     await analyze(A, c, { requestId: 'req-analyze-0004' }); assert.equal(await uses(c), 0);
     for (let i = 0; i < 3; i++) assert.equal((await analyze(await instance(), c, { requestId: 'req-analyze-0004' })).statusCode, 200);
-    ai.calls = 0; const last = await analyze(await instance(), c, { requestId: 'req-analyze-0004' });
-    assert.equal(last.statusCode, 409); assert.match(parseBody(last).error, /message us with your access code/); assert.equal(ai.calls, 0); assert.equal(await uses(c), 0);
+    ai.calls = 0; const last = await analyze(await instance(), c, { requestId: 'req-analyze-0004' }); const lb = parseBody(last);
+    assert.equal(last.statusCode, 409); assert.equal(lb.code, 'recovery_limit'); assert.equal(lb.newRequest, true); assert.match(lb.supportRef, /^R-[0-9A-F]{8}$/);
+    assert.match(lb.error, new RegExp(lb.supportRef)); assert.match(lb.error, /never your access code/); assert.equal(lb.error.includes(c), false); assert.equal(ai.calls, 0); assert.equal(await uses(c), 0);
+    const id = (await db.admin("select id from license_reservations where code=$1 and status='committed'", [c])).rows[0].id; assert.equal(lb.supportRef, `R-${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`, 'the owner can find the step from the reference');
+  });
+
+  await t.test('FINDING 4: an abandoned recovery (the worker died mid-recovery) does not abandon the customer: after its lease lapses the retry recovers, and the lapse is forgiven', async () => {
+    reset(); const c = await seed(); const A = await instance(); await analyze(A, c, { requestId: 'req-lease-0001' });
+    for (let i = 0; i < 3; i++) {
+      await db.admin("update license_reservations set redelivering_until = now() + interval '30 seconds', redelivery_count = redelivery_count + 1 where code=$1 and status='committed'", [c]);   // a recovery started and its worker died
+      assert.equal((await analyze(await instance(), c, { requestId: 'req-lease-0001' })).statusCode, 409, 'while the lease is live the retry waits');
+      await db.admin("update license_reservations set redelivering_until = now() - interval '1 second' where code=$1 and status='committed'", [c]);
+    }
+    const ok = await analyze(await instance(), c, { requestId: 'req-lease-0001' }); assert.equal(ok.statusCode, 200, 'recovered after the lapses'); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('FAULT INJECTION: database errors during reserve, commit and recovery never charge twice and never lose the paid step', async () => {
+    reset(); const c = await seed(); const A = await instance();
+    fault.commit = true; const lost = await analyze(A, c, { requestId: 'req-fault-0001' }); fault.commit = null;                  // the charge could not be recorded
+    assert.equal(lost.statusCode, 503); assert.equal(await uses(c), 5, 'nothing charged when the charge was not recorded');
+    assert.equal((await analyze(A, c, { requestId: 'req-fault-0001' })).statusCode, 200); assert.equal(await uses(c), 4, 'the retry of an UNcommitted step is an ordinary step: charged once');
+    const B = await instance(); fault.reserve = true; const down = await analyze(B, c, { requestId: 'req-fault-0001' }); fault.reserve = null;
+    assert.equal(down.statusCode, 503); assert.equal(await uses(c), 4, 'database down during a retry: calm message, nothing changes');
+    fault.finish = true; const noFinish = await analyze(B, c, { requestId: 'req-fault-0001' }); fault.finish = null;                  // result produced, but freeing the recovery slot failed
+    assert.equal(noFinish.statusCode, 200); assert.equal(await uses(c), 4);
+    assert.equal((await analyze(B, c, { requestId: 'req-fault-0001' })).statusCode, 409, 'the stuck slot blocks only until its lease lapses');
+    await db.admin("update license_reservations set redelivering_until = now() - interval '1 second' where code=$1 and status='committed'", [c]);
+    assert.equal((await analyze(B, c, { requestId: 'req-fault-0001' })).statusCode, 200); assert.equal(await uses(c), 4);
   });
 
   await t.test('FAULT: a free (below-threshold) polish is not remembered as paid: its retry is an ordinary free attempt, and nothing is ever charged for it', async () => {
@@ -146,6 +209,43 @@ test('durable idempotency across independent instances (real SQL, AI mocked)', a
     const again = await polish(B, c, { requestId: 'req-polish-0005' }); const b = parseBody(again);
     assert.equal(again.statusCode, 200); assert.equal(b.charged, true); assert.ok(b.result); assert.notEqual(b.noChange, true); assert.equal(await uses(c), 4);
   });
+
+  await t.test('FINDING 3: the AI is busy (429/529) or fails DURING a recovery: honest message, nothing charged, its turn is given back; recovered wording is labelled regenerated, an on-instance repeat is labelled exact and costs no AI call', async () => {
+    reset(); const c = await seed(); const A = await instance(); const B = await instance(); await analyze(A, c, { requestId: 'req-rec-0001' });
+    ai.mode = 'http529'; const busy = parseBody(await analyze(B, c, { requestId: 'req-rec-0001' }));
+    assert.equal(busy.code, 'recovery_failed'); assert.match(busy.error, /very busy/); assert.match(busy.error, /completed and counted/); assert.equal(await uses(c), 4);
+    ai.mode = 'notjson'; const bad = parseBody(await analyze(B, c, { requestId: 'req-rec-0001' })); assert.equal(bad.code, 'recovery_failed'); assert.equal(await uses(c), 4);
+    ai.mode = 'ok'; const good = parseBody(await analyze(B, c, { requestId: 'req-rec-0001' }));
+    assert.equal(good.recovered, 'regenerated'); assert.match(good.message, /fresh version/); assert.match(good.message, /may differ/); assert.match(good.message, /No additional generation was used/);
+    assert.equal((await db.admin("select redelivery_count n from license_reservations where code=$1 and status='committed'", [c])).rows[0].n, 1, 'two failed recoveries gave their turns back');
+    ai.calls = 0; const exact = parseBody(await analyze(A, c, { requestId: 'req-rec-0001' }));
+    assert.equal(exact.recovered, 'exact'); assert.match(exact.message, /exactly as it was/); assert.equal(ai.calls, 0, 'the instance that did the work answers from memory: no AI call'); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('free polish + the same id with edited text: a FREE result is not a paid step, so the edit is an ordinary new request (free or charged on its own merits)', async () => {
+    reset(); const c = await seed(); const A = await instance(); ai.polishPayload = (r) => { const o = clone(r); o.experience[0].bullets[0] = FIXED[0]; return o; };
+    const free = parseBody(await polish(A, c, { requestId: 'req-free-0001' })); assert.equal(free.charged, false);
+    ai.polishPayload = fixAll; const edited = clone(RESUME); edited.experience[0].bullets = [...BASE.slice(0, 3), 'Answered questons about prices and returns'];
+    const r = await polish(await instance(), c, { requestId: 'req-free-0001' }, edited); assert.equal(r.statusCode, 200); assert.equal(await uses(c), 4, 'charged only because this edit really earned a generation');
+  });
+
+  await t.test('UNAUTHORIZED ROLES: a browser role (anon / authenticated) cannot call any reservation function or read the reservation table, with a real attempt, not only a catalog check', async () => {
+    const c = await seed(); await analyze(await instance(), c, { requestId: 'req-priv-0001' });
+    for (const role of ['anon', 'authenticated']) {
+      const pool = db.pool(role, 2);
+      for (const sql of ["select * from public.reserve_license_use('" + c + "',45,900,6,30,'k','h')", "select public.finish_redelivery(gen_random_uuid(), true)", 'select public.purge_idempotency_hashes()', 'select * from license_reservations', "update licenses set uses_remaining = 99 where code = '" + c + "'", 'select code, uses_remaining from licenses'])
+        await assert.rejects(() => pool.query(sql), /permission denied|row-level security|must be owner/i, `${role}: ${sql.slice(0, 50)}`);
+      await pool.end();
+    }
+    assert.equal(await uses(c), 4);
+  });
+
+  await t.test('PRIVACY / RETENTION: the stored values are KEYED hashes (not reproducible without the server secret) and the daily housekeeping function erases old input hashes', async () => {
+    reset(); const c = await seed(); const A = await instance(); await analyze(A, c, { requestId: 'req-hmac-0001' });
+    const row = (await db.admin("select request_key, input_hash from license_reservations where code=$1 and status='committed'", [c])).rows[0];
+    const crypto = require('crypto'); const plain = (v) => crypto.createHash('sha256').update(v).digest('hex');
+    assert.notEqual(row.request_key, plain('key:analyze:req-hmac-0001'), 'not a plain hash of the id'); assert.notEqual(row.input_hash, plain(`in:${TEXT}`), 'not a plain hash of the resume text');
+    });
 
   await t.test('COMPATIBILITY: the page sends no request id (an older page): behaviour is exactly the previous one, and no key is stored', async () => {
     reset(); const c = await seed(); const A = await instance(); const B = await instance();

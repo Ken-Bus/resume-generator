@@ -9,6 +9,7 @@ const integrity = require('./_lib/integrity');
 const usage = require('./_lib/usage');
 const { isFirstInFlight } = require('./_lib/inflight');
 const replay = require('./_lib/replay');
+const recovery = require('./_lib/recovery');
 const { makeLimiter, clientIp } = require('./_lib/rate');
 
 // Guessing codes through this endpoint: an unknown or malformed code counts against the client (best effort, in memory; see _lib/rate.js).
@@ -23,7 +24,6 @@ const MSG = {
   notFound: 'We couldn’t find that code.',
   exhausted: 'You’ve used all generations on this code.',
   busy: 'Another generation is already in progress on this code. Please wait a moment and try again.',
-  replayLimit: 'This step was already completed and counted on your code, but its result could not be delivered after several tries. Nothing more has been charged. Please message us with your access code and we will make it right.',
   aiBusy: 'The AI service is very busy right now. You haven’t been charged. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t analyze this resume right now. You haven’t been charged. Please try again.',
   slow: 'The AI took too long to answer. You haven’t been charged. Please try again in a moment.',
@@ -70,8 +70,8 @@ exports.handler = async function(event) {
     supabase = getSupabaseClient();
     // A repeat of an Analyze that already finished (the reply was lost) returns the same result, uncharged.
     if (rid) {
-      const hit = replay.get('analyze', code, rid);
-      if (hit) { try { if (await license.readLicense(supabase, code)) return json(200, hit); } catch (e) { /* fall through to the normal path */ } }
+      const hit = replay.get('analyze', code, rid, resumeText);
+      if (hit) { try { if (await license.readLicense(supabase, code)) return json(200, { ...hit, recovered: 'exact', message: recovery.RECOVERED.exact }); } catch (e) { /* fall through to the normal path */ } }
     }
     reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('analyze', rid, resumeText));
   } catch (err) {
@@ -99,7 +99,7 @@ exports.handler = async function(event) {
   if (reservation.outcome === 'busy' || reservation.outcome === 'replay_busy') {
     return json(409, { error: MSG.busy, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
   }
-  if (reservation.outcome === 'replay_limit') return json(409, { error: MSG.replayLimit, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  const refused = recovery.blocked(reservation, 'analyze'); if (refused) return json(refused.status, refused.body);
   // 'replay': this very step was already paid for (the reply was lost and the retry reached another instance or a restarted one). The AI runs
   // again to re-deliver the result; nothing more is charged.
   const redelivery = reservation.outcome === 'replay';
@@ -141,6 +141,7 @@ exports.handler = async function(event) {
     console.error('parse-resume: generation failed', { ref: guardFault ? 'A107' : undefined, reservation: reservation.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', counted: !providerFault });
     usage.outcome({ fn: 'analyze', ref: reservation.reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
+    if (redelivery) return json(502, recovery.failed(reservation, 'analyze', isBusy(err)));
     return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
@@ -185,7 +186,8 @@ exports.handler = async function(event) {
     maxUses: committed.maximum,
     tailorToken
   };
-  if (rid) replay.put('analyze', code, rid, body);
+  if (redelivery) return json(200, { ...body, recovered: 'regenerated', message: recovery.RECOVERED.regenerated, supportRef: recovery.reference(reservation.reservationId) });
+  if (rid) replay.put('analyze', code, rid, resumeText, body);
   return json(200, body);
 };
 

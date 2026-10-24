@@ -1,111 +1,166 @@
-# Migration 03 review package: durable duplicate-charge protection
+# Migration 03 review package: durable duplicate-charge protection (revision 2)
 
-**Status: prepared for owner review. NOT applied to production or to any Supabase project.** Everything below was tested only against disposable local PostgreSQL 16.
+**Status: prepared for owner review. NOT applied to production or to any Supabase project.** All evidence below is from disposable local PostgreSQL 16 and mocked AI. Nothing here was verified against live Supabase, live Netlify or the real Anthropic API.
+
+Revision 2 resolves the five findings of the independent review of revision 1 (commit `eb5323c`). Section 12 lists each finding and its disposition.
 
 | File | Lines | SHA-256 |
 |---|---|---|
-| `supabase/migrations/20261023_03_request_idempotency.sql` (the migration) | 184 | `08fcccc0b25b53e10b88caf4c47e1a60f469f4075da3e8b8ea3f097dab62b863` |
-| `supabase/rollback/20261023_03_rollback.sql` (the rollback, never run automatically) | 121 | `919618ec1f32704c4988af5705dcd7ef663216b4b3ce579c4799297b54063561` |
+| `supabase/migrations/20261023_03_request_idempotency.sql` | 238 | `e64025d880004f2838b6c36f81b21fefba95805e68f31fa79d9517d3a4d93196` |
+| `supabase/rollback/20261023_03_rollback.sql` (never run automatically) | 122 | `b1516e0369c25b304a3132dceccf4780de34db61adecfe27a667e9c1de62afe1` |
+| `docs/MIGRATION_03_PREFLIGHT.sql` (read-only checks, section 7) | 53 | `ebab14078656eb476805c0a45a4b0d575157fdcb0b11bd9e1f16db63783360ff` |
 
-Verify the files you review are the ones you run: `shasum -a 256 <file>` must print the hash above. The same SQL is mirrored at the end of `supabase/schema.sql` for fresh installs.
+Check the file you are about to run against the hash: `shasum -a 256 <file>`. The migration is mirrored at the end of `supabase/schema.sql` for fresh installs.
 
-## 1. What it does in one paragraph
-Today, if a charged Analyze or AI Polish reply is lost and the browser retries on a different (or restarted) server instance, the retry looks like a brand-new request and can charge a second generation. The migration lets the database remember, for each paid step, two hashes: of the page's request id and of the request's input. A retry with the same id and the same input is recognised under the license row lock and answered `replay`: no reservation, no charge. The server then re-delivers the result by running the AI once more (nothing of the customer's text is stored). Re-delivery is limited to 3 per paid step, one at a time, and a failed re-delivery gives its turn back.
+## 1. What it does
+The page sends one **request id** per logical step and reuses it only to retry that same step. The database remembers, on the reservation row, two keyed hashes: of the id (`request_key`) and of the step's input (`input_hash`). When a paid step is requested, `reserve_license_use` looks for the id under the license row lock and decides. **A retry can never become a second charge; only a new id (a deliberate new operation) can.**
 
-## 2. Exactly what changes in the database
-| Object | Change |
+| Same code and request id found as... | Outcome | Charged? | What the customer sees |
+|---|---|---|---|
+| nothing | ordinary reservation | on commit only (as before) | normal flow |
+| committed, same input, within 24 h, no recovery running | `replay` | **no** | result recovered (see section 4) |
+| committed, same input, recovery already running | `replay_busy` | no | "another generation is in progress, wait a moment" |
+| committed, same input, recovery limit reached | `replay_limit` | no | plain message + support reference |
+| committed, **different input** | `key_conflict` | **no** | "your resume has changed since an earlier step that may already have been counted; check the counter, press again to start a new one" |
+| committed, older than 24 h | `key_expired` | **no** | "more than a day old, cannot be recovered here; press again to start a new one" |
+| still running, same input | `replay_busy` | no | wait a moment |
+| still running, **different input** | `key_conflict` | no | as above |
+| released / expired / free (never paid) | ignored: ordinary new reservation | on commit only | normal flow |
+
+Both refusals (`key_conflict`, `key_expired`) and the limit make the page drop the spent id, so the customer's **next deliberate press** is a fresh operation. Nothing is retried automatically.
+
+## 2. Finding 1: request-id reuse
+Revision 1 matched on key **and** input, so a reused id with edited input fell through to a new chargeable reservation. Revision 2 refuses it (`key_conflict`). The same rule covers a stale browser (same id, same input: recovered free, or `key_expired` after 24 h), overlapping operations (one runs, the other waits or is refused), refreshes and restarts (the state is in the database, not in memory). The in-memory fast path was also fixed: its key now includes the input, so an instance can no longer answer edited input with an earlier input's result. A customer can still edit and re-polish repeatedly: each deliberate press with a new id is a normal operation.
+
+## 3. Finding 2: retention policy (explicit)
+| Item | Kept | Why |
+|---|---|---|
+| Recovery window (replay allowed) | **24 hours** after the commit | covers a reopened tab or a next-morning retry; beyond it a re-run is no longer "the same step" in the customer's mind |
+| `request_key` on a **paid** (committed) row | as long as the committed row (the permanent accounting record that already exists) | so a stale id is **refused forever instead of being charged**; no new rows, ~64 bytes per paid step |
+| `input_hash` | erased **24 hours** after the step: lazily by `reserve_license_use` for that code, and for every code by `purge_idempotency_hashes()` (daily, called by `check-code-supply`) | data minimisation: it is derived from the resume text |
+| `request_key` on unpaid rows (released, expired) | erased after 24 h by the purge; the rows themselves are deleted after 30 days (existing rule) | they have no use after the window |
+| Raw resumes, AI output, contact details | **never stored** | no approval for such storage |
+
+Both hashes are HMAC-SHA256 with the server's existing `TAILOR_TOKEN_SECRET` (plain SHA-256 if that secret is missing, consistently on every instance), so they cannot be matched to a guessed resume or id without the secret. Residual limitations, stated plainly: (a) an input hash may linger up to one day plus the time to the next daily run; (b) rotating `TAILOR_TOKEN_SECRET` makes earlier hashes unrecognisable, so a step paid before the rotation could not be matched afterwards: rotate only when no customer is mid-step; (c) protection against a *repeated id* is permanent, but recovery of the *result* is 24 hours; (d) a customer who deliberately starts a new operation with a new id can be charged again, by design.
+
+## 4. Finding 3: paid-result recovery without storing results
+**Exact recovery would require storing the AI output, which needs your approval and is not implemented.** What is implemented:
+- **Same server instance within 5 minutes:** the exact original answer is returned from memory, labelled "restored exactly as it was". No AI call.
+- **Any other case within 24 hours (another instance, a restart, a reopened tab):** the database proves the step was paid; the server runs the AI **once more** for the same resume and labels the result **"a fresh version ... the wording may differ from the first one. No additional generation was used."** It is never presented as the original.
+- **Cost control:** at most 3 finished recoveries per paid step (abandoned leases forgiven, at most 2, so at most 5 AI calls per step in the worst case), one at a time (60-second lease), none automatic; a refused or failed recovery makes no charge. Each recovery is one ordinary AI call (the same size as the original).
+- **Outage during recovery:** the attempt is given back (it does not count toward the limit); the customer is told the earlier step was counted, nothing more is charged, the AI is busy or unavailable, and to try again; the **same id is kept** so the paid step stays recoverable.
+- **Customer edits and the original input:** a recovery only runs for the same input; edited input is refused (section 2). Restore still returns the customer's own wording.
+- **Owner decision, optional:** storing the AI output (even encrypted) for 24 hours would give exact recovery and save the extra AI calls, at the price of holding customer resume content in the database. Not done; say so if you want a proposal.
+
+## 5. Finding 4: customers are not abandoned
+| Situation | What happens |
 |---|---|
-| `license_reservations` | 4 new nullable/defaulted columns: `request_key text`, `input_hash text`, `redelivery_count integer not null default 0`, `redelivering_until timestamptz`; 1 new partial index on `(code, request_key)` |
-| `reserve_license_use` | The 5-argument version is dropped and replaced by a 7-argument version. The first five parameters and all result columns are unchanged; `p_request_key` and `p_input_hash` default to null. Logic added: when a key is supplied and a committed row for the same code, key and input exists (committed within 60 minutes), return `replay`, `replay_busy` or `replay_limit` instead of reserving. With no key it behaves exactly as before |
-| `finish_redelivery(uuid, boolean)` | New. Frees a re-delivery slot; gives the attempt back when it failed |
-| Privileges | Both functions: `revoke ... from public, anon, authenticated`, `grant ... to service_role`, `security definer`, `search_path = public` |
-| Not touched | `licenses` (no row, column or policy), all other functions, Row Level Security, existing reservation rows |
+| Recovery limit reached | `recovery_limit`: plain message, **non-secret support reference** `R-XXXXXXXX` (first 8 characters of the paid step's id; identifies a step for the owner and grants nothing), no access code or resume asked for; nothing more charged; the page offers "press again to start a new one" |
+| Edited after a possibly-paid step | `request_conflict`: explained, reference shown, counter refreshed, next press is a new operation |
+| Id older than 24 h | `request_expired`: explained, new operation on the next press |
+| Browser closed mid-recovery (lease abandoned) | after 60 s the lease lapses; the lapse is forgiven (up to 2) so the customer still gets their attempts |
+| Recovery fails (AI outage, timeout, unusable answer) | attempt given back; honest message; same id kept |
+| Balance | always the database's: the page shows `usesRemaining` from every response and re-reads the counter after a refusal |
 
-The whole migration runs in one transaction (`begin; ... commit;`) and is idempotent (every statement is `if not exists` / `drop if exists` / `create or replace`).
+Support runbook (owner-run, read-only until you decide): `select id, status, committed_at, redelivery_count, redelivery_lapses from license_reservations where id::text like lower('XXXXXXXX') || '%';` (use the 8 characters after `R-`). If the customer never received a result, you may restore one generation to that code by hand (`update licenses set uses_remaining = least(uses_remaining + 1, max_uses) where code = (select code from license_reservations where id::text like lower('XXXXXXXX') || '%');`). That is a production data change and is your decision each time.
 
-## 3. Compatibility with the application in production today
-"Production today" is the code before the reservation work (`consume-generation`, `verify-license`, `check-code-supply`, the Google Apps Script) and/or the post-migration-01 code (5-argument calls). Both were exercised against four database states: A = today's live snapshot, B = + migration 01, C = + 02, D = + 03 (`tests/db/migration03-review.test.js`).
+## 6. Compatibility matrix (real local PostgreSQL; the previous application is run from git history, unmodified)
+`P0` = the original production code before reservation accounting (`d1abe1d^`); `P1` = the previous application (`b6884f3`); `N` = this branch. Database: `A` live snapshot, `B` = +01, `C` = +02, `D` = +03, `R` = D after the rollback script.
 
-| Check | Result |
-|---|---|
-| The ORIGINAL production handlers (`verify-license`, `consume-generation`, from git commit `d1abe1d^`) run unchanged: valid code, unknown code, consume, exhaust, repeat | Identical answers in A, B, C and D |
-| Post-01 calls: 5-argument reserve, reserve with defaults, commit (twice), tailor authorize, refund, release, unknown code | Identical results in B and D |
-| Apps Script / supply operations: select, `update licenses set assigned...`, `insert into licenses` | Work in D; applying all three migrations changes no license row (fingerprint equal) |
-| New branch code against a database WITHOUT migration 03 | A request carrying a request id answers a calm 503 "try again", charges nothing, makes no AI call (`durable-idempotency.test.js`); a request without an id works as before |
-| Old page (no request ids) against the new code and database | Unchanged behaviour, no key stored |
+| Application | A | B | C | D | R |
+|---|---|---|---|---|---|
+| P0 (verify-license, consume-generation) | works | identical answers | identical | identical | n/a (needs only the original objects, untouched) |
+| P1 (never sends a request id) | n/a (needs 01) | works | identical to B | identical to B | identical to B |
+| N (sends request ids) | 503 "try again", no charge | 503, no charge, no AI call | 503, no charge | **works, durable** | 503, no charge, no AI call |
+| N without a request id (older page) | n/a | works | works | works | works |
 
-Therefore the deployment order is safe in either direction for customers, and the only unsafe order (code first) merely shows "try again" until the SQL is applied.
+Tests: `tests/db/migration03-review.test.js` (P0 and permissions and load) and `tests/functions/compat-matrix.test.js` (P1 and N). **Two honest consequences:** (1) with P1 or P0 running, or after a rollback, a lost reply retried on a cold instance can still charge again: durable protection needs migration 03 **and** the new application; the compat test asserts this as a known limitation rather than hiding it. (2) An older Netlify deploy is only known to work against the database states in the table: do not assume it works with any other change.
 
-## 4. Permissions
-Every function in the `public` schema, including the two new-surface ones, is executable by `service_role` only; `anon` and `authenticated` cannot run any of them or touch `license_reservations` (RLS on, no policies). Both functions are `security definer` with a pinned `search_path`. Verified by catalog query for all functions, not a sample.
+## 7. Deployment runbook (owner steps; none performed)
+**Read-only preflight** (`docs/MIGRATION_03_PREFLIGHT.sql`, hash above). It contains only `select` statements. Run it and keep the output.
+1. **Identify the state.** Expected before: migration 01 (and 02) applied, `reserve_license_use` has one overload with 5 arguments, no `request_key` column. If it shows no reservation table (state A), stop: apply 01 and 02 first per `SETUP.md`.
+2. **Record balances.** The preflight prints a license count, the sum of remaining generations and an `md5` fingerprint of `(code, uses_remaining, max_uses)`. Real customers use codes, so the fingerprint changes with real use; run the same query after the migration and reconcile any difference against `license_reservations` commits in between. No balance may change because of the migration itself (the migration contains no statement that touches `licenses`).
+3. **Backup prerequisite.** Confirm in the Supabase dashboard that a backup / point-in-time recovery covers now, and export `licenses` and `license_reservations` to CSV. Do not continue without it.
+4. **Quiet window (recommended).** Not required for correctness (tested under load) but makes reconciliation trivial.
+5. **Apply** the migration file in the SQL editor. It is one transaction: it applies completely or not at all.
+6. **If the editor times out or shows an error: do NOT assume it failed and do NOT re-run yet.** Run the preflight state query again (read-only). Also run the "is it still running?" query in the preflight file. Outcomes: state **D** (7-argument function, new columns) means it applied: do not re-run. State **B/C** with no running session means nothing was applied (the transaction rolled back): it is safe to run again once. A still-running session: wait for it, then re-check. The migration is idempotent, so a duplicate run is harmless, but verification comes first.
+7. **Verify** with the preflight's "after" queries: exactly one `reserve_license_use` (7 args), `finish_redelivery`, `purge_idempotency_hashes`; five new columns; privileges (anon / authenticated: none; service_role: all); `license_reservations` RLS on; balances reconciled.
+8. **Schema cache.** Supabase's API caches function signatures. It normally refreshes after DDL. If any call reports "could not find the function", run `notify pgrst, 'reload schema';` (it changes no data) and retry once. The old five-argument call keeps working because the new function accepts it with defaults (tested with named-argument calls, as the API makes them).
+9. **Smoke-test the currently deployed site** (old application, new database): verify-license and one generation with your personal code; the counter drops by exactly one.
+10. **Duplicate-charge smoke test without AI cost** (SQL editor): create a throwaway license, e.g. `insert into licenses (code, max_uses, uses_remaining, assigned) values ('FG-SMKE-TEST', 5, 5, true);` then run, in order, `select * from reserve_license_use('FG-SMKE-TEST',45,900,6,30,'smoke-key','smoke-input');` (expect `reserved`), `select * from commit_license_use('<reservation_id>');` (`committed`, balance 4), the same reserve call again (expect **`replay`**, balance still 4), `finish_redelivery('<reservation_id>', true)`, the reserve call with input `'other-input'` (expect **`key_conflict`**), then clean up with `delete from licenses where code = 'FG-SMKE-TEST';`. This proves the durable behaviour on the real database with no customer data and no AI call.
+11. **Deploy the feature branch** (your merge and publish approval). Then smoke-test with your personal code: one generation (counter minus one) and `select request_key is not null from license_reservations order by created_at desc limit 1;` (true).
+12. **Watch** the function logs for 24 hours: `reserve_license_use is missing` (step 5 not done) or repeated 5xx. Also watch for `ai-outcome` lines with outcome `redelivered`: each is one extra AI call.
 
-## 5. Concurrency, retries, restarts (real PostgreSQL)
-| Scenario | Evidence |
-|---|---|
-| Migration applied twice while 8 connections run reserve/commit traffic | No request errored; generations consumed equals commits (none lost or doubled); nothing left held |
-| Six simultaneous retries of one paid step | Exactly one `replay`, five `replay_busy`; one charge in total |
-| Five simultaneous retries across three cold "instances" (separate handlers and pools) | One re-delivery runs, four are told to wait; no extra charge |
-| Reply lost, retry on a cold instance or after a restart (Analyze and Polish) | One charge; result re-delivered; tailoring token still valid |
-| Worker died after reserving (never committed) | Not treated as paid; after the lease lapses the same key reserves normally; after commit it replays |
-| Edited input, other request id, other code | A new step; never a stale or foreign result |
-| Fourth re-delivery; failed re-delivery | Clear message, no AI call, no charge; a failed one gives its turn back |
-| Re-delivered step on an exhausted code | Still re-delivered (the customer paid for it) |
+**Abort criteria:** any preflight or verification query not matching section 7; a balance difference that cannot be reconciled; an API "function not found" that `notify pgrst` does not clear; the counter dropping by more than one for one generation; smoke test step 10 not giving `replay` / `key_conflict`.
 
-## 6. Rollback
-`supabase/rollback/20261023_03_rollback.sql` (hash above), one transaction, idempotent: drops `finish_redelivery` and the 7-argument function and recreates the 5-argument function exactly as migration 01 defined it, with the same server-only privileges. It does not touch balances or any committed or released row, and keeps the four new columns (inert; keeping them means rolling forward again needs no data work).
-Tested: balances and committed rows identical before and after (twice); the previous deployment's 5-argument call works afterwards; the new code's call fails closed; migration 03 re-applies cleanly and a key written before the rollback is honoured again.
-Order if ever needed: redeploy the previous Netlify build first, then run the rollback.
+## 8. Rollback and recovery
+**Prerequisites:** the previous Netlify deploy id recorded before step 11; the backup from step 3; the preflight output.
+**Order:** (1) redeploy the previous Netlify build (instant; it works against the migrated database, section 6); (2) only if the SQL itself misbehaves, run `supabase/rollback/20261023_03_rollback.sql` (hash above, one transaction, idempotent): it removes `purge_idempotency_hashes`, `finish_redelivery` and the 7-argument function and recreates the 5-argument function exactly as migration 01 defined it, with the same privileges.
+**What rollback does not do (by design):** it does not touch `licenses`; it does not restore or spend any generation; it removes no committed or released row; it keeps the five new columns (inert, and keeping them means rolling forward again is lossless); it exposes no data. Tested: balances and rows identical before and after (twice); the previous application keeps charging correctly; the new application fails closed; rolling forward again still recognises steps paid before the rollback.
+**What rollback does cost:** durable protection is gone (section 6, consequence 1).
+**Ambiguous or partial operations:** do not retry until the read-only state query says which state you are in (step 6). If a customer reports a missing generation, use the support runbook (section 5). Rolling back never restores spent credits: any restoration is a deliberate manual decision.
 
-## 7. Deployment plan (owner steps; I have not performed any of them)
-Prerequisite: the owner reviews this document and the SQL, and approves.
-1. **Backup.** Supabase dashboard: Database, Backups: confirm a recent backup exists or take one. Export `licenses` and `license_reservations` as CSV and store them privately.
-2. **Check the starting state** in the SQL editor: `select proname, pronargs from pg_proc where proname in ('reserve_license_use','commit_license_use','release_license_use','consume_tailor_use','refund_tailor_use') order by 1;` Expect migration 01 present (`reserve_license_use` with 5 arguments). If migration 01 is not present, stop: apply 01 and 02 first per `SETUP.md`.
-3. **Apply** the migration file in the SQL editor (paste the file; it is one transaction).
-4. **Verify** (all in the SQL editor):
-   - `select proname, pronargs from pg_proc where proname in ('reserve_license_use','finish_redelivery') order by 1;` expects exactly `finish_redelivery 2` and `reserve_license_use 7`.
-   - `select count(*) from licenses;` and the customers-only fingerprint you recorded in step 2 are unchanged.
-   - `select has_function_privilege('anon','public.finish_redelivery(uuid,boolean)','execute');` expects false (also `authenticated`); `service_role` true.
-   - If the API reports a function "not found", run `notify pgrst, 'reload schema';`.
-5. **Smoke-test the currently deployed site** with your personal code: verify-license and one normal generation still work and the counter drops by one.
-6. **Deploy the feature branch** by your normal process (merge and publish are yours to approve).
-7. **Smoke-test the new build**: the polish endpoint reports the expected guard version; one generation on a personal code; then in the SQL editor `select request_key is not null as keyed from license_reservations order by created_at desc limit 1;` expects true.
-8. **Watch** the Netlify function logs for 24 hours for `reserve_license_use is missing` (step 3 not done) or repeated 5xx.
+## 9. Privileges and security evidence
+`tests/db/migration03-review.test.js`, `tests/db/reservations.test.js` and `tests/functions/durable-idempotency.test.js`: every function in `public` (not a sample) is executable by `service_role` only; the reservation table is closed to `anon` and `authenticated` (RLS on, no policies); real attempts as `anon` and `authenticated` to call the reservation functions, read `license_reservations`, update or read `licenses` are all rejected; the new functions are `security definer` with a pinned `search_path`. Not verified: Supabase's own default privilege settings in production (the test applies Supabase-style defaults), and the production API gateway.
 
-Abort and roll back if step 4 or 5 fails, or the counter drops by more than one for one generation. Rollback = redeploy the previous Netlify build (instant) and, only if the SQL itself misbehaves, run the rollback file.
+## 10. Test evidence
+Full release run and per-area counts are in the completion report. Targeted (real local PostgreSQL, independent simulated instances): decision table (every outcome of section 1), retention boundary (23 h 59 m recovered, 24 h 1 m refused, 400 days refused), abandoned and failed leases, limit, concurrent identical and conflicting retries, migration applied under load, crash and restart, rollback and roll-forward, compatibility matrix, fault injection (database error during reserve, commit and recovery; AI busy or unusable during recovery), unauthorized roles, free versus paid polish with request ids, daily housekeeping, privacy of stored values. Mutation checks: 20 deliberate breaks of the new logic (SQL, handlers, client), all caught by a test.
 
-## 8. Customer-impact risks
-- While step 3 runs, the function is replaced inside one transaction; a request arriving in that instant waits for the lock rather than failing (shown under load in section 5).
-- A re-delivery costs one extra AI call (Flex & Grace's cost, not the customer's), at most 3 per paid step; the re-delivered wording may differ slightly from the lost one.
-- A retry later than 60 minutes after the charge is a new step and is charged normally; the page keeps one request id only for the same unfinished step.
-- If a step is re-delivered 3 times without success the customer is told to message us with their code; nothing more is charged.
-- Not verified against the real Supabase service: PostgREST schema cache timing (step 4 note), real latency, real connection limits. These are why the smoke tests in steps 5 and 7 exist.
+## 11. Remaining limitations and risks (plain)
+- Exact result recovery is not possible without storing results (section 4); the extra AI call is Flex & Grace's cost.
+- Durable protection exists only with migration 03 **and** the new application together.
+- Not verified on the real Supabase service, real Netlify or the real Anthropic API.
+- The recovery window is 24 hours; a deliberate new press always creates a new operation that can be charged.
+- The daily purge depends on `check-code-supply` running; if it stops, input hashes are still erased lazily whenever the code is used.
 
-## 9. Owner approvals required
-1. Approve applying migration 03 to the production Supabase project (steps 1 to 5).
-2. Approve merging the feature branch and publishing it (step 6).
-3. Authorize one paid generation on a personal code for the smoke test (step 7).
+## 12. Disposition of the five review findings
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Request-id reuse with changed input could become a new chargeable operation | **FIXED** (`key_conflict`, input-aware cache) |
+| 2 | 60-minute idempotency window | **FIXED** (24 h recovery, permanent refusal of stale ids, input hash erased at 24 h; residual limits in section 3) |
+| 3 | Redelivery re-runs the AI; original result not stored | **ACCEPTED LIMITATION** (honestly labelled regenerated result; exact recovery needs your approval to store output: **OWNER DECISION** if you want it) |
+| 4 | Customers abandoned after the redelivery limit | **FIXED** (support reference, forgiven lapses, new-operation path, honest messages, tested in Chromium) |
+| 5 | Rollback and deployment compatibility | **FIXED in code and documentation**; real-service behaviour **NOT VERIFIED** (needs your steps 5 to 12) |
+
+## 13. Owner approvals required
+1. Apply migration 03 to production Supabase (section 7, steps 1 to 10).
+2. Merge the branch and publish it (step 11).
+3. Authorize one paid generation on a personal code for the post-deploy smoke test.
+4. Optional decision: whether to store AI output for 24 hours to enable exact recovery (not recommended without a privacy decision).
 
 ## Appendix A: the migration, verbatim
 
 ```sql
--- Migration 03 — durable request idempotency for the paid AI steps (Analyze and AI Polish). ADDITIVE and backward compatible.
+-- Migration 03: durable request idempotency for the paid AI steps (Analyze and AI Polish). ADDITIVE and backward compatible.
+-- (Revision 2, after independent review: conflicting request-id reuse is REFUSED, retention is explicit, abandoned leases are handled.)
 --
 -- Problem: the "same request again" protection (replay.js) lived in memory on one serverless instance. If the reply to a successful, charged
 -- request was lost and the retry reached a different or restarted instance, it was a brand-new request and charged a second generation.
 --
--- Fix: the committed reservation remembers a hash of the page's request id (request_key) and a hash of the request's input (input_hash).
--- A repeat with the same key and the same input finds the committed row under the license row lock and is answered with 'replay': no
--- reservation, no second charge. The server then re-delivers the result (the AI runs again; nothing of the customer's text is stored here, only
--- two hashes). Re-delivery is limited (3 per paid step), one at a time, and a failed re-delivery gives its turn back.
+-- Model. The page sends one request id per logical step and reuses it only to retry THAT step. The server stores, on the reservation row,
+-- request_key (a keyed hash of the id) and input_hash (a keyed hash of the request's input). Under the license row lock, a reserve call that
+-- carries a key finds any row for the same code and key and decides:
+--   same id, committed, same input, within 24 h   -> 'replay'        the step was paid; no reservation, no charge; the server re-delivers
+--   same id, committed, same input, replay running  -> 'replay_busy'
+--   same id, committed, same input, limit reached   -> 'replay_limit' (3 re-deliveries; abandoned leases give back up to 2)
+--   same id, committed, DIFFERENT input             -> 'key_conflict' the id is spent on another input: refuse, charge nothing, ask for a new id
+--   same id, committed, older than 24 h             -> 'key_expired'  too old to recover: refuse, charge nothing, ask for a new id
+--   same id, still reserved (running)               -> 'replay_busy' (same input) or 'key_conflict' (different input)
+--   no row for the id                               -> an ordinary new reservation (charged only on commit, as before)
+-- A retry therefore can never become a second charge; only a NEW id (a deliberate new operation) can.
+--
+-- Retention (explicit). Committed reservation rows are the permanent accounting record and already exist; the request_key on them is kept with
+-- them (a keyed hash of a random id: it identifies nothing about the customer), so a stale id is refused forever instead of being charged.
+-- input_hash (derived from the resume text) is erased 24 hours after the step, by reserve_license_use for the code in question and by
+-- purge_idempotency_hashes() for every code (called daily by check-code-supply). No resume text, AI output or contact detail is stored.
 --
 -- Compatibility with the CURRENTLY DEPLOYED code: reserve_license_use keeps its first five parameters, defaults for the two new ones, and the same
--- result columns, so the old code calls it unchanged and never receives 'replay*' (it never sends a key). Apply this migration BEFORE deploying the
--- new code. The new code against a database WITHOUT this migration gets PGRST202 / 42883 and answers 503 "try again" (nothing charged).
+-- result columns, so the old code calls it unchanged and never receives the new outcomes (it never sends a key). Apply this migration BEFORE
+-- deploying the new code. The new code against a database WITHOUT this migration gets PGRST202 / 42883 and answers 503 "try again" (nothing charged).
 --
--- Rollback (forward recovery, no data loss): re-run supabase/migrations/20261020_01_license_reservations.sql (it recreates the 5-argument
--- function; first `drop function reserve_license_use(text,integer,integer,integer,integer,text,text);`). The new columns are inert and may stay.
+-- Rollback (forward recovery, no data loss): supabase/rollback/20261023_03_rollback.sql. Read docs/MIGRATION_03_REVIEW_PACKAGE.md first.
 --
--- Run once in the Supabase SQL editor of the Resume project. Idempotent.
+-- Run once in the Supabase SQL editor of the Resume project. Idempotent. One transaction: it either applies completely or not at all.
 
 begin;
 
@@ -113,6 +168,7 @@ alter table license_reservations add column if not exists request_key text;
 alter table license_reservations add column if not exists input_hash text;
 alter table license_reservations add column if not exists redelivery_count integer not null default 0 check (redelivery_count >= 0);
 alter table license_reservations add column if not exists redelivering_until timestamptz;
+alter table license_reservations add column if not exists redelivery_lapses integer not null default 0 check (redelivery_lapses >= 0);
 create index if not exists license_reservations_request_idx on license_reservations (code, request_key) where request_key is not null;
 
 drop function if exists reserve_license_use(text, integer, integer, integer, integer);
@@ -161,27 +217,45 @@ begin
    where r.code = p_code and r.status in ('released', 'expired')
      and r.created_at < now() - interval '30 days';
 
-  -- Durable repeat protection. The page sends one request key per logical step and reuses it when a reply is lost. If a paid step with this
-  -- key was already COMMITTED for this very input, the customer has paid for it: no second reservation and no second charge. The caller gets
-  -- 'replay' (re-deliver the result without charging; the AI runs again, nothing is stored of the customer's text), 'replay_busy' (a re-delivery
-  -- of it is already running) or 'replay_limit' (re-delivered too many times; ask the customer to contact us). This works across serverless
-  -- instances, restarts and cold starts because the fact lives in the database, under the same row lock as every other reservation.
+  -- Data minimisation: the input hash of a step is only useful while the step can still be re-delivered (24 hours).
+  update license_reservations r set input_hash = null
+   where r.code = p_code and r.input_hash is not null and coalesce(r.committed_at, r.created_at) < now() - interval '24 hours';
+
+  -- Durable repeat protection (see the header for the full decision table). This works across serverless instances, restarts and cold starts
+  -- because the facts live in the database, under the same row lock as every other reservation.
   if p_request_key is not null then
     select * into prior from license_reservations r
-     where r.code = p_code and r.request_key = p_request_key and r.status = 'committed'
-       and r.input_hash is not distinct from p_input_hash
-       and r.committed_at > now() - interval '60 minutes'
-     order by r.committed_at desc limit 1;
+     where r.code = p_code and r.request_key = p_request_key
+       and (r.status = 'committed' or (r.status = 'reserved' and r.expires_at > now()))
+     order by (r.status = 'committed') desc, r.created_at desc limit 1;
     if found then
-      if prior.redelivering_until is not null and prior.redelivering_until > now() then
-        return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
-      elsif prior.redelivery_count >= 3 then
-        return query select 'replay_limit'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+      if prior.status = 'reserved' then
+        -- the same request id is already running (a double send, a second tab, a retry while the first is still working)
+        if prior.input_hash is distinct from p_input_hash then
+          return query select 'key_conflict'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        else
+          return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        end if;
+      elsif prior.committed_at <= now() - interval '24 hours' then
+        return query select 'key_expired'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+      elsif prior.input_hash is distinct from p_input_hash then
+        return query select 'key_conflict'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
       else
-        update license_reservations r
-           set redelivery_count = r.redelivery_count + 1, redelivering_until = now() + make_interval(secs => greatest(lease, 60))
-         where r.id = prior.id;
-        return query select 'replay'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        if prior.redelivering_until is not null and prior.redelivering_until <= now() then
+          -- a re-delivery that started and never finished (the worker died): note it so it is not held against the customer
+          update license_reservations r set redelivery_lapses = r.redelivery_lapses + 1, redelivering_until = null
+           where r.id = prior.id returning * into prior;
+        end if;
+        if prior.redelivering_until is not null then
+          return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        elsif prior.redelivery_count - least(prior.redelivery_lapses, 2) >= 3 then
+          return query select 'replay_limit'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        else
+          update license_reservations r
+             set redelivery_count = r.redelivery_count + 1, redelivering_until = now() + make_interval(secs => greatest(lease, 60))
+           where r.id = prior.id;
+          return query select 'replay'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        end if;
       end if;
       return;
     end if;
@@ -266,10 +340,33 @@ begin
 end;
 $$;
 
+-- Daily housekeeping (called by check-code-supply): erase input hashes older than 24 hours for EVERY code, and drop the request key from rows that
+-- were never paid (released / expired). Returns the number of rows touched. Idempotent.
+create or replace function purge_idempotency_hashes()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  n integer; m integer;
+begin
+  update license_reservations r set input_hash = null
+   where r.input_hash is not null and coalesce(r.committed_at, r.created_at) < now() - interval '24 hours';
+  get diagnostics n = row_count;
+  update license_reservations r set request_key = null
+   where r.request_key is not null and r.status in ('released', 'expired') and r.created_at < now() - interval '24 hours';
+  get diagnostics m = row_count;
+  return n + m;
+end;
+$$;
+
 revoke execute on function reserve_license_use(text, integer, integer, integer, integer, text, text) from public, anon, authenticated;
 revoke execute on function finish_redelivery(uuid, boolean)                                          from public, anon, authenticated;
+revoke execute on function purge_idempotency_hashes()                                                 from public, anon, authenticated;
 grant  execute on function reserve_license_use(text, integer, integer, integer, integer, text, text) to service_role;
 grant  execute on function finish_redelivery(uuid, boolean)                                          to service_role;
+grant  execute on function purge_idempotency_hashes()                                                 to service_role;
 
 commit;
 ```
@@ -281,17 +378,18 @@ commit;
 -- never run automatically. Use it only if the owner decides to remove the durable-idempotency feature after applying migration 03.
 --
 -- What it does (one transaction, idempotent):
---   * removes finish_redelivery and the 7-argument reserve_license_use;
+--   * removes purge_idempotency_hashes, finish_redelivery and the 7-argument reserve_license_use;
 --   * recreates the 5-argument reserve_license_use exactly as migration 01 defined it, with the same server-only privileges.
 -- What it deliberately does NOT do:
 --   * it does not touch `licenses` (balances) or any committed/released reservation row: nothing a customer paid for is changed;
---   * it keeps the four new columns on license_reservations (request_key, input_hash, redelivery_count, redelivering_until). They are inert
+--   * it keeps the five new columns on license_reservations (request_key, input_hash, redelivery_count, redelivering_until, redelivery_lapses). They are inert
 --     without the new function, cost nothing, and keeping them means re-applying migration 03 later needs no data migration.
 -- Order when rolling back: redeploy the previous Netlify build FIRST (the new build sends request keys and would answer "try again" against
 -- the rolled-back database; it never charges), then run this file.
 
 begin;
 
+drop function if exists purge_idempotency_hashes();
 drop function if exists finish_redelivery(uuid, boolean);
 drop function if exists reserve_license_use(text, integer, integer, integer, integer, text, text);
 
@@ -398,4 +496,62 @@ revoke execute on function reserve_license_use(text, integer, integer, integer, 
 grant  execute on function reserve_license_use(text, integer, integer, integer, integer) to service_role;
 
 commit;
+```
+
+## Appendix C: the read-only preflight, verbatim
+
+```sql
+-- MIGRATION 03 PREFLIGHT: READ-ONLY. Contains only SELECT statements. Safe to run any time, any number of times, in the Supabase SQL editor.
+-- Run it BEFORE the migration (expect state "B/C"), AFTER the migration (expect state "D"), and again if a command times out (before any retry).
+
+-- 1. Which database state is this?  A = no reservation table | B/C = migration 01(+02) | D = +03 | R = after rollback (5-arg function, new columns kept)
+select
+  case
+    when not exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'license_reservations') then 'A: no reservation table (apply 01 and 02 first)'
+    when exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'reserve_license_use' and p.pronargs = 7)
+         and exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'finish_redelivery')
+         and exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'public' and p.proname = 'purge_idempotency_hashes')
+      then 'D: migration 03 applied'
+    when exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'license_reservations' and column_name = 'request_key')
+      then 'R: rolled back (5-argument function, new columns kept)'
+    else 'B/C: migrations 01/02 only (03 not applied)'
+  end as database_state;
+
+-- 2. Functions and their argument counts (expect after migration: reserve_license_use appears ONCE with 7)
+select p.proname, p.pronargs as args, p.prosecdef as security_definer
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.proname in ('reserve_license_use','commit_license_use','release_license_use','consume_tailor_use','refund_tailor_use','finish_redelivery','purge_idempotency_hashes','consume_license_use')
+order by p.proname, p.pronargs;
+
+-- 3. New columns (expect 5 rows after migration)
+select column_name, data_type from information_schema.columns
+where table_schema = 'public' and table_name = 'license_reservations' and column_name in ('request_key','input_hash','redelivery_count','redelivering_until','redelivery_lapses')
+order by column_name;
+
+-- 4. Privileges (expect anon = false and authenticated = false on every row; service_role = true)
+select p.proname, p.pronargs as args,
+       has_function_privilege('anon', p.oid, 'execute') as anon,
+       has_function_privilege('authenticated', p.oid, 'execute') as authenticated,
+       has_function_privilege('service_role', p.oid, 'execute') as service_role
+from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public' and p.proname in ('reserve_license_use','commit_license_use','release_license_use','consume_tailor_use','refund_tailor_use','finish_redelivery','purge_idempotency_hashes','consume_license_use')
+order by p.proname, p.pronargs;
+select has_table_privilege('anon', to_regclass('public.license_reservations'), 'select,insert,update,delete') as anon_table,
+       has_table_privilege('authenticated', to_regclass('public.license_reservations'), 'select,insert,update,delete') as authenticated_table,
+       (select relrowsecurity from pg_class where oid = to_regclass('public.license_reservations')) as rls_on;
+
+-- 5. Balances: record before, compare after. The fingerprint changes with REAL customer use; the migration itself changes nothing here.
+select count(*) as licenses, coalesce(sum(uses_remaining),0) as generations_remaining, coalesce(sum(max_uses - uses_remaining),0) as generations_spent,
+       md5(coalesce(string_agg(code || ':' || uses_remaining || '/' || max_uses, ',' order by code), '')) as balance_fingerprint
+from public.licenses;
+
+-- 6. Reservation health (in-flight steps right now; a quiet window shows 0 live). In state A this query errors because the table does not exist: expected.
+select status, count(*) as rows, count(*) filter (where status = 'reserved' and expires_at > now()) as live_now
+from public.license_reservations group by status order by status;
+
+-- 7. Is a migration session still running? Check this BEFORE any retry after a timeout.
+select pid, state, now() - query_start as running_for, left(query, 80) as query_start_of
+from pg_stat_activity
+where datname = current_database() and pid <> pg_backend_pid()
+  and (query ilike '%request_idempotency%' or query ilike '%finish_redelivery%' or query ilike '%reserve_license_use%' and query ilike '%create or replace%');
 ```

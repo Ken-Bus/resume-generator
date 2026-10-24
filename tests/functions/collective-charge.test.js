@@ -157,7 +157,7 @@ test('collective charging against real SQL (AI provider mocked)', async (t) => {
     reset(); const c = await seed(); ai.polishPayload = fixFirst(3);
     const a = parseBody(await polish(c, { requestId: 'req-charge-0001' }));
     const again = parseBody(await polish(c, { requestId: 'req-charge-0001' }));
-    assert.deepEqual(again, a); assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
+    const { recovered, message, ...sameBody } = again; assert.deepEqual(sameBody, a); assert.equal(recovered, 'exact'); assert.equal(ai.calls, 1); assert.equal(await uses(c), 4);
     await polish(c, { requestId: 'req-charge-0002' }); assert.equal(ai.calls, 2); assert.equal(await uses(c), 3);
   });
 

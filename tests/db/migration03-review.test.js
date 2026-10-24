@@ -96,7 +96,7 @@ test('migration 03 review: compatibility, permissions, load, restart, rollback (
 
   await t.test('PERMISSIONS: every function is server-only; anon/authenticated cannot run or read anything new; the reservation table stays closed', async () => {
     const fns = (await states.D.admin(`select p.oid::regprocedure::text fn from pg_proc p join pg_namespace n on n.oid=p.pronamespace where n.nspname='public' order by 1`)).rows.map((r) => r.fn);
-    assert.ok(fns.some((f) => f.startsWith('finish_redelivery')) && fns.some((f) => f.includes('reserve_license_use(text,integer,integer,integer,integer,text,text)')));
+    assert.ok(fns.some((f) => f.startsWith('purge_idempotency_hashes')) && fns.some((f) => f.startsWith('finish_redelivery')) && fns.some((f) => f.includes('reserve_license_use(text,integer,integer,integer,integer,text,text)')));
     for (const f of fns) {
       assert.equal(await H.canExecute(states.D, 'anon', f), false, `anon can run ${f}`); assert.equal(await H.canExecute(states.D, 'authenticated', f), false, `authenticated can run ${f}`);
       assert.equal(await H.canExecute(states.D, 'service_role', f), true, `service_role cannot run ${f}`);
@@ -136,13 +136,39 @@ test('migration 03 review: compatibility, permissions, load, restart, rollback (
     const svc = states.D.pool('service_role', 2); const Q = async (sql, p) => (await svc.query(sql, p)).rows;
     await H.seed(states.D, [{ code: 'FG-CRSH-AAAA', uses: 5, assigned: true }]);
     const a = (await Q('select * from public.reserve_license_use($1,5,900,6,30,$2,$3)', ['FG-CRSH-AAAA', 'k-crash', 'in-crash']))[0]; assert.equal(a.outcome, 'reserved');
-    assert.equal((await Q('select * from public.reserve_license_use($1,5,900,6,30,$2,$3)', ['FG-CRSH-AAAA', 'k-crash', 'in-crash']))[0].outcome, 'reserved', 'a live but uncommitted reservation is never replayed as paid (the in-flight check handles the overlap)');
+    assert.equal((await Q('select * from public.reserve_license_use($1,5,900,6,30,$2,$3)', ['FG-CRSH-AAAA', 'k-crash', 'in-crash']))[0].outcome, 'replay_busy', 'a live but uncommitted reservation is never replayed as paid: it is an overlapping duplicate');
+    assert.equal((await Q('select * from public.reserve_license_use($1,5,900,6,30,$2,$3)', ['FG-CRSH-AAAA', 'k-crash', 'in-other']))[0].outcome, 'key_conflict', 'and the same id with other input is refused');
     await states.D.admin("update license_reservations set expires_at = now() - interval '1 second' where code='FG-CRSH-AAAA'");
     const again = (await Q('select * from public.reserve_license_use($1,5,900,6,30,$2,$3)', ['FG-CRSH-AAAA', 'k-crash', 'in-crash']))[0]; assert.equal(again.outcome, 'reserved');
     assert.equal((await Q("select uses_remaining u from licenses where code='FG-CRSH-AAAA'"))[0].u, 5, 'nothing was charged by any of that');
     await Q('select * from public.commit_license_use($1)', [again.reservation_id]);
     assert.equal((await Q('select * from public.reserve_license_use($1,5,900,6,30,$2,$3)', ['FG-CRSH-AAAA', 'k-crash', 'in-crash']))[0].outcome, 'replay', 'after the commit the same key is a replay');
     assert.equal((await Q("select uses_remaining u from licenses where code='FG-CRSH-AAAA'"))[0].u, 4);
+    await svc.end();
+  });
+
+  await t.test('RUNBOOK: the preflight file is strictly read-only, identifies every database state correctly, and the no-AI duplicate-charge smoke test from the runbook behaves as documented', async () => {
+    const pre = fs.readFileSync(path.join(ROOT, 'docs', 'MIGRATION_03_PREFLIGHT.sql'), 'utf8');
+    const code = pre.replace(/--.*$/gm, '');
+    assert.equal(/\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|notify|vacuum|copy)\b/i.test(code.replace(/'[^']*'/g, "''")), false, 'only select statements (string literals aside)');
+    const stmts = code.split(';').map((x) => x.trim()).filter(Boolean);
+    const run = async (db) => { const out = []; for (const stmt of stmts) out.push((await db.admin(stmt)).rows); return out; };
+    const stateOf = async (db) => (await db.admin(stmts[0])).rows[0].database_state;       // state A has no reservation table, so later statements may legitimately error there
+    assert.match(await stateOf(states.A), /^A: /); assert.match(await stateOf(states.B), /^B\/C/); assert.match(await stateOf(states.C), /^B\/C/); assert.match(await stateOf(states.D), /^D: /);
+    const rb = await H.freshDatabase('rg_m3_pf'); await rb.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(rb); for (const m of [H.MIG1, H.MIG2, H.MIG3]) await H.applyMigration(rb, m); await rb.admin(ROLLBACK);
+    assert.match(await stateOf(rb), /^R: /); await rb.close();
+    const d = await run(states.D);                                                       // after-migration expectations of the runbook (step 7)
+    assert.deepEqual(d[1].filter((r) => r.proname === 'reserve_license_use').map((r) => r.args), [7]); assert.equal(d[2].length, 5);
+    assert.ok(d[3].every((r) => r.anon === false && r.authenticated === false && r.service_role === true)); assert.deepEqual(d[4][0], { anon_table: false, authenticated_table: false, rls_on: true });
+    // runbook step 10: the throwaway-license smoke test, in the documented order
+    const svc = states.D.pool('service_role', 2); const Q = async (sql, p) => (await svc.query(sql, p)).rows;
+    await Q("insert into licenses (code, max_uses, uses_remaining, assigned) values ('FG-SMKE-TEST', 5, 5, true)");
+    const r1 = (await Q("select * from reserve_license_use('FG-SMKE-TEST',45,900,6,30,'smoke-key','smoke-input')"))[0]; assert.equal(r1.outcome, 'reserved');
+    assert.equal((await Q('select * from commit_license_use($1)', [r1.reservation_id]))[0].remaining, 4);
+    const r2 = (await Q("select * from reserve_license_use('FG-SMKE-TEST',45,900,6,30,'smoke-key','smoke-input')"))[0]; assert.equal(r2.outcome, 'replay'); assert.equal(r2.remaining, 4);
+    await Q('select finish_redelivery($1, true)', [r1.reservation_id]);
+    assert.equal((await Q("select * from reserve_license_use('FG-SMKE-TEST',45,900,6,30,'smoke-key','other-input')"))[0].outcome, 'key_conflict');
+    await Q("delete from licenses where code = 'FG-SMKE-TEST'"); assert.equal((await Q("select count(*)::int n from license_reservations where code = 'FG-SMKE-TEST'"))[0].n, 0, 'cleanup removes the throwaway rows');
     await svc.end();
   });
 
@@ -159,7 +185,7 @@ test('migration 03 review: compatibility, permissions, load, restart, rollback (
     await db.admin(ROLLBACK);
     await db.admin(ROLLBACK);                                                              // idempotent
     assert.deepEqual(await snapshot(), pre, 'rollback changes no balance and no committed reservation');
-    assert.deepEqual((await db.admin("select proname, pronargs from pg_proc where proname in ('reserve_license_use','finish_redelivery') order by 1")).rows, [{ proname: 'reserve_license_use', pronargs: 5 }]);
+    assert.deepEqual((await db.admin("select proname, pronargs from pg_proc where proname in ('reserve_license_use','finish_redelivery','purge_idempotency_hashes') order by 1")).rows, [{ proname: 'reserve_license_use', pronargs: 5 }]);
     const old = (await Q('select * from public.reserve_license_use($1,$2,$3,$4,$5)', ['FG-RB01-AAAA', 45, 900, 6, 30]))[0]; assert.equal(old.outcome, 'reserved');   // the previous deployment's call works
     await Q('select public.release_license_use($1,false)', [old.reservation_id]);
     await assert.rejects(() => Q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', ['FG-RB01-AAAA', 'k-rb', 'in-rb']), /does not exist/, 'the new-code call fails closed (the new build answers "try again" and never charges)');
@@ -169,7 +195,7 @@ test('migration 03 review: compatibility, permissions, load, restart, rollback (
 
     await H.applyMigration(db, H.MIG3);                                                    // roll forward again
     assert.equal((await Q('select * from public.reserve_license_use($1,45,900,6,30,$2,$3)', ['FG-RB01-AAAA', 'k-rb', 'in-rb']))[0].outcome, 'replay', 'the key written before the rollback is still honoured after rolling forward');
-    assert.deepEqual((await db.admin("select proname, pronargs from pg_proc where proname in ('reserve_license_use','finish_redelivery') order by 1")).rows, [{ proname: 'finish_redelivery', pronargs: 2 }, { proname: 'reserve_license_use', pronargs: 7 }]);
+    assert.deepEqual((await db.admin("select proname, pronargs from pg_proc where proname in ('reserve_license_use','finish_redelivery','purge_idempotency_hashes') order by 1")).rows, [{ proname: 'finish_redelivery', pronargs: 2 }, { proname: 'purge_idempotency_hashes', pronargs: 0 }, { proname: 'reserve_license_use', pronargs: 7 }]);
     await svc.end(); await db.close();
   });
 

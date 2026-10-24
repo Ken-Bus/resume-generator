@@ -1,21 +1,33 @@
--- Migration 03 — durable request idempotency for the paid AI steps (Analyze and AI Polish). ADDITIVE and backward compatible.
+-- Migration 03: durable request idempotency for the paid AI steps (Analyze and AI Polish). ADDITIVE and backward compatible.
+-- (Revision 2, after independent review: conflicting request-id reuse is REFUSED, retention is explicit, abandoned leases are handled.)
 --
 -- Problem: the "same request again" protection (replay.js) lived in memory on one serverless instance. If the reply to a successful, charged
 -- request was lost and the retry reached a different or restarted instance, it was a brand-new request and charged a second generation.
 --
--- Fix: the committed reservation remembers a hash of the page's request id (request_key) and a hash of the request's input (input_hash).
--- A repeat with the same key and the same input finds the committed row under the license row lock and is answered with 'replay': no
--- reservation, no second charge. The server then re-delivers the result (the AI runs again; nothing of the customer's text is stored here, only
--- two hashes). Re-delivery is limited (3 per paid step), one at a time, and a failed re-delivery gives its turn back.
+-- Model. The page sends one request id per logical step and reuses it only to retry THAT step. The server stores, on the reservation row,
+-- request_key (a keyed hash of the id) and input_hash (a keyed hash of the request's input). Under the license row lock, a reserve call that
+-- carries a key finds any row for the same code and key and decides:
+--   same id, committed, same input, within 24 h   -> 'replay'        the step was paid; no reservation, no charge; the server re-delivers
+--   same id, committed, same input, replay running  -> 'replay_busy'
+--   same id, committed, same input, limit reached   -> 'replay_limit' (3 re-deliveries; abandoned leases give back up to 2)
+--   same id, committed, DIFFERENT input             -> 'key_conflict' the id is spent on another input: refuse, charge nothing, ask for a new id
+--   same id, committed, older than 24 h             -> 'key_expired'  too old to recover: refuse, charge nothing, ask for a new id
+--   same id, still reserved (running)               -> 'replay_busy' (same input) or 'key_conflict' (different input)
+--   no row for the id                               -> an ordinary new reservation (charged only on commit, as before)
+-- A retry therefore can never become a second charge; only a NEW id (a deliberate new operation) can.
+--
+-- Retention (explicit). Committed reservation rows are the permanent accounting record and already exist; the request_key on them is kept with
+-- them (a keyed hash of a random id: it identifies nothing about the customer), so a stale id is refused forever instead of being charged.
+-- input_hash (derived from the resume text) is erased 24 hours after the step, by reserve_license_use for the code in question and by
+-- purge_idempotency_hashes() for every code (called daily by check-code-supply). No resume text, AI output or contact detail is stored.
 --
 -- Compatibility with the CURRENTLY DEPLOYED code: reserve_license_use keeps its first five parameters, defaults for the two new ones, and the same
--- result columns, so the old code calls it unchanged and never receives 'replay*' (it never sends a key). Apply this migration BEFORE deploying the
--- new code. The new code against a database WITHOUT this migration gets PGRST202 / 42883 and answers 503 "try again" (nothing charged).
+-- result columns, so the old code calls it unchanged and never receives the new outcomes (it never sends a key). Apply this migration BEFORE
+-- deploying the new code. The new code against a database WITHOUT this migration gets PGRST202 / 42883 and answers 503 "try again" (nothing charged).
 --
--- Rollback (forward recovery, no data loss): re-run supabase/migrations/20261020_01_license_reservations.sql (it recreates the 5-argument
--- function; first `drop function reserve_license_use(text,integer,integer,integer,integer,text,text);`). The new columns are inert and may stay.
+-- Rollback (forward recovery, no data loss): supabase/rollback/20261023_03_rollback.sql. Read docs/MIGRATION_03_REVIEW_PACKAGE.md first.
 --
--- Run once in the Supabase SQL editor of the Resume project. Idempotent.
+-- Run once in the Supabase SQL editor of the Resume project. Idempotent. One transaction: it either applies completely or not at all.
 
 begin;
 
@@ -23,6 +35,7 @@ alter table license_reservations add column if not exists request_key text;
 alter table license_reservations add column if not exists input_hash text;
 alter table license_reservations add column if not exists redelivery_count integer not null default 0 check (redelivery_count >= 0);
 alter table license_reservations add column if not exists redelivering_until timestamptz;
+alter table license_reservations add column if not exists redelivery_lapses integer not null default 0 check (redelivery_lapses >= 0);
 create index if not exists license_reservations_request_idx on license_reservations (code, request_key) where request_key is not null;
 
 drop function if exists reserve_license_use(text, integer, integer, integer, integer);
@@ -71,27 +84,45 @@ begin
    where r.code = p_code and r.status in ('released', 'expired')
      and r.created_at < now() - interval '30 days';
 
-  -- Durable repeat protection. The page sends one request key per logical step and reuses it when a reply is lost. If a paid step with this
-  -- key was already COMMITTED for this very input, the customer has paid for it: no second reservation and no second charge. The caller gets
-  -- 'replay' (re-deliver the result without charging; the AI runs again, nothing is stored of the customer's text), 'replay_busy' (a re-delivery
-  -- of it is already running) or 'replay_limit' (re-delivered too many times; ask the customer to contact us). This works across serverless
-  -- instances, restarts and cold starts because the fact lives in the database, under the same row lock as every other reservation.
+  -- Data minimisation: the input hash of a step is only useful while the step can still be re-delivered (24 hours).
+  update license_reservations r set input_hash = null
+   where r.code = p_code and r.input_hash is not null and coalesce(r.committed_at, r.created_at) < now() - interval '24 hours';
+
+  -- Durable repeat protection (see the header for the full decision table). This works across serverless instances, restarts and cold starts
+  -- because the facts live in the database, under the same row lock as every other reservation.
   if p_request_key is not null then
     select * into prior from license_reservations r
-     where r.code = p_code and r.request_key = p_request_key and r.status = 'committed'
-       and r.input_hash is not distinct from p_input_hash
-       and r.committed_at > now() - interval '60 minutes'
-     order by r.committed_at desc limit 1;
+     where r.code = p_code and r.request_key = p_request_key
+       and (r.status = 'committed' or (r.status = 'reserved' and r.expires_at > now()))
+     order by (r.status = 'committed') desc, r.created_at desc limit 1;
     if found then
-      if prior.redelivering_until is not null and prior.redelivering_until > now() then
-        return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
-      elsif prior.redelivery_count >= 3 then
-        return query select 'replay_limit'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+      if prior.status = 'reserved' then
+        -- the same request id is already running (a double send, a second tab, a retry while the first is still working)
+        if prior.input_hash is distinct from p_input_hash then
+          return query select 'key_conflict'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        else
+          return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        end if;
+      elsif prior.committed_at <= now() - interval '24 hours' then
+        return query select 'key_expired'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+      elsif prior.input_hash is distinct from p_input_hash then
+        return query select 'key_conflict'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
       else
-        update license_reservations r
-           set redelivery_count = r.redelivery_count + 1, redelivering_until = now() + make_interval(secs => greatest(lease, 60))
-         where r.id = prior.id;
-        return query select 'replay'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        if prior.redelivering_until is not null and prior.redelivering_until <= now() then
+          -- a re-delivery that started and never finished (the worker died): note it so it is not held against the customer
+          update license_reservations r set redelivery_lapses = r.redelivery_lapses + 1, redelivering_until = null
+           where r.id = prior.id returning * into prior;
+        end if;
+        if prior.redelivering_until is not null then
+          return query select 'replay_busy'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        elsif prior.redelivery_count - least(prior.redelivery_lapses, 2) >= 3 then
+          return query select 'replay_limit'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        else
+          update license_reservations r
+             set redelivery_count = r.redelivery_count + 1, redelivering_until = now() + make_interval(secs => greatest(lease, 60))
+           where r.id = prior.id;
+          return query select 'replay'::text, prior.id, lic.uses_remaining, lic.max_uses, null::integer;
+        end if;
       end if;
       return;
     end if;
@@ -176,9 +207,32 @@ begin
 end;
 $$;
 
+-- Daily housekeeping (called by check-code-supply): erase input hashes older than 24 hours for EVERY code, and drop the request key from rows that
+-- were never paid (released / expired). Returns the number of rows touched. Idempotent.
+create or replace function purge_idempotency_hashes()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  n integer; m integer;
+begin
+  update license_reservations r set input_hash = null
+   where r.input_hash is not null and coalesce(r.committed_at, r.created_at) < now() - interval '24 hours';
+  get diagnostics n = row_count;
+  update license_reservations r set request_key = null
+   where r.request_key is not null and r.status in ('released', 'expired') and r.created_at < now() - interval '24 hours';
+  get diagnostics m = row_count;
+  return n + m;
+end;
+$$;
+
 revoke execute on function reserve_license_use(text, integer, integer, integer, integer, text, text) from public, anon, authenticated;
 revoke execute on function finish_redelivery(uuid, boolean)                                          from public, anon, authenticated;
+revoke execute on function purge_idempotency_hashes()                                                 from public, anon, authenticated;
 grant  execute on function reserve_license_use(text, integer, integer, integer, integer, text, text) to service_role;
 grant  execute on function finish_redelivery(uuid, boolean)                                          to service_role;
+grant  execute on function purge_idempotency_hashes()                                                 to service_role;
 
 commit;

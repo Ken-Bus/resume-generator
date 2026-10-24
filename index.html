@@ -761,7 +761,7 @@ async function parseResume() {
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
-    definite = json !== null && res.status !== 409 && res.status < 500;     // a cut-off body, busy, or a server error may mean the answer was lost: keep the id
+    definite = json !== null && (res.status !== 409 || json.newRequest === true) && res.status < 500;     // a cut-off body, busy, or a server error may mean the answer was lost: keep the id. A refusal that asks for a NEW request (the id was spent on other input, is too old, or hit the recovery limit) ends this id
 
     let parsed = null;
     if (res.ok && json && json.result) {
@@ -774,8 +774,9 @@ async function parseResume() {
       const unverified = Array.isArray(json.unverified) ? json.unverified : [];
       state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
       const note = document.getElementById('analyze-notice');
-      if (note) note.innerHTML = unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
-          <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '';
+      const recovered = json.recovered ? `<div class="notice-box" id="recovered-notice" role="status"><strong>${json.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(json.message || '')}${json.supportRef ? ` <span class="support-ref">Reference: ${esc(json.supportRef)}</span>` : ''}</div>` : '';
+      if (note) note.innerHTML = recovered + (unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
+          <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '');
       state.tailorToken = json.tailorToken || null;
       document.getElementById('match-summary-box').style.display = 'none';
       if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
