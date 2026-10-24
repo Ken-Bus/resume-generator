@@ -54,10 +54,12 @@ The Etsy FAQ draft has been updated to match. **No Etsy listing was changed.**
 | Area | Suite | Result |
 |---|---|---|
 | SQL (real PostgreSQL 16): atomic charge+copy, scope, expiry, 24 h CHECK, purge, rollback | `tests/db/result-recovery.test.js` | 8 pass |
-| Handlers: seal/commit, exact-copy replay, fail-closed, unauthorized/guessing/rate limits, no-leak logging | `tests/functions/result-recovery.test.js` | 21 pass |
+| Handlers: seal/commit, exact-copy replay, fail-closed, unauthorized/guessing/rate limits, no-leak logging | `tests/functions/result-recovery.test.js` | 24 pass |
 | Local drafts in Chromium (desktop + Android viewport) | `tests/ui/drafts.test.js` | 12 pass |
 | Restore my result in Chromium | `tests/ui/restore-result.test.js` | 8 pass |
-| Full release run | `tests/run-release.js` | 644 pass, 0 fail, 0 skip |
+| Interruption journeys in Chromium (Guided Builder power cut, restore then export and original wording, shared computer) | `tests/ui/interruptions.test.js` | 3 pass |
+| Verification matrix and cost update | `docs/RECOVERY_VERIFICATION_AND_COST.md` | n/a |
+| Full release run | `tests/run-release.js` | 651 pass, 0 fail, 0 skip |
 
 Verified locally: all of the above. Simulated: Anthropic (mocked), Supabase client (mock over real SQL). **Not verified:** Netlify scheduled-function execution, real Supabase/PostgREST behavior and permissions, production key configuration, backup behavior, cross-device behavior on real phones, power-loss durability of `localStorage`.
 

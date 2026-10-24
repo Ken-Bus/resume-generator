@@ -62,12 +62,12 @@ test('result recovery through the real handlers and real SQL (AI mocked)', async
   for (const m of [H.MIG1, H.MIG2, H.MIG3, H.MIG4]) await H.applyMigration(db, m);
   const ai = installAi({});
   Object.assign(process.env, { SUPABASE_URL: 'http://mock.invalid', SUPABASE_SERVICE_ROLE_KEY: 'mock', ANTHROPIC_API_KEY: 'mock', TAILOR_TOKEN_SECRET: SECRET, AI_TIMEOUT_MS: '1000' });
-  const fault = { commit: false };
-  const faulty = (pool) => { const q = pool.query.bind(pool); pool.query = async (sql, p) => { if (fault.commit && /commit_license_use_with_result/.test(sql)) throw Object.assign(new Error('injected'), { code: '08006' }); return q(sql, p); }; return pool; };
+  const fault = { commit: false, read: false };
+  const faulty = (pool) => { const q = pool.query.bind(pool); pool.query = async (sql, p) => { if (fault.commit && /commit_license_use_with_result/.test(sql)) throw Object.assign(new Error('injected'), { code: '08006' }); if (fault.read && /(list|fetch)_recoverable_result/.test(sql)) throw Object.assign(new Error('injected'), { code: '08006' }); return q(sql, p); }; return pool; };
   const instance = async () => { const hs = loadHandlers(faulty(db.pool('service_role', 10))); await hs.verify(post({ code: 'FG-ZZZZ-ZZZZ' })).catch(() => {}); hs.recover = require(path.join(hs.FUNCS, 'recover-result')).handler; hs.purge = require(path.join(hs.FUNCS, 'purge-recovery')).handler; return hs; };
   const seed = async (uses = 5) => { const c = newCode(); await H.seed(db, [{ code: c, uses, assigned: true }]); return c; };
   const uses = async (c) => (await db.admin('select uses_remaining u from licenses where code=$1', [c])).rows[0].u;
-  const reset = () => { ai.mode = 'ok'; ai.delayMs = 0; ai.calls = 0; ai.polishPayload = null; fault.commit = false; };
+  const reset = () => { ai.mode = 'ok'; ai.delayMs = 0; ai.calls = 0; ai.polishPayload = null; fault.commit = false; fault.read = false; };
   const analyze = (hs, code, extra = {}) => hs.parse(post({ code, resumeText: TEXT, ...extra }));
   const polish = (hs, code, extra = {}) => hs.polish(post({ code, resume: RESUME, target: 'retail', ...extra }));
   const rec = (hs, body, headers = {}) => hs.recover(post(body, { headers }));
@@ -200,6 +200,37 @@ test('result recovery through the real handlers and real SQL (AI mocked)', async
   await t.test('EDITS AFTER the original step are the page\'s to protect: the endpoint returns only what was completed then, with its time, so the page can ask before replacing newer work', async () => {
     reset(); const c = await seed(); const A = await instance(); await analyze(A, c);
     const l = parseBody(await rec(A, { code: c, action: 'list' })); assert.ok(l.results[0].savedAt && l.results[0].expiresAt && new Date(l.results[0].savedAt) <= new Date());
+  });
+
+  await t.test('FAULT DURING RETRIEVAL: the database fails while listing or fetching -> a plain "try again" with no content and no charge; the copy is untouched and the next attempt restores it', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixAll; const A = await instance(); const original = parseBody(await polish(A, c, { requestId: 'rec-rfault-1' }));
+    const B = await instance(); const id = parseBody(await rec(B, { code: c, action: 'list' })).results[0].id;
+    fault.read = true; const cap = captureLogs(); let l, f; try { l = await rec(B, { code: c, action: 'list' }); f = await rec(B, { code: c, action: 'fetch', id }); } finally { cap.restore(); fault.read = false; }
+    for (const r of [l, f]) { assert.ok(r.statusCode >= 500 || r.statusCode === 404 || (r.statusCode === 200 && parseBody(r).results && parseBody(r).results.length === 0)); assert.equal(/Lena|Ortiz|purchases|result"/.test(r.body), false); }
+    assert.equal(/Lena|Rang up|injected\b.*FG-/.test(cap.lines.join('\n')), false); assert.equal(await uses(c), 4, 'nothing charged by a failed read'); assert.equal((await copies(c)).length, 1, 'the copy survives a failed read');
+    assert.equal(parseBody(await rec(B, { code: c, action: 'fetch', id })).result, original.result, 'the retry restores the exact result'); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('REPEATED RECOVERY across servers: three different instances, five requests, the same exact result every time; nothing consumed; the copy is NOT deleted by being read (it simply expires); after expiry nobody can read it', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixAll; const original = parseBody(await polish(await instance(), c, { requestId: 'rec-rep-1' })); ai.calls = 0;
+    const id = parseBody(await rec(await instance(), { code: c, action: 'list' })).results[0].id; const seen = new Set();
+    for (let i = 0; i < 5; i++) { const r = await rec(await instance(), { code: c, action: 'fetch', id }); assert.equal(r.statusCode, 200); seen.add(parseBody(r).result); }
+    assert.deepEqual([...seen], [original.result]); assert.equal(ai.calls, 0); assert.equal(await uses(c), 4); assert.equal((await copies(c)).length, 1, 'reading does not delete: deletion is by expiry only, so a lost second reply is also recoverable');
+    await db.admin("update result_recovery set created_at = now() - interval '25 hours', expires_at = now() - interval '1 hour' where code=$1", [c]);
+    const late = await rec(await instance(), { code: c, action: 'fetch', id }); assert.equal(late.statusCode, 404); assert.equal(parseBody(await rec(await instance(), { code: c, action: 'list' })).results.length, 0); assert.equal(await uses(c), 4);
+  });
+
+  await t.test('INTEGRATION: a restored Polish still exports to PDF and Word with the licence, adds no generation, and its Tailor authorisation is for the same generation (no extra allowance)', async () => {
+    reset(); const c = await seed(); ai.polishPayload = fixAll; await polish(await instance(), c, { requestId: 'rec-int-1' });
+    const B = await instance(); const id = parseBody(await rec(B, { code: c, action: 'list' })).results[0].id; const g = parseBody(await rec(B, { code: c, action: 'fetch', id })); const resume = JSON.parse(g.result);
+    assert.deepEqual(resume.experience[0].bullets, FIXED);
+    for (const [format, template] of [['pdf', 'boardroom'], ['docx', 'foreman']]) {
+      const r = await B.exportResume.handler({ httpMethod: 'POST', headers: { 'x-nf-client-connection-ip': '203.0.113.50' }, body: JSON.stringify({ code: c, format, template, alt: false, resume }) });
+      assert.equal(r.statusCode, 200, format); assert.ok(Buffer.from(r.body, 'base64').length > 1000, format);
+    }
+    assert.equal(await uses(c), 4, 'exports and restoring use no generation'); assert.ok(g.tailorToken, 'the restored result carries a Tailor authorisation bound to the same generation');
+    const used = async () => (await db.admin("select tailor_count n from license_reservations where code=$1 and status='committed'", [c])).rows[0].n; const before = await used();
+    await rec(B, { code: c, action: 'fetch', id }); assert.equal(await used(), before, 'restoring again adds no Tailor runs');
   });
 
   await db.close();
