@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Flex & Grace Resume Generator: prove a backup really restores, on a LOCAL PostgreSQL only (never Supabase).
 #
-# Usage:  scripts/backup/verify-restore-local.sh <resume-backup-....tar.enc | unencrypted backup folder>
+# Usage:  scripts/backup/verify-restore-local.sh <resume-backup-....tar.enc>     (only encrypted backups are accepted)
 # It decrypts to a private temp folder, checks the checksums, restores twice into scratch databases
 #   (A) pg_restore of the custom archive, (B) the official-style psql path: schema.sql + data.sql with triggers off,
 # runs docs/BACKUP_BASELINE.sql on each restored copy and compares every MUST line with baseline_before.txt taken from production at the snapshot instant.
 # PASS means: same row counts, same fingerprints, same migration status, same permissions, same function bodies.
-# Then it deletes the scratch databases and the temp folder (also on failure, Ctrl-C and kill).
+# Then it deletes the scratch databases and the temp folder (also on failure, Ctrl-C and kill). There is deliberately NO option to keep scratch databases or decrypted files.
+# LIMIT: SIGKILL, a crash or power loss cannot run cleanup. The decrypted files therefore go ONLY into RG_WORKDIR (an encrypted or RAM-backed folder, required),
+# the next run refuses to start while an abandoned work folder or scratch database exists, and the local PostgreSQL used for the restore should itself be
+# RAM-backed (see docs/PRODUCTION_BACKUP_RUNBOOK.md, section 5a).
 # For a .tar.enc it writes the outcome to <backup>.summary/verification.txt: RESULT: PASS only after a full pass, otherwise RESULT: FAIL with the reason.
 #
 # Needs a LOCAL PostgreSQL server whose major version is the same as, or newer than, the Supabase server, and permission to create databases/roles
@@ -28,10 +31,8 @@ cleanup() {
   local rc=$?
   trap - EXIT INT TERM HUP
   if [ "$FINAL" != PASS ] && [ "$rc" -eq 0 ]; then rc=1; fi
-  if [ "${RG_KEEP_SCRATCH:-0}" != "1" ]; then
-    [ -n "$SCRATCH_A" ] && dropdb --if-exists --force "$SCRATCH_A" >/dev/null 2>&1 || true
-    [ -n "$SCRATCH_B" ] && dropdb --if-exists --force "$SCRATCH_B" >/dev/null 2>&1 || true
-  fi
+  [ -n "$SCRATCH_A" ] && dropdb --if-exists --force "$SCRATCH_A" >/dev/null 2>&1 || true
+  [ -n "$SCRATCH_B" ] && dropdb --if-exists --force "$SCRATCH_B" >/dev/null 2>&1 || true
   [ -n "$WORK" ] && [ -d "$WORK" ] && rm -rf "$WORK"
   write_marker
   if [ "$FINAL" != PASS ]; then printf 'RESULT: FAIL (%s). Do not rely on this backup. Do not proceed to any migration. No decrypted files were left behind.\n' "$REASON" >&2; fi
@@ -56,20 +57,53 @@ PSQL=(psql -X -q -v ON_ERROR_STOP=1)
 LOCAL_VER="$("${PSQL[@]}" -A -t -c "show server_version")"
 LOCAL_MAJOR=$(( $("${PSQL[@]}" -A -t -c "show server_version_num") / 10000 ))
 
-# all decrypted material lives in ONE private folder that the trap removes on every exit path
-TMPBASE="${RG_TMPDIR:-${TMPDIR:-/tmp}}"; mkdir -p "$TMPBASE"
-WORK="$(mktemp -d "${TMPBASE%/}/rg-verify.XXXXXX")"; chmod 700 "$WORK"
+# all decrypted material lives in ONE private folder inside the encrypted/RAM-backed workspace; the trap removes it on every catchable exit path
+STEP_NOTE="workspace"
+ROOT_REPO="$(cd "${HERE}/../.." && pwd -P)"
+[ -n "${RG_WORKDIR:-}" ] || die "decrypted customer data needs an ENCRYPTED or RAM-backed workspace: set RG_WORKDIR to such a folder (docs/PRODUCTION_BACKUP_RUNBOOK.md, section 5a). Nothing was decrypted."
+[ -d "$RG_WORKDIR" ] && [ -w "$RG_WORKDIR" ] || die "RG_WORKDIR='${RG_WORKDIR}' is not an existing writable folder."
+WORKBASE="$(cd "$RG_WORKDIR" && pwd -P)"
+case "$WORKBASE/" in "${ROOT_REPO}/"*) die "RG_WORKDIR must not be inside the repository.";; esac
+FSTYPE="$(stat -f -c %T "$WORKBASE" 2>/dev/null || true)"
+case "$FSTYPE" in
+  tmpfs|ramfs) ;;
+  *)
+    if [ "${RG_WORKDIR_CONFIRMED:-}" = "yes" ]; then :
+    elif [ -t 0 ]; then
+      printf 'The script cannot verify disk encryption. Is %s on an ENCRYPTED volume or a RAM disk?\n' "$WORKBASE"
+      read -r -p "Type ENCRYPTED to confirm, anything else to stop: " ANSWER
+      [ "$ANSWER" = "ENCRYPTED" ] || die "workspace not confirmed as encrypted. Nothing was decrypted."
+    else die "workspace encryption is not confirmed: run in a terminal or set RG_WORKDIR_CONFIRMED=yes. Nothing was decrypted."
+    fi ;;
+esac
+# leftovers of a killed or crashed earlier run (customer data!): refuse to start, and say how to handle them without opening them
+ABANDONED=(); while IFS= read -r d; do [ -n "$d" ] && ABANDONED+=("$d"); done < <(find "$WORKBASE" -maxdepth 1 -type d -name 'rg-verify.*' 2>/dev/null | sort)
+SCRATCH_LEFT="$("${PSQL[@]}" -A -t -c "select string_agg(datname, ' ') from pg_database where datname ~ '^rg_restore_[ab]_[0-9]+$'")"
+if [ "${#ABANDONED[@]}" -gt 0 ] || [ -n "$SCRATCH_LEFT" ]; then
+  if [ "${RG_DELETE_ABANDONED:-}" = "yes" ]; then
+    for d in "${ABANDONED[@]}"; do rm -rf "$d"; echo "Deleted abandoned work folder: $d"; done
+    for db in $SCRATCH_LEFT; do dropdb --if-exists --force "$db"; echo "Dropped abandoned scratch database: $db"; done
+  else
+    { echo "STOP: a previous restore check did not finish cleanly (killed, crashed or power loss) and left customer data behind:"
+      for d in "${ABANDONED[@]}"; do printf '  decrypted folder: %s\n' "$d"; done
+      for db in $SCRATCH_LEFT; do printf '  scratch database: %s\n' "$db"; done
+      printf 'Do NOT open them. Remove, then run again:\n'
+      [ "${#ABANDONED[@]}" -gt 0 ] && { printf '  rm -rf'; for d in "${ABANDONED[@]}"; do printf ' %q' "$d"; done; printf '\n'; }
+      for db in $SCRATCH_LEFT; do printf '  dropdb --force %s\n' "$db"; done
+      echo "(or rerun with RG_DELETE_ABANDONED=yes; runbook section 5a)"; } >&2
+    REASON="abandoned decrypted data from an earlier run must be removed first"; exit 1
+  fi
+fi
+WORK="$(mktemp -d "${WORKBASE}/rg-verify.XXXXXX")"; chmod 700 "$WORK"
 SCRATCH_A="rg_restore_a_$$"; SCRATCH_B="rg_restore_b_$$"
 
 # ---- unpack ----
-if [ -d "$SRC" ]; then B="$SRC"
-else
-  [ -f "$SRC" ] || die "file not found: $SRC"
-  if [ -z "${RG_BACKUP_PASSPHRASE:-}" ]; then [ -t 0 ] || die "no passphrase: set RG_BACKUP_PASSPHRASE or run in a terminal."; read -r -s -p "Backup passphrase (hidden): " RG_BACKUP_PASSPHRASE; printf '\n'; fi
-  export RG_BACKUP_PASSPHRASE
-  openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:RG_BACKUP_PASSPHRASE -in "$SRC" 2>/dev/null | tar -C "$WORK" -xf - 2>/dev/null || die "could not decrypt (wrong passphrase or damaged file)."
-  B="$(find "$WORK" -maxdepth 1 -type d -name 'resume-backup-*' | head -1)"; [ -n "$B" ] || die "no backup folder inside the archive."
-fi
+[ ! -d "$SRC" ] || die "unencrypted folders are not accepted; give the .tar.enc file."
+[ -f "$SRC" ] || die "file not found: $SRC"
+if [ -z "${RG_BACKUP_PASSPHRASE:-}" ]; then [ -t 0 ] || die "no passphrase: set RG_BACKUP_PASSPHRASE or run in a terminal."; read -r -s -p "Backup passphrase (hidden): " RG_BACKUP_PASSPHRASE; printf '\n'; fi
+export RG_BACKUP_PASSPHRASE
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:RG_BACKUP_PASSPHRASE -in "$SRC" 2>/dev/null | tar -C "$WORK" -xf - 2>/dev/null || die "could not decrypt (wrong passphrase or damaged file)."
+B="$(find "$WORK" -maxdepth 1 -type d -name 'resume-backup-*' | head -1)"; [ -n "$B" ] || die "no backup folder inside the archive."
 ( cd "$B" && if command -v sha256sum >/dev/null 2>&1; then sha256sum -c SHA256SUMS >/dev/null 2>&1; else shasum -a 256 -c SHA256SUMS >/dev/null 2>&1; fi ) || die "checksum mismatch: the backup contents are damaged."
 echo "Checksums OK."
 

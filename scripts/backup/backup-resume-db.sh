@@ -9,6 +9,9 @@
 #   4. RECONCILES the archive against the baseline (row counts and generation totals read back out of the archive) and refuses on any mismatch;
 #   5. encrypts everything into one AES-256 file, proves it decrypts and passes its checksums, then deletes all plaintext.
 # Every plaintext file lives in a private work folder that is removed on success, failure, Ctrl-C, kill (TERM/HUP) or any error.
+# LIMIT: SIGKILL (kill -9), a crash of the computer, or power loss cannot run any cleanup. That is why a production run REQUIRES the work folder
+# (RG_WORKDIR) to be on an encrypted or RAM-backed volume, and why the next run refuses to start while an abandoned work folder exists.
+# There is deliberately NO option to keep a plaintext dump.
 # A backup is only USABLE after scripts/backup/verify-restore-local.sh prints RESULT: PASS; this script says so and writes verification.txt accordingly.
 #
 # Run it from the repository root (or anywhere): scripts/backup/backup-resume-db.sh
@@ -96,6 +99,50 @@ if [ "$LOCAL" = 0 ]; then
   case "$PGUSER" in "postgres.${EXPECTED_REF}") ;; *) [ "$PGHOST" = "db.${EXPECTED_REF}.supabase.co" ] || die "this connection is not for project ${EXPECTED_REF} (Flex & Grace Resume Project). Refusing to continue. The user name must be postgres.${EXPECTED_REF}.";; esac
 fi
 
+# ---- encrypted temporary workspace (plaintext may only ever exist here) ----
+STEP="checking the temporary workspace"
+ROOT_REPO="$(cd "${HERE}/../.." && pwd -P)"
+if [ -n "${RG_WORKDIR:-}" ]; then WORKBASE="$RG_WORKDIR"
+elif [ "$LOCAL" = 1 ]; then WORKBASE="$OUT_ROOT"          # local test databases only
+else die "a production backup needs an ENCRYPTED temporary workspace. Set RG_WORKDIR to a folder on an encrypted or RAM-backed volume (docs/PRODUCTION_BACKUP_RUNBOOK.md, section 5a). Nothing was read from the database."
+fi
+if [ -n "${RG_WORKDIR:-}" ]; then
+  [ -d "$WORKBASE" ] && [ -w "$WORKBASE" ] || die "RG_WORKDIR='${WORKBASE}' is not an existing writable folder. Create/mount the encrypted workspace first."
+  WORKBASE="$(cd "$WORKBASE" && pwd -P)"
+  case "$WORKBASE/" in "${ROOT_REPO}/"*) die "RG_WORKDIR must not be inside the repository (plaintext could be committed).";; esac
+  FSTYPE="$(stat -f -c %T "$WORKBASE" 2>/dev/null || true)"
+  case "$FSTYPE" in
+    tmpfs|ramfs) WORKSPACE_KIND="RAM-backed (${FSTYPE}); vanishes on power loss" ;;
+    *)
+      if [ "${RG_WORKDIR_CONFIRMED:-}" = "yes" ]; then WORKSPACE_KIND="owner confirmed an encrypted volume (RG_WORKDIR_CONFIRMED=yes)"
+      elif [ -t 0 ]; then
+        printf 'The script cannot verify disk encryption. Is %s on an ENCRYPTED volume (BitLocker, FileVault, LUKS, or an encrypted disk image) or a RAM disk?\n' "$WORKBASE"
+        read -r -p "Type ENCRYPTED to confirm, anything else to stop: " ANSWER
+        [ "$ANSWER" = "ENCRYPTED" ] || die "workspace not confirmed as encrypted. Nothing was read from the database."
+        WORKSPACE_KIND="owner confirmed an encrypted volume (typed ENCRYPTED)"
+      else die "workspace encryption is not confirmed: run in a terminal or set RG_WORKDIR_CONFIRMED=yes once the folder is on an encrypted volume. Nothing was read from the database."
+      fi ;;
+  esac
+else WORKSPACE_KIND="local test database (no workspace requirement)"
+fi
+# abandoned work folders from a killed or crashed earlier run hold customer data: refuse to start until they are dealt with
+ABANDONED=()
+for base in "$WORKBASE" "$OUT_ROOT"; do
+  [ -d "$base" ] || continue
+  while IFS= read -r d; do [ -n "$d" ] && ABANDONED+=("$d"); done < <(find "$base" -maxdepth 1 -type d \( -name 'rg-backup-work.*' -o -name '.work.*' \) 2>/dev/null | sort -u)
+done
+if [ "${#ABANDONED[@]}" -gt 0 ]; then
+  if [ "${RG_DELETE_ABANDONED:-}" = "yes" ]; then
+    for d in "${ABANDONED[@]}"; do rm -rf "$d"; printf 'Deleted abandoned work folder: %s\n' "$d"; done
+  else
+    printf 'STOP: a previous backup run did not finish cleanly (killed, crashed, or power loss) and left %s work folder(s) that may contain UNENCRYPTED customer data:\n' "${#ABANDONED[@]}" >&2
+    for d in "${ABANDONED[@]}"; do printf '  %s   (%s KB, last changed %s)\n' "$d" "$(du -sk "$d" 2>/dev/null | cut -f1)" "$(date -r "$d" '+%Y-%m-%d %H:%M' 2>/dev/null || echo unknown)" >&2; done
+    printf 'Do NOT open or copy them. Delete them, then run again:\n  rm -rf' >&2; for d in "${ABANDONED[@]}"; do printf ' %q' "$d" >&2; done
+    printf '\n(or rerun with RG_DELETE_ABANDONED=yes; see the runbook, section 5a). No database was contacted.\n' >&2
+    exit 1
+  fi
+fi
+
 # ---- encryption must be certain BEFORE any customer data is read, so nothing is ever dumped and then stranded ----
 STEP="encryption setup"
 if [ -z "${RG_BACKUP_PASSPHRASE:-}" ]; then
@@ -129,7 +176,7 @@ HAS="$("${PSQL[@]}" -A -t -c "select to_regclass('public.licenses') is not null"
 STEP="creating the private work folder"
 mkdir -p "$OUT_ROOT"; chmod 700 "$OUT_ROOT"
 NOTE_OK=1
-WORK="$(mktemp -d "${OUT_ROOT}/.work.XXXXXX")"; chmod 700 "$WORK"
+WORK="$(mktemp -d "${WORKBASE}/rg-backup-work.XXXXXX")"; chmod 700 "$WORK"
 DIR="${WORK}/${NAME}"; mkdir "$DIR"
 info "Private work folder (deleted automatically): ${WORK}"
 
@@ -235,6 +282,7 @@ STEP="manifest and checksums"
   echo "server_version: ${SERVER_VERSION}"
   echo "pg_dump_version: $(pg_dump --version)"
   echo "schemas: ${SCHEMAS}"
+  echo "workspace: ${WORKSPACE_KIND}"
   echo "consistency: ${SNAP_MODE}"
   echo "snapshot_id_used: ${SNAP:-none}"
   echo "reconciliation: archive agrees with baseline (row counts and generation totals)"
@@ -260,7 +308,6 @@ cp "${DIR}/baseline_before.txt" "${DIR}/manifest.txt" "${DIR}/SHA256SUMS" "${DIR
 printf '%s  %s\n' "$ENC_SUM" "$(basename "$ENC")" > "${SUMMARY}/ENCRYPTED_FILE.sha256"
 printf 'RESULT: NOT YET VERIFIED\nRun scripts/backup/verify-restore-local.sh on the .tar.enc file. Until it prints RESULT: PASS this backup must not be relied on.\n' > "${SUMMARY}/verification.txt"
 SUCCESS=1
-if [ "${RG_KEEP_PLAINTEXT:-0}" = "1" ]; then mkdir -p "${OUT_ROOT}/${NAME}.plaintext-KEEP"; cp -R "${DIR}/." "${OUT_ROOT}/${NAME}.plaintext-KEEP/"; info "WARNING: RG_KEEP_PLAINTEXT=1 kept an UNENCRYPTED copy in ${OUT_ROOT}/${NAME}.plaintext-KEEP. Delete it yourself."; fi
 
 info ""
 info "BACKUP CREATED, NOT YET VERIFIED."

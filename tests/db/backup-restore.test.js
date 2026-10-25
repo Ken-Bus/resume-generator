@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawnSync, execFileSync } = require('child_process');
 const H = require('./helpers');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -33,7 +33,17 @@ test('production backup + restore-verification procedure (fictional local data)'
     return db;
   }
   const backup = (db, extra = {}) => { const d = fs.mkdtempSync(path.join(out, 'o-')); const r = sh(BACKUP, { ...local(db), RG_BACKUP_DIR: d, RG_BACKUP_PASSPHRASE: PASS, ...extra }); return { r, dir: d, enc: fs.readdirSync(d).find((f) => f.endsWith('.tar.enc')) && path.join(d, fs.readdirSync(d).find((f) => f.endsWith('.tar.enc'))) }; };
-  const verify = (enc, extra = {}) => sh(VERIFY, { ...local('postgres'), RG_BACKUP_PASSPHRASE: PASS, ...extra }, [enc]);
+  const wd = fs.mkdtempSync(path.join(out, 'wd-'));          // stands in for the encrypted workspace the owner provides
+  const verify = (enc, extra = {}) => sh(VERIFY, { ...local('postgres'), RG_BACKUP_PASSPHRASE: PASS, RG_WORKDIR: wd, RG_WORKDIR_CONFIRMED: 'yes', ...extra }, [enc]);
+  // Open a finished backup, let the test change it, and seal it again (there is no option to keep plaintext, so tampering happens on a copy here).
+  const repack = (enc, mutate) => {
+    const t = fs.mkdtempSync(path.join(out, 'rp-')); const pw = { ...process.env, RG_BACKUP_PASSPHRASE: PASS };
+    execFileSync('bash', ['-c', `openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:RG_BACKUP_PASSPHRASE -in "${enc}" | tar -C "${t}" -xf -`], { env: pw });
+    const folder = path.join(t, fs.readdirSync(t).find((f) => f.startsWith('resume-backup-'))); mutate(folder);
+    const re = enc.replace(/\.tar\.enc$/, '.repacked.tar.enc');
+    execFileSync('bash', ['-c', `tar -C "${t}" -cf - "$(basename "${folder}")" | openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 -pass env:RG_BACKUP_PASSPHRASE -out "${re}"`], { env: pw });
+    return re;
+  };
 
   await t.test('backup then restore verifies PASS for production-shaped states (01+02), 03, and 03+04, including Supabase-style schema grants', async () => {
     for (const [name, migs, extra] of [['rg_bk_c', [H.MIG1, H.MIG2], {}], ['rg_bk_d', [H.MIG1, H.MIG2, H.MIG3], {}], ['rg_bk_e', [H.MIG1, H.MIG2, H.MIG3, H.MIG4], { supabaseLikeSchemaGrants: true }]]) {
@@ -57,21 +67,20 @@ test('production backup + restore-verification procedure (fictional local data)'
     const buf = fs.readFileSync(b.enc); buf[Math.floor(buf.length / 2)] ^= 0xff; const dmg = b.enc + '.damaged'; fs.writeFileSync(dmg, buf);
     assert.notEqual(verify(dmg).status, 0, 'flipped byte');
     const w = verify(b.enc, { RG_BACKUP_PASSPHRASE: 'wrong-passphrase-123456' }); assert.notEqual(w.status, 0); assert.match(w.stderr, /could not decrypt/);
-    // an unencrypted copy whose data was changed after the checksums were written
-    const k = backup('rg_bk_bad', { RG_KEEP_PLAINTEXT: '1' }); const folder = fs.readdirSync(k.dir).map((f) => path.join(k.dir, f)).find((f) => fs.statSync(f).isDirectory() && !f.endsWith('.summary'));
-    fs.appendFileSync(path.join(folder, 'data.sql'), '-- tampered\n'); const v = verify(folder); assert.notEqual(v.status, 0); assert.match(v.stderr, /checksum mismatch/);
+    // data changed after the checksums were written (repacked and re-encrypted, so only the checksum can catch it)
+    const tampered = repack(b.enc, (folder) => fs.appendFileSync(path.join(folder, 'data.sql'), '-- tampered\n')); const v = verify(tampered); assert.notEqual(v.status, 0); assert.match(v.stderr, /checksum mismatch/);
   });
 
   await t.test('the verification CATCHES a backup that no longer matches production: a changed balance in the baseline, a missing table row set', async () => {
-    await source('rg_bk_diff', [H.MIG1, H.MIG2, H.MIG3, H.MIG4]); const k = backup('rg_bk_diff', { RG_KEEP_PLAINTEXT: '1' });
-    const folder = fs.readdirSync(k.dir).map((f) => path.join(k.dir, f)).find((f) => fs.statSync(f).isDirectory() && !f.endsWith('.summary'));
-    const bl = path.join(folder, 'baseline_before.txt'); const orig = fs.readFileSync(bl, 'utf8');
+    await source('rg_bk_diff', [H.MIG1, H.MIG2, H.MIG3, H.MIG4]); const k = backup('rg_bk_diff');
+    const sha = (f) => require('crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex');
     for (const [from, to] of [[/MUST\|licenses\.generations_remaining\|\d+/, 'MUST|licenses.generations_remaining|999'], [/MUST\|licenses\.fingerprint\|\w+/, 'MUST|licenses.fingerprint|00000000000000000000000000000000'], [/MUST\|reservations\.rows\|\d+/, 'MUST|reservations.rows|0'], [/MUST\|perms\.table_grants_hash\|\w+/, 'MUST|perms.table_grants_hash|x'], [/MUST\|schema\.functions_hash\|\w+/, 'MUST|schema.functions_hash|x'], [/MUST\|migration\.state\|[^\n]+/, 'MUST|migration.state|D: migration 03 applied, 04 not applied']]) {
-      fs.writeFileSync(bl, orig.replace(from, to)); const sums = fs.readFileSync(path.join(folder, 'SHA256SUMS'), 'utf8');
-      const fixed = require('crypto').createHash('sha256').update(fs.readFileSync(bl)).digest('hex'); fs.writeFileSync(path.join(folder, 'SHA256SUMS'), sums.replace(/^\w+(\s+baseline_before\.txt)$/m, `${fixed}$1`));   // keep the checksum valid so only the baseline comparison can fail
-      const v = verify(folder); assert.notEqual(v.status, 0, String(from)); assert.match(v.stdout, /FAIL \(A\)/);
+      const re = repack(k.enc, (folder) => {                  // keep the checksum list valid so only the baseline comparison can fail
+        const bl = path.join(folder, 'baseline_before.txt'); fs.writeFileSync(bl, fs.readFileSync(bl, 'utf8').replace(from, to));
+        const sums = fs.readFileSync(path.join(folder, 'SHA256SUMS'), 'utf8'); fs.writeFileSync(path.join(folder, 'SHA256SUMS'), sums.replace(/^\w+(\s+baseline_before\.txt)$/m, `${sha(bl)}$1`));
+      });
+      const v = verify(re); assert.notEqual(v.status, 0, String(from)); assert.match(v.stdout, /FAIL \(A\)/);
     }
-    fs.writeFileSync(bl, orig);
   });
 
   await t.test('GUARDS: wrong project, transaction pooler, pg_dump older than the server, a database that is not the Resume project, a remote restore target', async () => {
