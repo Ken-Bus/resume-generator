@@ -90,7 +90,7 @@ Meaning: **PASS** = proceed to the next gate. **FAIL** = the check is not met; d
 
 | Gate | Check | PASS | FAIL (fix, repeat) | STOP |
 |---|---|---|---|---|
-| G0 | Backup/PITR covers now; CSV exports of `licenses` and `license_reservations`; previous Netlify deploy id written down; owner approvals recorded | all four done | any missing: do it first | no backup possible |
+| G0 | **Verified backup per `docs/PRODUCTION_BACKUP_RUNBOOK.md` section 8 is PASS** (the Free plan has no automatic backups or PITR); previous Netlify deploy id written down; owner approvals recorded | all four done | any missing: do it first | no backup possible |
 | G1 | `MIGRATION_03_PREFLIGHT.sql` query 1; record balance fingerprint | state B/C | state A: apply 01 and 02 first | state D or R unexpectedly, or a running migration session shows in query 7 |
 | G2 | Netlify has `RESULT_ENCRYPTION_KEY` (Functions scope, Production), 32+ characters, differs from `TAILOR_TOKEN_SECRET`, stored in the password manager | yes | fix and re-save | the key appeared in a chat, commit or log: treat as exposed, make a new one |
 | G3 | Apply 03; 03 after-queries; old app smoke test | one `reserve_license_use` with 7 args, privileges closed, counter drops exactly 1 | editor timed out: DO NOT re-run; check state first (03 package step 6) | balance differs by more than real use; counter drops by more than 1 |
