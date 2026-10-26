@@ -44,7 +44,7 @@
   .error-box { background: #FFF3F0; border: 1px solid #FFCCBB; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #c0392b; margin-bottom: 10px; }
   .resume-textarea { width: 100%; height: 240px; border: 1px solid #DDD; border-radius: 4px; padding: 10px; font-size: 11px; font-family: 'DM Sans', sans-serif; resize: vertical; outline: none; line-height: 1.5; }
   .resume-textarea:focus { border-color: #999; }
-  .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .btn-primary { flex: 2; padding: 10px; background: #111; color: #fff; border: none; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer; text-transform: uppercase; font-family: 'DM Sans', sans-serif; transition: opacity 0.15s; }
   .btn-primary:disabled { background: #CCC; cursor: not-allowed; }
   .btn-secondary { flex: 1; padding: 10px; background: transparent; color: #555; border: 1px solid #DDD; border-radius: 4px; font-size: 10px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
@@ -79,6 +79,8 @@
   .category-tabs { display: flex; border-bottom: 1px solid #F5F5F5; overflow-x: auto; }
   .category-tab { padding: 10px 14px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; background: transparent; border: none; cursor: pointer; color: #888; border-bottom: 2px solid transparent; white-space: nowrap; font-family: 'DM Sans', sans-serif; flex-shrink: 0; }
   .category-tab.active { color: #111; border-bottom-color: #111; }
+  .template-note { padding: 8px 14px 0; font-size: 11px; line-height: 1.5; color: #666; }
+  .template-note strong { color: #333; }
   .variant-row { display: flex; gap: 8px; padding: 10px 14px; align-items: center; flex-wrap: wrap; }
   .variant-btn { padding: 5px 14px; font-size: 10px; font-weight: 600; background: transparent; color: #555; border: 1px solid #DDD; border-radius: 3px; cursor: pointer; letter-spacing: 0.04em; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
   .variant-btn.active { color: #fff; border-color: transparent; }
@@ -271,6 +273,7 @@
       <div class="btn-row">
         <button class="btn-primary" onclick="parseResume()" id="parse-btn">Analyze Resume</button>
         <button class="btn-secondary" onclick="loadSample()">Try Sample</button>
+        <button class="btn-secondary" onclick="loadSample('office')" id="office-sample-btn">Office Sample</button>
       </div>
       <div class="loading-indicator" id="loading" style="display:none;">
         <div class="spinner"></div>
@@ -298,6 +301,7 @@
     <div class="template-bar">
       <div class="category-tabs" id="category-tabs"></div>
       <div class="variant-row" id="variant-row"></div>
+      <div class="template-note" id="template-note" role="note"></div>
     </div>
     <div class="preview-area" id="preview-area">
       <div class="empty-state">
@@ -317,6 +321,50 @@
 
 <script>
 // ── Sample Resume ─────────────────────────────────────────────────────────────
+const SAMPLE_EVERYDAY = `Maria Delgado
+(614) 555-0136 | maria.delgado@email.com | Columbus, OH
+
+PROFESSIONAL SUMMARY
+Warehouse associate with forklift certification and retail experience
+Following safety rules - Teamwork - Keeping records organized - Cash handling
+
+EXPERIENCE
+Warehouse Associate
+Fictional Freight Co | Columbus, OH | 2021 - Present
+• Loaded and unloaded trucks
+• Counted stock every week
+• Operated a pallet jack and a forklift
+• Reported damaged boxes to the supervisor
+
+Cashier
+Maple Market | Columbus, OH | 2018 - 2021
+• Ran the register and counted the cash drawer at closing
+• Helped customers find products
+• Stocked shelves
+
+EDUCATION
+High School Diploma
+Central High School | Columbus, OH | 2018
+
+CERTIFICATIONS & TRAINING
+Forklift Operator Certification | 2022`;
+
+const SAMPLE_EVERYDAY_DATA = {
+  name: 'Maria Delgado',
+  contact: { phone: '(614) 555-0136', email: 'maria.delgado@email.com', location: 'Columbus, OH', linkedin: '', website: '' },
+  summary: { tagline: 'Warehouse associate with forklift certification and retail experience', bullets: [], skills: ['Following safety rules', 'Teamwork', 'Keeping records organized', 'Cash handling'] },
+  experience: [
+    { title: 'Warehouse Associate', company: 'Fictional Freight Co', location: 'Columbus, OH', start: '2021', end: 'Present', summary: '',
+      bullets: ['Loaded and unloaded trucks', 'Counted stock every week', 'Operated a pallet jack and a forklift', 'Reported damaged boxes to the supervisor'] },
+    { title: 'Cashier', company: 'Maple Market', location: 'Columbus, OH', start: '2018', end: '2021', summary: '',
+      bullets: ['Ran the register and counted the cash drawer at closing', 'Helped customers find products', 'Stocked shelves'] }
+  ],
+  education: [{ degree: 'High School Diploma', school: 'Central High School', location: 'Columbus, OH', date: '2018', honors: '' }],
+  certifications: [{ name: 'Forklift Operator Certification', org: '', date: '2022' }],
+  projects: [], volunteer: [], awards: []
+};
+
+// The office / executive sample (the first one this page shipped with).
 const SAMPLE_RESUME = `Emma Larsen
 (312) 555-0187 | emma.larsen@email.com | Chicago, IL | linkedin.com/in/emmalarsen | emmalarsen.com
 
@@ -422,7 +470,7 @@ const store = {
 };
 
 // ── Templates ─────────────────────────────────────────────────────────────────
-const { TEMPLATES, CATEGORIES } = ResumeTemplates;
+const { TEMPLATES, CATEGORIES, CATEGORY_LABELS } = ResumeTemplates;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -755,7 +803,7 @@ function startPaste() {
 function renderCategoryTabs() {
   const el = document.getElementById('category-tabs');
   el.innerHTML = CATEGORIES.map(cat => `
-    <button class="category-tab ${cat === state.selectedCategory ? 'active' : ''}" onclick="selectCategory('${cat}')">${cat}</button>
+    <button class="category-tab ${cat === state.selectedCategory ? 'active' : ''}" onclick="selectCategory('${cat}')">${esc(CATEGORY_LABELS[cat] || cat)}</button>
   `).join('');
 }
 
@@ -782,6 +830,8 @@ function renderVariants() {
     </div>`;
   }
   el.innerHTML = html;
+  const note = document.getElementById('template-note');
+  if (note) note.innerHTML = state.selectedTemplate.bestFor ? `<strong>${esc(state.selectedTemplate.name)}</strong> is good for: ${esc(state.selectedTemplate.bestFor)}` : '';
 }
 
 function selectCategory(cat) {
@@ -1046,11 +1096,13 @@ function showError(msg, isHTML) {
   el.style.display = 'block';
 }
 
-function loadSample() {
-  document.getElementById('resume-input').value = SAMPLE_RESUME;
+// "Try Sample" shows an everyday-job resume (warehouse and retail); "Office sample" shows the executive one. Both are pre-parsed, so neither calls the AI.
+function loadSample(which) {
+  const office = which === 'office';
+  document.getElementById('resume-input').value = office ? SAMPLE_RESUME : SAMPLE_EVERYDAY;
   document.getElementById('error-box').style.display = 'none';
   if (state.aiBusy) return;
-  state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
+  state.data = JSON.parse(JSON.stringify(office ? SAMPLE_DATA : SAMPLE_EVERYDAY_DATA));
   state.sampleJson = JSON.stringify(state.data);
   state.tailorToken = null;
   state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null;

@@ -122,7 +122,8 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
     await s.page.fill('#gate-code-input', 'FG-TEST-AAAA'); await s.page.click('#gate-unlock-btn');
     await s.page.waitForSelector('#license-gate', { state: 'hidden' });
   }
-  async function licensedSample(s) { await licensed(s); await s.page.evaluate(() => loadSample()); }
+  async function licensedSample(s) { await licensed(s); await s.page.evaluate(() => loadSample('office')); }      // the executive sample: the long-resume checks below are written for it
+  async function licensedEverydaySample(s) { await licensed(s); await s.page.evaluate(() => loadSample()); }
   async function load(s, data, template) {
     await s.page.evaluate(([d, tpl]) => { state.data = d; if (tpl) selectTemplate(tpl); renderEditFields(); renderPreview(); }, [data, template]);
   }
@@ -360,6 +361,21 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
     const text = (await s.page.innerText('#edit-fields')).toLowerCase();                  // labels are upper-cased by the page style
     for (const needle of ['Introduction', 'One-line introduction (shown at the top of your resume)', 'Qualification and subject', 'Year (or “Expected 2027” if still studying)', 'Highlights (optional)', '+ Add School'].map((x) => x.toLowerCase())) assert.ok(text.includes(needle), needle);
     assert.doesNotMatch(text, /tagline|\bhonors\b|\bdegree\b/i); await s.close();
+  });
+
+  await t.test('the everyday-job sample exports to a text PDF in every one of the 12 templates (no page images, all of its lines present)', async () => {
+    const s = await open({});
+    await licensedEverydaySample(s);
+    const ids = await s.page.evaluate(() => TEMPLATES.map((x) => x.id));
+    for (const id of ids) {
+      await s.page.evaluate((i) => selectTemplate(i), id);
+      const r = pdfText(await download(s, '#btn-pdf', `everyday-${id}.pdf`));
+      assert.equal(r.images, 0, `${id}: PDF must not contain page images`);
+      for (const needle of ['MARIA DELGADO', 'Warehouse Associate', 'Operated a pallet jack and a forklift', 'Maple Market', 'Ran the register and counted the cash drawer at closing', 'High School Diploma', 'Forklift Operator Certification', 'maria.delgado@email.com']) {
+        assert.ok(r.ops.toUpperCase().includes(needle.toUpperCase()), `${id}: text operators should contain "${needle}"`);
+      }
+    }
+    assert.deepEqual(s.errors, []); await s.close();
   });
 
   await t.test('PDF has selectable, extractable text in every one of the 12 templates (no page images), in reading order', async () => {

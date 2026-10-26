@@ -96,7 +96,7 @@ test('access control and AI polish (Chromium)', async (t) => {
   });
 
   await t.test('entering a valid code finishes the download the customer asked for; the watermark and print lock lift', async () => {
-    const s = await open(); await s.page.click('.gate-sample-link'); await s.page.evaluate(() => loadSample());
+    const s = await open(); await s.page.click('.gate-sample-link'); await s.page.evaluate(() => loadSample('office'));
     await s.page.click('#btn-pdf'); await s.page.waitForSelector('#license-gate', { state: 'visible' });
     const dl = s.page.waitForEvent('download', { timeout: 10000 }); await unlock(s); const d = await dl;
     const f = path.join(TMP, d.suggestedFilename()); await d.saveAs(f);
