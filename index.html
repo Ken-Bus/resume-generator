@@ -7,8 +7,9 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
-<script src="/docx.umd.js"></script>
+<script src="/resume-core.js"></script>
+<script src="/templates.js"></script>
+<script src="/wizard.js"></script>
 <style>
   :root {
     --bg: #F4F3F0;
@@ -103,6 +104,10 @@
   .btn-word { background: #fff; color: #111; border: 1px solid #CCC; }
 
   @media (max-width: 768px) {
+    .header { padding: 12px 16px; flex-wrap: wrap; gap: 6px; }
+    .header-meta { white-space: normal; }
+    .panel-content { padding-bottom: 76px; }       /* keeps the floating PDF/Word buttons from covering the last fields */
+    .export-bar { bottom: 12px; right: 12px; }
     .layout { flex-direction: column; height: auto; }
     .left-panel { width: 100%; height: auto; }
     .resume-page { width: 100%; min-height: auto; }
@@ -130,6 +135,88 @@
   .gate-shop-link { margin-top: 16px; font-size: 10px; color: #AAA; }
   .gate-shop-link a { color: #888; }
   .error-box a { color: #c0392b; font-weight: 600; }
+
+
+  /* UNLICENSED DEMO: the sample preview is watermarked and not printable; downloads need an access code */
+  .resume-page.demo { position: relative; }
+  .resume-page.demo::after { content: "SAMPLE PREVIEW\A ACCESS CODE REQUIRED TO DOWNLOAD"; white-space: pre; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; transform: rotate(-28deg); font: 700 26px 'DM Sans', sans-serif; letter-spacing: 0.12em; line-height: 1.6; color: rgba(17,17,17,0.10); pointer-events: none; }
+  @media print {
+    body:not(.licensed) .resume-page { display: none !important; }
+    body:not(.licensed) .preview-area::before { content: "Printing and downloads need an access code."; display: block; font: 16px 'DM Sans', sans-serif; padding: 40px; }
+  }
+
+  /* START PATHS + GUIDED BUILDER */
+  .start-paths { padding: 12px 16px; border-bottom: 1px solid var(--border); background: #FAFAF8; flex-shrink: 0; }
+  .start-title { font-size: 10px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #666; margin-bottom: 8px; }
+  .start-card { display: block; width: 100%; text-align: left; background: #fff; border: 1px solid #DDD; border-radius: 6px; padding: 9px 11px; margin-bottom: 6px; cursor: pointer; font-family: 'DM Sans', sans-serif; color: #111; }
+  .start-card:hover, .start-card:focus-visible { border-color: #111; outline: none; }
+  .start-card strong { display: block; font-size: 12px; margin-bottom: 2px; }
+  .start-card span { display: block; font-size: 11px; color: #666; line-height: 1.4; }
+  .wiz-progress { font-size: 10px; color: #888; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 4px; }
+  .wiz-dots { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
+  .wiz-dot { font-size: 10px; padding: 3px 7px; border: 1px solid #DDD; border-radius: 10px; background: #fff; color: #666; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-dot.active { background: #111; color: #fff; border-color: #111; }
+  .wiz-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; line-height: 1.3; }
+  .wiz-help { font-size: 11px; color: #666; line-height: 1.5; margin-bottom: 10px; }
+  .wiz-note { font-size: 11px; color: #355; background: #F0F6F2; border: 1px solid #CFE3D6; border-radius: 4px; padding: 8px 10px; line-height: 1.5; margin-bottom: 10px; }
+  .wiz-label { display: block; font-size: 11px; font-weight: 600; color: #333; margin: 10px 0 3px; }
+  .wiz-optional { font-weight: 400; color: #999; }
+  .wiz-input { width: 100%; border: 1px solid #DDD; border-radius: 4px; padding: 8px 9px; font-size: 13px; font-family: 'DM Sans', sans-serif; outline: none; color: #111; background: #fff; }
+  .wiz-input:focus { border-color: #888; }
+  textarea.wiz-input { resize: vertical; line-height: 1.45; min-height: 74px; }
+  .wiz-example { font-size: 10.5px; color: #888; margin-top: 3px; line-height: 1.4; }
+  .wiz-choices { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+  .wiz-choice { text-align: left; padding: 9px 11px; border: 1px solid #DDD; border-radius: 6px; background: #fff; cursor: pointer; font-size: 12px; font-family: 'DM Sans', sans-serif; color: #111; }
+  .wiz-choice.selected { border-color: #111; background: #F4F3F0; font-weight: 600; }
+  .wiz-checks { display: flex; flex-direction: column; gap: 5px; margin: 6px 0; }
+  .wiz-check { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; line-height: 1.35; cursor: pointer; }
+  .wiz-check input { margin-top: 2px; flex-shrink: 0; }
+  .wiz-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
+  .wiz-chip { font-size: 11px; padding: 4px 8px; border: 1px dashed #BBB; border-radius: 12px; background: #fff; cursor: pointer; font-family: 'DM Sans', sans-serif; color: #444; }
+  .wiz-chip:hover { border-color: #111; }
+  .wiz-card { border: 1px solid #E5E5E5; border-radius: 6px; padding: 10px; margin: 8px 0; background: #FAFAFA; }
+  .wiz-card-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 700; color: #555; margin-bottom: 2px; }
+  .wiz-link { background: transparent; border: none; color: #888; font-size: 11px; text-decoration: underline; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-add { width: 100%; padding: 8px; border: 1px dashed #BBB; border-radius: 4px; background: transparent; font-size: 12px; color: #555; cursor: pointer; margin-top: 6px; font-family: 'DM Sans', sans-serif; }
+  .wiz-nav { display: flex; gap: 8px; margin-top: 16px; position: sticky; bottom: 0; background: #fff; padding: 8px 0; }
+  .wiz-nav button { padding: 10px 12px; border-radius: 4px; font-size: 12px; font-family: 'DM Sans', sans-serif; cursor: pointer; }
+  .wiz-back { background: transparent; border: 1px solid #DDD; color: #555; }
+  .wiz-next { flex: 1; background: #111; border: none; color: #fff; font-weight: 700; }
+  .wiz-skip { background: transparent; border: none; color: #888; text-decoration: underline; }
+  .wiz-review-row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; padding: 7px 0; border-bottom: 1px solid #EEE; font-size: 12px; }
+  .wiz-review-row span { color: #666; font-size: 11px; }
+  .wiz-preview-link { display: none; font-size: 11px; color: #555; margin-top: 8px; }
+  #panel-guide.wiz-busy .wiz-nav, #panel-guide.wiz-busy .wiz-dots { pointer-events: none; opacity: 0.45; }
+  .wiz-polish-compact { margin: 0 0 14px; }
+  .wiz-polish { margin-top: 18px; padding: 12px; border: 1px solid #D9D4F0; border-radius: 6px; background: #F8F7FD; }
+  .wiz-polish-btn { width: 100%; padding: 11px; border: none; border-radius: 4px; background: #3B2F7F; color: #fff; font-weight: 700; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-polish-btn:disabled { background: #BBB; cursor: not-allowed; }
+  .wiz-confirm { border: 1px solid #E0A800; background: #FFFBEA; border-radius: 4px; padding: 10px; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  .wiz-confirm button { margin: 6px 6px 0 0; padding: 8px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
+  .wiz-ok { background: #F0F6F2; border: 1px solid #CFE3D6; border-radius: 4px; padding: 8px 10px; font-size: 12px; line-height: 1.5; margin-top: 8px; }
+  .wiz-err { background: #FFF3F0; border: 1px solid #FFCCBB; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #c0392b; line-height: 1.5; margin-top: 8px; }
+  .flag-warn { border-color: #E0A800 !important; background: #FFFBEA !important; }
+  .flag-note { font-size: 10px; color: #8a6d00; margin: -2px 0 4px; }
+  .save-status { margin: 6px 14px 0; font-size: 11px; color: #4b5563; line-height: 1.4; }
+  .save-status.warn { color: #8a4b00; background: #FFF4E5; border: 1px solid #F3C98B; border-radius: 4px; padding: 6px 8px; }
+  .draft-note { margin-top: 8px; font-size: 11px; color: #5b4a00; }
+  .notice-box { background: #FFFBEA; border: 1px solid #F0DC9A; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #6b5300; margin: 8px 0; line-height: 1.5; }
+  @media (max-width: 768px) { .wiz-preview-link { display: block; } }
+  /* Frozen while a paid/AI step is running (see setAiBusy) */
+  body.ai-busy [inert] { opacity: 0.65; }
+  /* Phones: inputs under 16px make iOS Safari zoom the page on focus, and tap targets under ~40px are hard to hit. */
+  @media (max-width: 768px) {
+    input, textarea, select, .field-input, .wiz-input, .gate-input, .resume-textarea { font-size: 16px !important; }
+    button, .btn-x, .btn-add-item, .btn-remove, .wiz-dot, .wiz-link, .wiz-back, .wiz-next, .gate-sample-link, .category-tab, .variant-btn, .panel-tab { min-height: 40px; }
+    .btn-x, .btn-remove { min-width: 40px; }
+    .wiz-dot { min-width: 40px; padding-left: 8px; padding-right: 8px; }
+    .gate-shop-link a, .gate-error a, a.wiz-link { display: inline-flex; align-items: center; min-height: 40px; }
+    .wiz-preview-link { min-height: 40px; padding: 10px 0; }
+    .wiz-link { min-width: 40px; }
+    /* A checkbox or radio is tapped through its label: make the whole row a comfortable target and the control itself bigger. */
+    .wiz-check { min-height: 40px; align-items: center; }
+    .wiz-check input { width: 22px; height: 22px; margin-top: 0; }
+  }
 </style>
 </head>
 <body>
@@ -141,7 +228,7 @@
   </div>
   <div style="display:flex; align-items:center; gap:14px;">
     <div class="license-badge" id="license-badge" style="display:none;"></div>
-    <div class="header-meta">ATS-Friendly · 12 Templates</div>
+    <div class="header-meta">Text-Based PDF &amp; Word · 12 Templates</div>
   </div>
 </div>
 
@@ -161,14 +248,26 @@
 <div class="layout">
   <!-- LEFT PANEL -->
   <div class="left-panel">
+    <div id="recover-banner" class="notice-box" role="region" aria-label="Saved result" style="display:none; margin:10px 14px 0;"></div>
+    <div id="draft-banner" class="notice-box" role="region" aria-label="Saved draft" style="display:none; margin:10px 14px 0;"></div>
+    <div id="restore-notice" class="notice-box" role="status" style="display:none; margin:10px 14px 0;"></div>
+    <div id="save-status" class="save-status" role="status" aria-live="polite" style="display:none;"></div>
+    <div class="start-paths" id="start-paths">
+      <div class="start-title">How would you like to start?</div>
+      <button class="start-card" onclick="startGuided('first')" id="start-first"><strong>Create My First Resume</strong><span>No experience needed. We&rsquo;ll ask simple questions.</span></button>
+      <button class="start-card" onclick="startGuided('returning')" id="start-returning"><strong>I&rsquo;ve Worked Before / Need a New Resume</strong><span>Describe your jobs in plain English.</span></button>
+      <button class="start-card" onclick="startPaste()" id="start-paste"><strong>I Already Have a Resume</strong><span>Paste it and we&rsquo;ll organize it for you.</span></button>
+    </div>
     <div class="panel-tabs">
+      <button class="panel-tab" onclick="switchPanel('guide')" id="tab-guide" style="display:none;">Guided</button>
       <button class="panel-tab active" onclick="switchPanel('paste')" id="tab-paste">Paste Resume</button>
       <button class="panel-tab" onclick="switchPanel('edit')" id="tab-edit">Edit Fields</button>
     </div>
+    <div class="panel-content" id="panel-guide" style="display:none;"></div>
     <div class="panel-content" id="panel-paste">
       <p class="paste-hint">Paste your resume as plain text. Our AI will analyze it into structured fields automatically.</p>
       <div id="error-box" class="error-box" style="display:none;"></div>
-      <textarea class="resume-textarea" id="resume-input" placeholder="Paste your resume text here..."></textarea>
+      <textarea class="resume-textarea" id="resume-input" placeholder="Paste your resume text here..." oninput="scheduleSave()"></textarea>
       <div class="btn-row">
         <button class="btn-primary" onclick="parseResume()" id="parse-btn">Analyze Resume</button>
         <button class="btn-secondary" onclick="loadSample()">Try Sample</button>
@@ -179,15 +278,18 @@
       </div>
     </div>
     <div class="panel-content" id="panel-edit" style="display:none;">
+      <div id="edit-polish"></div>
+      <div id="analyze-notice"></div>
       <div id="edit-fields">
-        <p style="font-size:11px;color:#999;">Analyze a resume or load the sample to edit fields.</p>
+        <p style="font-size:11px;color:#999;line-height:1.5;">Nothing to edit yet. <a href="#" onclick="startGuided('first');return false;" style="color:#555;">Build a resume step by step</a>, paste an existing resume, or load the sample.</p>
       </div>
             <div id="job-match-box" style="margin:14px 0;padding:12px;border:1px solid #ddd;border-radius:6px;background:#FAFAFA;">
         <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:#555;margin-bottom:6px;">TAILOR TO A JOB (OPTIONAL)</div>
-        <textarea id="job-desc-input" class="resume-textarea" placeholder="Paste the job description here to tailor your resume's wording to it..." rows="4" style="width:100%;"></textarea>
+        <textarea id="job-desc-input" class="resume-textarea" oninput="scheduleSave()" placeholder="Paste the job description here to tailor your resume's wording to it..." rows="4" style="width:100%;"></textarea>
         <button class="btn-secondary" onclick="tailorToJob()" id="tailor-btn" style="margin-top:8px;">Tailor to This Job</button>
         <div id="match-summary-box" style="display:none;margin-top:10px;font-size:12px;line-height:1.5;"></div>
       </div>
+      <button class="wiz-link" style="margin-bottom:14px;" onclick="startGuided('first')">Start a new resume with the guided builder</button>
     </div>
   </div>
 
@@ -200,13 +302,14 @@
     <div class="preview-area" id="preview-area">
       <div class="empty-state">
         <div class="empty-icon">✦</div>
-        <div class="empty-title">Paste your resume to see a live preview</div>
-        <div class="empty-sub">or click "Try Sample" to explore all 12 templates</div>
+        <div class="empty-title">Your resume appears here as you build it</div>
+        <div class="empty-sub">Choose how to start on the left, or click "Try Sample" to explore all 12 templates</div>
       </div>
     </div>
   </div>
 </div>
 
+<div id="export-notice" class="notice-box" style="display:none;position:fixed;bottom:70px;right:20px;max-width:300px;z-index:100;"></div>
 <div class="export-bar" id="export-bar" style="display:none;">
   <button class="btn-export btn-pdf" onclick="exportPDF()" id="btn-pdf">⬇ PDF</button>
   <button class="btn-export btn-word" onclick="exportWord()" id="btn-word">⬇ Word</button>
@@ -302,28 +405,24 @@ const SAMPLE_DATA = {
     { name: 'Six Sigma Green Belt', org: 'ASQ', date: '2019' }
   ],
   projects: [],
+  volunteer: [],
   awards: [
     '2023 Midwest Retail Executive of the Year – Retail Innovation Council',
     "2021 Nordstrom President's Award – Top Regional Leader"
   ]
 };
 
+// ── Browser storage ───────────────────────────────────────────────────────────
+// Some browsers (private modes, in-app browsers, strict cookie settings) throw as soon as sessionStorage is touched. The page must still load and
+// work, only without remembering the code or the work across a reload, so every access goes through here.
+const store = {
+  get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); return true; } catch (e) { return false; } },
+  remove(k) { try { sessionStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+};
+
 // ── Templates ─────────────────────────────────────────────────────────────────
-const TEMPLATES = [
-  { id:'boardroom', category:'Corporate', name:'The Boardroom', accent:'#1B2B47', accentLight:'#E8EDF3', font:"Georgia,'Times New Roman',serif", style:'centered' },
-  { id:'partner',   category:'Corporate', name:'The Partner',   accent:'#1B2B47', accentLight:'#E8EDF3', font:"Georgia,'Times New Roman',serif", style:'left-rule' },
-  { id:'builder',   category:'Tech',      name:'The Builder',   accent:'#3B5168', accentLight:'#E5EBF0', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'modern-left' },
-  { id:'architect', category:'Tech',      name:'The Architect', accent:'#3B5168', accentLight:'#E5EBF0', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'modern-center' },
-  { id:'editorial', category:'Creative',  name:'The Editorial', accent:'#A85432', accentLight:'#F5EDE8', accentAlt:'#6B7F5C', accentAltLight:'#EBF0E8', font:"Cambria,Georgia,serif", style:'editorial', colorToggle:true },
-  { id:'studio',    category:'Creative',  name:'The Studio',    accent:'#A85432', accentLight:'#F5EDE8', accentAlt:'#6B7F5C', accentAltLight:'#EBF0E8', font:"Cambria,Georgia,serif", style:'studio', colorToggle:true },
-  { id:'practitioner', category:'Healthcare', name:'The Practitioner', accent:'#2A6B6E', accentLight:'#E3EEEE', font:"Georgia,serif", style:'centered' },
-  { id:'educator',     category:'Healthcare', name:'The Educator',     accent:'#2A6B6E', accentLight:'#E3EEEE', font:"Georgia,serif", style:'left-rule' },
-  { id:'scholar',    category:'Academic', name:'The Scholar',   accent:'#6B2737', accentLight:'#F0E8EA', font:"Georgia,'Times New Roman',serif", style:'centered' },
-  { id:'researcher', category:'Academic', name:'The Researcher',accent:'#6B2737', accentLight:'#F0E8EA', font:"Georgia,'Times New Roman',serif", style:'left-rule' },
-  { id:'operator', category:'Trades', name:'The Operator', accent:'#2D2D2D', accentLight:'#EBEBEB', accent2:'#C2511F', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'operator' },
-  { id:'foreman',  category:'Trades', name:'The Foreman',  accent:'#2D2D2D', accentLight:'#EBEBEB', accent2:'#C2511F', font:"'Helvetica Neue',Helvetica,Arial,sans-serif", style:'foreman' },
-];
-const CATEGORIES = ['Corporate','Tech','Creative','Healthcare','Academic','Trades'];
+const { TEMPLATES, CATEGORIES } = ResumeTemplates;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -333,23 +432,323 @@ let state = {
   useAltColor: false,
   activePanel: 'paste',
   license: { code: null, verified: false, usesRemaining: null, maxUses: null },
-  tailorToken: null,   // signed authorisation issued with each paid generation; held in memory only
+  tailorToken: null,   // signed authorisation issued with each paid generation; kept (like the license code) in this tab's session storage only
+  wizard: null,        // guided builder session (see wizard.js); null when not in use
+  flags: new Set(),    // AI-written lines that need the customer's confirmation (see tailorToJob)
+  preTailor: null,     // copy of the resume from before the last tailoring run, for Undo
+  polishOriginal: null, // the customer's own wording from before the last AI polish, for Restore
+  polish: null,         // AI polish UI state (confirm / busy / result), shared by the Review step and the editor
+  polishResult: null,   // the resume exactly as the last polish returned it, to tell whether the customer has edited since (see Restore)
+  polishBaseline: null, // the customer's own wording from before the FIRST polish since this resume was started or analyzed
+  aiBusy: null,         // 'analyze' | 'polish' | 'tailor' while a paid or AI step is running: only one at a time (see setAiBusy)
+  sampleJson: null,     // the untouched sample, so Analyze can tell "sample" from "the customer's own work"
+  pending: null,        // { fn, requestId, at } while a paid step may still be running or its answer may have been lost (kept across a reload)
 };
+
+// ── Keeping the customer's work safe ────────────────────────────────────────────────────────────────────────────────
+// An unfinished resume is saved AUTOMATICALLY on this device, so a refresh, an accidental close, a browser restart, a dead phone battery or a power
+// cut does not erase it. It is saved half a second after the customer stops typing, every 10 seconds while there are changes, and again when the page
+// is hidden or closed (the close events are a bonus, never the only protection). The most recent half second of typing can still be lost in a sudden
+// power failure, and the page says so.
+//
+//   * It stays on THIS device: it is never uploaded, and saving it costs nothing (no AI call, no generation).
+//   * It never contains an access code, a Tailor authorisation or any other credential. The few things tied to one tab (the access code, the Tailor
+//     authorisation, the id of an AI step still running) live in this tab's session storage instead and disappear with the tab.
+//   * It cannot overwrite newer work with an older copy: a window that has not changed anything never writes; a window whose copy is older than
+//     what another window saved stops saving and says so; and a saved draft from an earlier visit is never replaced until the customer chooses
+//     "Continue where I left off" or "Discard".
+//   * If the browser blocks or fills its storage the page keeps working and says plainly that nothing could be saved. It never claims a save that
+//     did not happen.
+//   * Shared computers: the draft is deleted after 14 days; the banner and the status line say where it is kept; Discard and Clear remove it.
+const DRAFT_KEY = 'fg_draft_v2';              // localStorage (survives closing the browser)
+const LEGACY_WORK_KEY = 'fg_work_v1';         // sessionStorage, earlier builds: imported once
+const TAB_KEY = 'fg_tab_v1', PENDING_KEY = 'fg_pending_v1', TAILOR_KEY = 'fg_tailor_v1';     // sessionStorage: this tab only
+const DRAFT_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+const PENDING_MAX_AGE_MS = 10 * 60 * 1000;
+const SAVE_DELAY_MS = 500;
+const local = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } },
+  remove(k) { try { localStorage.removeItem(k); } catch (e) { /* nothing to remove */ } }
+};
+const TAB_ID = (() => { let t = store.get(TAB_KEY); if (!t) { t = Math.random().toString(36).slice(2) + Date.now().toString(36); store.set(TAB_KEY, t); } return t; })();
+const draftSync = { baseRev: 0, lastJson: null, savedAt: null, kind: 'device', failed: false, blocked: false, offered: false };
+let saveTimer = null;
+let discarding = false;
+function isUntouchedSample() { return !!state.sampleJson && JSON.stringify(state.data) === state.sampleJson; }
+function hasWorkOnScreen() { return !!state.data && ResumeCore.hasContent(state.data) && !isUntouchedSample(); }
+
+// What a draft holds: the customer's own content and where they were. No credentials of any kind.
+function draftContent() {
+  const w = state.wizard ? { path: state.wizard.path, step: state.wizard.step, work: state.wizard.work, target: state.wizard.target, autoTagline: state.wizard.autoTagline, profile: state.wizard.profile, edu: state.wizard.edu } : null;
+  return {
+    v: 2, data: state.data, template: state.selectedTemplate.id, alt: !!state.useAltColor, panel: state.activePanel,
+    flags: [...state.flags], polishOriginal: state.polishOriginal, polishResult: state.polishResult, polishBaseline: state.polishBaseline, preTailor: state.preTailor,
+    wizard: w, resumeText: (document.getElementById('resume-input') || {}).value || '', jobText: (document.getElementById('job-desc-input') || {}).value || ''
+  };
+}
+function parseDraft(raw) {
+  let d = null; try { d = JSON.parse(raw || 'null'); } catch (e) { return null; }
+  if (!d || d.v !== 2 || !d.data || typeof d.data !== 'object' || !ResumeCore.hasContent(d.data)) return null;
+  if (!(Number(d.savedAt) > 0) || Date.now() - Number(d.savedAt) > DRAFT_MAX_AGE_MS) return null;       // too old to keep around on a possibly shared computer
+  return d;
+}
+function readStoredDraft() { return parseDraft(local.get(DRAFT_KEY)) || parseDraft(store.get(DRAFT_KEY)); }
+
+// The tab-only things. Saved with every save so a refresh of THIS tab keeps working exactly as before.
+function persistTabState() {
+  if (state.pending) store.set(PENDING_KEY, JSON.stringify(state.pending)); else store.remove(PENDING_KEY);
+  if (state.tailorToken) store.set(TAILOR_KEY, state.tailorToken); else store.remove(TAILOR_KEY);
+}
+
+function setSaveStatus() {
+  const el = document.getElementById('save-status'); if (!el) return;
+  let text = '', cls = '';
+  if (draftSync.blocked) { text = 'Not saved: another window on this device has newer changes. Nothing was overwritten. '; cls = 'warn'; }
+  else if (draftSync.failed) { text = 'Couldn’t save on this device (the browser’s storage is full or blocked). Please download your resume to keep a copy. '; cls = 'warn'; }
+  else if (draftSync.savedAt) {
+    const t = new Date(draftSync.savedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    text = draftSync.kind === 'tab' ? `Saved in this tab only at ${t} (this browser won’t keep it after you close the tab). ` : `Saved on this device at ${t}. `;
+  }
+  el.className = 'save-status' + (cls ? ' ' + cls : ''); el.style.display = text ? 'block' : 'none';
+  el.innerHTML = text ? `${esc(text)}${draftSync.blocked ? '<button class="wiz-link" onclick="saveThisWindowInstead()">Save this window’s version instead</button>' : ''}` : '';
+}
+function saveThisWindowInstead() { draftSync.blocked = false; const cur = readStoredDraft(); draftSync.baseRev = cur ? cur.rev : 0; saveWork(true); }
+
+function saveWork(force) {
+  clearTimeout(saveTimer);
+  if (discarding) return;
+  try {
+    persistTabState();
+    if (!hasWorkOnScreen()) {                                    // nothing worth keeping: an empty window must never delete someone else's saved draft
+      const cur = readStoredDraft();
+      if (cur && cur.tab === TAB_ID && draftSync.savedAt) { local.remove(DRAFT_KEY); store.remove(DRAFT_KEY); draftSync.savedAt = null; draftSync.lastJson = null; }
+      setSaveStatus(); return;
+    }
+    const body = draftContent(); const json = JSON.stringify(body);
+    if (!force && json === draftSync.lastJson) return;            // nothing new: an idle window never writes
+    const cur = readStoredDraft();
+    if (cur && cur.tab !== TAB_ID && cur.rev > draftSync.baseRev) { draftSync.blocked = true; setSaveStatus(); return; }   // never overwrite newer (or not-yet-adopted) work
+    draftSync.blocked = false;
+    const rev = (cur ? cur.rev : 0) + 1;
+    const raw = JSON.stringify({ ...body, rev, tab: TAB_ID, savedAt: Date.now() });
+    let ok = local.set(DRAFT_KEY, raw), kind = 'device';
+    if (!ok) { ok = store.set(DRAFT_KEY, raw); kind = 'tab'; }    // localStorage blocked or full: keep it for this tab at least, and say so
+    if (ok) { draftSync.lastJson = json; draftSync.baseRev = rev; draftSync.savedAt = Date.now(); draftSync.kind = kind; draftSync.failed = false; }
+    else draftSync.failed = true;
+    setSaveStatus();
+  } catch (e) { draftSync.failed = true; setSaveStatus(); }
+}
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(saveWork, SAVE_DELAY_MS); }
+
+// "Clear this saved copy" (shared computers): removes everything this site keeps on the device AND starts the page over.
+function clearSavedWork() {
+  if (!confirm('Remove your resume and access code from this browser and start fresh? Anything you have not downloaded will be gone.')) return;
+  discarding = true; local.remove(DRAFT_KEY); [DRAFT_KEY, LEGACY_WORK_KEY, PENDING_KEY, TAILOR_KEY, LICENSE_STORAGE_KEY].forEach((k) => store.remove(k)); location.reload();
+}
+
+function restoreWork(w, opts = {}) {
+  try {
+    state.data = w.data;
+    const t = TEMPLATES.find(x => x.id === w.template); if (t) { state.selectedTemplate = t; state.selectedCategory = t.category; }
+    state.useAltColor = !!w.alt;
+    state.flags = new Set(Array.isArray(w.flags) ? w.flags : []);
+    state.polishOriginal = w.polishOriginal || null; state.polishResult = w.polishResult || null; state.polishBaseline = w.polishBaseline || null; state.preTailor = w.preTailor || null;
+    if (typeof w.resumeText === 'string') document.getElementById('resume-input').value = w.resumeText;
+    if (typeof w.jobText === 'string') document.getElementById('job-desc-input').value = w.jobText;
+    if (w.wizard && typeof w.wizard === 'object') state.wizard = { path: w.wizard.path, step: w.wizard.step, work: w.wizard.work, target: w.wizard.target || '', autoTagline: w.wizard.autoTagline || '', profile: w.wizard.profile, edu: Array.isArray(w.wizard.edu) ? w.wizard.edu : [] };
+    renderCategoryTabs(); renderVariants(); renderEditFields(); renderPreview();
+    if (state.wizard) Wiz.render();
+    switchPanel(w.panel === 'guide' && !state.wizard ? 'edit' : (['paste', 'edit', 'guide'].includes(w.panel) ? w.panel : 'edit'));
+    syncChrome();
+    draftSync.baseRev = Number(w.rev) || 0; draftSync.lastJson = JSON.stringify(draftContent()); draftSync.savedAt = Number(w.savedAt) || Date.now(); draftSync.kind = local.get(DRAFT_KEY) ? 'device' : 'tab'; draftSync.blocked = false;
+    const n = document.getElementById('restore-notice');
+    if (n && !opts.quiet) {
+      const fresh = state.pending;
+      n.innerHTML = `<strong>Welcome back.</strong> We kept your resume, so nothing you typed was lost. It is stored only on this device (never sent anywhere).${fresh ? ' Your last AI step (' + esc(fresh.fn === 'polish' ? 'AI Polish' : 'Analyze') + ') may have been interrupted when the page reloaded. Check the generations counter above. If you run the same step again now it reuses the same request, so a step that already finished should not be charged a second time.' : ''} <button class="wiz-link" onclick="clearSavedWork()">Clear this saved copy</button>`;
+      n.style.display = 'block';
+    }
+    return true;
+  } catch (e) { discardDraftQuietly(); state.data = null; state.wizard = null; return false; }
+}
+
+// A draft left by an EARLIER visit (a closed browser, another tab) is offered, never applied silently and never overwritten.
+function offerDraft(d) {
+  const el = document.getElementById('draft-banner'); if (!el) return;
+  draftSync.offered = true;
+  const when = new Date(d.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const who = d.data && d.data.name ? ` (${esc(d.data.name)})` : '';
+  el.innerHTML = `<strong>You have an unfinished resume saved on this device${who}.</strong> Last saved ${esc(when)}.
+    <div style="margin-top:8px;"><button class="btn-primary" style="width:auto;" onclick="continueDraft()" id="draft-continue">Continue where I left off</button>
+    <button class="wiz-link" onclick="discardDraft()" id="draft-discard">Discard it and start fresh</button></div>
+    <div class="draft-note">Your draft is kept only in this browser on this device. It is never uploaded, it is deleted after 14 days, and clearing your browser data removes it sooner. It does not follow you to another device. On a shared computer, choose Discard when you are finished. Changes made in the last half second before a sudden power loss may not be saved.</div>`;
+  el.style.display = 'block';
+}
+function hideDraftBanner() { const el = document.getElementById('draft-banner'); if (el) { el.style.display = 'none'; el.innerHTML = ''; } draftSync.offered = false; }
+function continueDraft() {
+  const d = readStoredDraft(); if (!d) { hideDraftBanner(); return; }
+  if (hasWorkOnScreen() && !confirm('Replace what is on screen with your saved resume? What is on screen now will not be kept.')) return;
+  hideDraftBanner(); restoreWork(d); persistTabState();
+}
+function discardDraftQuietly() { local.remove(DRAFT_KEY); store.remove(DRAFT_KEY); store.remove(LEGACY_WORK_KEY); draftSync.baseRev = 0; draftSync.lastJson = null; draftSync.savedAt = null; draftSync.blocked = false; }
+function discardDraft() {
+  if (!confirm('Delete the saved resume from this device? This cannot be undone.')) return;
+  discardDraftQuietly(); hideDraftBanner(); setSaveStatus(); scheduleSave();
+}
+
+// Start-up: restore this tab's own draft (a refresh) without asking; offer an earlier visit's draft; import an earlier build's tab draft once.
+function initDrafts() {
+  try {
+    const legacy = parseLegacy(store.get(LEGACY_WORK_KEY));
+    if (legacy) { store.remove(LEGACY_WORK_KEY); if (!readStoredDraft()) { const tabRaw = JSON.stringify({ ...legacy, rev: 1, tab: TAB_ID, savedAt: Date.now() }); if (!local.set(DRAFT_KEY, tabRaw)) store.set(DRAFT_KEY, tabRaw); } }
+  } catch (e) { /* an unreadable old draft is simply ignored */ }
+  try { const p = JSON.parse(store.get(PENDING_KEY) || 'null'); state.pending = p && Date.now() - Number(p.at) < PENDING_MAX_AGE_MS ? p : null; } catch (e) { state.pending = null; }
+  const tt = store.get(TAILOR_KEY); state.tailorToken = typeof tt === 'string' && tt ? tt : null;
+  const d = readStoredDraft(); if (!d) return;
+  if (d.tab === TAB_ID) {
+    restoreWork(d);
+    if (state.pending && state.pending.fn === 'polish' && typeof Wiz !== 'undefined') Wiz.polishState().requestId = state.pending.requestId;
+  } else offerDraft(d);
+}
+function parseLegacy(raw) {
+  let w = null; try { w = JSON.parse(raw || 'null'); } catch (e) { return null; }
+  if (!w || w.v !== 1 || !w.data || typeof w.data !== 'object' || !ResumeCore.hasContent(w.data)) return null;
+  const pend = w.pending && Date.now() - Number(w.pending.at) < PENDING_MAX_AGE_MS ? w.pending : null;
+  if (pend) store.set(PENDING_KEY, JSON.stringify(pend)); if (typeof w.tailorToken === 'string' && w.tailorToken) store.set(TAILOR_KEY, w.tailorToken);
+  return { v: 2, data: w.data, template: w.template, alt: !!w.alt, panel: w.panel, flags: w.flags || [], polishOriginal: w.polishOriginal || null, polishResult: w.polishResult || null, polishBaseline: w.polishBaseline || null, preTailor: w.preTailor || null, wizard: w.wizard || null, resumeText: w.resumeText || '', jobText: w.jobText || '' };
+}
+// ── Restoring a completed result (temporary encrypted copy kept by the server for up to 24 hours) ─────────────────────────────────────────────
+// If a paid Analyze / AI Polish finished but its reply never reached this browser (power cut, closed browser, lost connection), the finished result can
+// be restored with the access code the customer already entered. It costs nothing: no generation, no Tailor run, no AI call, and the resume is not
+// sent again. Results this device already received are not offered again.
+const RECEIVED_KEY = 'fg_received_v1';
+function readReceived() { try { const a = JSON.parse(local.get(RECEIVED_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+function rememberReceived(ref) {                                                // a short, non-secret reference of a result this device has already shown
+  if (!ref || typeof ref !== 'string') return;
+  const a = readReceived().filter((x) => x && x.ref !== ref && Date.now() - Number(x.at) < 2 * 24 * 3600 * 1000);
+  a.push({ ref, at: Date.now() }); local.set(RECEIVED_KEY, JSON.stringify(a.slice(-20)));
+}
+const refOf = (id) => `R-${String(id).replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+let recoverItems = [];
+async function checkRecoverable() {
+  if (!state.license.code) return;
+  try {
+    const res = await fetch('/.netlify/functions/recover-result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: state.license.code, action: 'list' }) });
+    if (!res.ok) return;                                                        // nothing to offer; never an error for the customer
+    const json = await res.json(); const got = new Set(readReceived().map((x) => x.ref));
+    recoverItems = (Array.isArray(json.results) ? json.results : []).filter((r) => r && typeof r.id === 'string' && !got.has(refOf(r.id)));
+    renderRecoverBanner();
+  } catch (e) { /* offline or blocked: simply nothing is offered */ }
+}
+function renderRecoverBanner(message) {
+  const el = document.getElementById('recover-banner'); if (!el) return;
+  if (!recoverItems.length && !message) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  const fmt = (iso) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const rows = recoverItems.map((r) => `<div class="wiz-review-row"><div>${r.kind === 'polish' ? 'AI Polish' : 'Analyze'} finished ${esc(fmt(r.savedAt))} · kept until ${esc(fmt(r.expiresAt))}</div><button class="btn-primary" style="width:auto;" onclick="restoreResult('${esc(r.id)}')" id="restore-${esc(r.id)}">Restore my result</button></div>`).join('');
+  el.innerHTML = `${recoverItems.length ? `<strong>A finished result is saved for you.</strong> A step you already completed did not reach this screen. Restoring it does not use another generation, and you do not need to enter your resume again.${rows}<div class="draft-note">We keep a private, encrypted copy for up to 24 hours so a lost connection does not cost you. Only your access code unlocks it, and it is deleted automatically.</div>` : ''}${message ? `<div class="gate-error" style="display:block; margin-top:6px;" role="alert">${esc(message)}</div>` : ''}`;
+  el.style.display = 'block';
+}
+async function restoreResult(id) {
+  if (state.aiBusy) { renderRecoverBanner(AI_BUSY_TEXT); return; }
+  const btn = document.getElementById(`restore-${id}`); if (btn) { btn.disabled = true; btn.textContent = 'Restoring…'; }
+  let json = null, res = null;
+  try {
+    res = await fetch('/.netlify/functions/recover-result', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: state.license.code, action: 'fetch', id }) });
+    try { json = await res.json(); } catch (e) { json = null; }
+  } catch (e) { renderRecoverBanner('We couldn’t reach the server. Nothing has been used. Please check your connection and try again.'); return; }
+  let parsed = null; if (res.ok && json && json.result) { try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; } }
+  if (!parsed) { recoverItems = recoverItems.filter((r) => r.id !== id); renderRecoverBanner((json && json.error) || 'We couldn’t restore that result. Nothing has been used.'); return; }
+  if (hasWorkOnScreen() && !confirm('Replace what is on screen with your saved result? You can undo this right afterwards.')) { renderRecoverBanner(); return; }
+  state.beforeRestore = hasWorkOnScreen() ? { ...draftContent(), rev: draftSync.baseRev, savedAt: Date.now() } : null;
+  const had = hasWorkOnScreen();
+  if (json.kind === 'polish') {
+    if (had) { if (!state.polishBaseline) state.polishBaseline = ResumeCore.clean(state.data); state.polishOriginal = ResumeCore.clean(state.data); } else { state.polishBaseline = null; state.polishOriginal = null; }
+    state.data = parsed; state.polishResult = JSON.parse(JSON.stringify(ResumeCore.clean(parsed))); state.preTailor = null; state.polish = null; state.sampleJson = null; state.wizard = null;
+    state.flags = new Set((Array.isArray(json.unverified) ? json.unverified : []).map((u) => String(u.text || '').trim()).filter(Boolean));
+    state.tailorToken = json.tailorToken || null;
+    if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining; if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+    renderLicenseBadge(); renderEditFields(); renderPreview(); switchPanel('edit'); syncChrome();
+  } else applyAnalyzeResult(json, parsed);
+  rememberReceived(json.supportRef || refOf(id));
+  recoverItems = recoverItems.filter((r) => r.id !== id); renderRecoverBanner();
+  const n = document.getElementById('restore-notice');
+  if (n) {
+    n.innerHTML = `<strong>Your saved result is back.</strong> ${esc(json.message || '')} It is exactly the result you completed${json.savedAt ? ' at ' + esc(new Date(json.savedAt).toLocaleString([], { hour: 'numeric', minute: '2-digit' })) : ''}. No generation was used.${state.beforeRestore ? ' <button class="wiz-link" onclick="undoRestore()" id="undo-restore">Undo: bring back what was here before</button>' : ''}`;
+    n.style.display = 'block';
+  }
+  scheduleSave();
+}
+function undoRestore() {
+  const snap = state.beforeRestore; if (!snap) return;
+  state.beforeRestore = null; restoreWork(snap, { quiet: true });
+  const n = document.getElementById('restore-notice'); if (n) { n.innerHTML = '<strong>Done.</strong> What was on screen before has been brought back. Your saved result is still available until it expires.'; n.style.display = 'block'; }
+  checkRecoverable(); scheduleSave();
+}
+
+// Leaving with a paid step running, or with a resume that has not been downloaded yet, asks first (the browser shows its own wording).
+let exportedSnapshot = null;
+function hasUnsavedWork() { return !discarding && !!state.data && ResumeCore.hasContent(state.data) && !isUntouchedSample() && JSON.stringify(state.data) !== exportedSnapshot; }
+window.addEventListener('beforeunload', (e) => { saveWork(); if (state.aiBusy || hasUnsavedWork()) { e.preventDefault(); e.returnValue = ''; } });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveWork(); });
+window.addEventListener('pagehide', () => saveWork());
+window.addEventListener('freeze', () => saveWork());
+setInterval(() => { if (document.visibilityState === 'visible') saveWork(); }, 10000);        // a safety net while there are changes (it writes nothing when nothing changed)
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 function init() {
   renderCategoryTabs();
   renderVariants();
+  initDrafts();
   initLicenseGate();
 }
 
+// An AI request that never answers (a stalled phone connection) must not leave the editor frozen: every AI call gives up after this long
+// (the server's own limit is shorter), the lock is released in `finally`, and the customer is told to check the counter.
+let AI_CLIENT_TIMEOUT_MS = 75000;
+async function aiFetch(url, options) {
+  const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), AI_CLIENT_TIMEOUT_MS);
+  try { return await fetch(url, { ...options, signal: ctl.signal }); } finally { clearTimeout(timer); }
+}
+
+// ── One AI step at a time ───────────────────────────────────────────────────────────────────────────────────────────
+// Analyze, AI Polish and Tailor all replace the resume with what the server returns. If two overlapped, the slower answer would overwrite
+// the faster one (a paid result thrown away), and anything typed while a step runs would be overwritten too. So while one runs the others
+// are disabled and the fields are frozen (inert); everything is released together when it finishes.
+const AI_BUSY_TEXT = 'Please wait until the AI step that is already running has finished.';
+function setAiBusy(name) {
+  state.aiBusy = name || null;
+  document.body.classList.toggle('ai-busy', !!name);
+  ['edit-fields', 'resume-input', 'job-desc-input', 'panel-guide'].forEach(id => {
+    const el = document.getElementById(id); if (!el) return;
+    if (name) el.setAttribute('inert', ''); else el.removeAttribute('inert');
+  });
+  ['parse-btn', 'tailor-btn'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !!name; });
+  if (typeof renderEditPolish === 'function') renderEditPolish();
+}
+function aiBegin(name) { if (state.aiBusy) return false; setAiBusy(name); return true; }
+function aiEnd(name) { if (state.aiBusy === name) setAiBusy(null); }
+
 // ── Panel Switch ──────────────────────────────────────────────────────────────
 function switchPanel(panel) {
-  state.activePanel = panel;
-  document.getElementById('panel-paste').style.display = panel === 'paste' ? 'block' : 'none';
-  document.getElementById('panel-edit').style.display = panel === 'edit' ? 'block' : 'none';
-  document.getElementById('tab-paste').classList.toggle('active', panel === 'paste');
-  document.getElementById('tab-edit').classList.toggle('active', panel === 'edit');
+  state.activePanel = panel; scheduleSave();
+  ['paste', 'edit', 'guide'].forEach(p => {
+    document.getElementById('panel-' + p).style.display = panel === p ? 'block' : 'none';
+    document.getElementById('tab-' + p).classList.toggle('active', panel === p);
+  });
+}
+
+// Shows/hides the parts of the page that depend on whether a resume exists yet.
+function syncChrome() {
+  const has = !!state.data && ResumeCore.hasContent(state.data);
+  document.getElementById('export-bar').style.display = has ? 'flex' : 'none';
+  document.getElementById('start-paths').style.display = state.data ? 'none' : 'block';
+  document.getElementById('tab-guide').style.display = state.wizard ? 'block' : 'none';
+}
+
+function startPaste() {
+  switchPanel('paste');
+  const el = document.getElementById('resume-input');
+  el.focus();
 }
 
 // ── Category & Variant Tabs ───────────────────────────────────────────────────
@@ -416,7 +815,7 @@ function etsyLinkHTML() {
 }
 
 function initLicenseGate() {
-  const savedCode = sessionStorage.getItem(LICENSE_STORAGE_KEY);
+  const savedCode = store.get(LICENSE_STORAGE_KEY);
   if (savedCode) {
     verifyLicense(savedCode, { silent: true, showGateOnFail: true });
   } else {
@@ -440,6 +839,10 @@ function hideGate() {
 }
 
 function renderLicenseBadge() {
+  document.body.classList.toggle('licensed', !!state.license.verified);
+  const pv = document.getElementById('resume-preview');                  // keep the demo watermark in step with the license
+  if (pv && pv.classList.contains('demo') === !!state.license.verified) renderPreview();
+  if (typeof renderEditPolish === 'function') renderEditPolish();
   const el = document.getElementById('license-badge');
   if (state.license.verified) {
     el.style.display = 'block';
@@ -469,9 +872,10 @@ async function verifyLicense(codeInput, opts = {}) {
 
     if (json.valid) {
       state.license = { code, verified: true, usesRemaining: json.usesRemaining, maxUses: json.maxUses };
-      sessionStorage.setItem(LICENSE_STORAGE_KEY, code);
+      store.set(LICENSE_STORAGE_KEY, code);
       hideGate();
       renderLicenseBadge();
+      checkRecoverable();
       if (pendingGeneration) {
         const fn = pendingGeneration;
         pendingGeneration = null;
@@ -480,7 +884,7 @@ async function verifyLicense(codeInput, opts = {}) {
       return true;
     } else {
       state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-      sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+      store.remove(LICENSE_STORAGE_KEY);
       if (opts.showGateOnFail || !opts.silent) {
         let msg = json.error || 'Invalid code.';
         if (json.usesRemaining === 0) msg += etsyLinkHTML();
@@ -501,6 +905,7 @@ function submitGateCode() {
 }
 
 function skipGateForSample() {
+  pendingGeneration = null;     // a queued action must not fire later, after the customer chose the free sample
   hideGate();
   loadSample();
 }
@@ -516,41 +921,43 @@ async function parseResume() {
     showGate('Enter your access code to generate your resume.');
     return;
   }
-  if (text.length > 30000) {
-    showError('That resume is too long to analyze (limit 30,000 characters). Please trim older or less relevant sections and try again.');
+  if (text.length > 20000) {
+    showError('That resume is too long to analyze (limit 20,000 characters). Please trim older or less relevant sections and try again.');
     return;
   }
-  if (analyzing) return;
+  if (state.aiBusy) { if (state.aiBusy !== 'analyze') showError(AI_BUSY_TEXT); return; }       // a repeat click while this very step runs is simply ignored
+  // Analyzing replaces what is in the editor. The untouched sample is free to replace; the customer's own work is not.
+  const hasOwnWork = !!state.data && ResumeCore.hasContent(state.data) && !(state.sampleJson && JSON.stringify(state.data) === state.sampleJson);
+  if (hasOwnWork && !confirm('Analyzing this text will replace the resume currently in the editor (including anything you typed or polished). Continue?')) return;
+  if (!aiBegin('analyze')) return;
   analyzing = true;
 
   document.getElementById('parse-btn').disabled = true;
   document.getElementById('loading').style.display = 'flex';
   document.getElementById('error-box').style.display = 'none';
 
+  // One request id per attempt, reused when the same text is sent again after a lost reply or a reload: a repeat of an Analyze that already finished
+  // returns the same result instead of using a second generation.
+  const requestId = state.pending && state.pending.fn === 'analyze' && state.pending.text === text ? state.pending.requestId : Wiz.newRequestId();
+  state.pending = { fn: 'analyze', requestId, text, at: Date.now() }; saveWork();
+  let definite = false;
   try {
     // The server checks the code, reserves a generation, runs the AI, and only charges for a validated result.
-    const res = await fetch('/.netlify/functions/parse-resume', {
+    const res = await aiFetch('/.netlify/functions/parse-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: state.license.code, resumeText: text })
+      body: JSON.stringify({ code: state.license.code, resumeText: text, requestId, clientGuard: ResumeCore.GUARD_VERSION })
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
+    definite = json !== null && (res.status !== 409 || json.newRequest === true) && res.status < 500;     // a cut-off body, busy, or a server error may mean the answer was lost: keep the id. A refusal that asks for a NEW request (the id was spent on other input, is too old, or hit the recovery limit) ends this id
 
     let parsed = null;
     if (res.ok && json && json.result) {
       try { parsed = JSON.parse(json.result); } catch (e) { parsed = null; }
     }
     if (parsed) {
-      state.data = parsed;
-      state.tailorToken = json.tailorToken || null;
-      if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
-      if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
-      renderLicenseBadge();
-      renderEditFields();
-      renderPreview();
-      switchPanel('edit');
-      document.getElementById('export-bar').style.display = 'flex';
+      applyAnalyzeResult(json, parsed);
       return;
     }
     await handleParseFailure(res.status, json);
@@ -559,9 +966,35 @@ async function parseResume() {
     refreshLicenseCounter();
   } finally {
     analyzing = false;
+    if (definite) state.pending = null;
+    aiEnd('analyze');
     document.getElementById('parse-btn').disabled = false;
     document.getElementById('loading').style.display = 'none';
+    saveWork();
   }
+}
+
+// Shows an Analyze result (fresh, or restored from the temporary recovery copy).
+function applyAnalyzeResult(json, parsed) {
+    state.data = parsed;
+    state.wizard = null; state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null; state.sampleJson = null;
+    // Numbers the AI put in that are not in the pasted text are shown in yellow for the customer to confirm.
+    const unverified = Array.isArray(json.unverified) ? json.unverified : [];
+    state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
+    const note = document.getElementById('analyze-notice');
+    const recovered = json.recovered ? `<div class="notice-box" id="recovered-notice" role="status"><strong>${json.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(json.message || '')}${json.supportRef ? ` <span class="support-ref">Reference: ${esc(json.supportRef)}</span>` : ''}</div>` : '';
+    if (note) note.innerHTML = recovered + (unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
+        <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '');
+    state.tailorToken = json.tailorToken || null;
+    document.getElementById('match-summary-box').style.display = 'none';
+    if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
+    if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
+    renderLicenseBadge();
+    renderEditFields();
+    renderPreview();
+    switchPanel('edit');
+    syncChrome();
+  rememberReceived(json.supportRef);
 }
 
 // Failed analyses are not charged; this only explains what happened and refreshes the counter.
@@ -569,7 +1002,7 @@ async function handleParseFailure(status, json) {
   const message = (json && json.error) || 'Something went wrong while analyzing your resume. Please try again.';
   if (status === 401) {
     state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-    sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+    store.remove(LICENSE_STORAGE_KEY);
     renderLicenseBadge();
     showGate(message);
     return;
@@ -584,7 +1017,7 @@ async function handleParseFailure(status, json) {
   }
   if (status === 403) {
     state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
-    sessionStorage.removeItem(LICENSE_STORAGE_KEY);
+    store.remove(LICENSE_STORAGE_KEY);
     renderLicenseBadge();
     showGate(message);
     return;
@@ -605,13 +1038,7 @@ async function refreshLicenseCounter() {
   } catch (e) { /* the counter will refresh on the next action */ }
 }
 
-function emptyData() {
-  return { name:'', contact:{phone:'',email:'',location:'',linkedin:'',website:''},
-    summary:{tagline:'',bullets:[''],skills:['']},
-    experience:[{title:'',company:'',location:'',start:'',end:'',summary:'',bullets:['']}],
-    education:[{degree:'',school:'',location:'',date:'',honors:''}],
-    certifications:[], projects:[], awards:[] };
-}
+function emptyData() { return ResumeCore.blank(); }
 
 function showError(msg, isHTML) {
   const el = document.getElementById('error-box');
@@ -622,12 +1049,16 @@ function showError(msg, isHTML) {
 function loadSample() {
   document.getElementById('resume-input').value = SAMPLE_RESUME;
   document.getElementById('error-box').style.display = 'none';
+  if (state.aiBusy) return;
   state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
+  state.sampleJson = JSON.stringify(state.data);
   state.tailorToken = null;
+  state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null;
+  const note = document.getElementById('analyze-notice'); if (note) note.innerHTML = '';
   renderEditFields();
   renderPreview();
   switchPanel('edit');
-  document.getElementById('export-bar').style.display = 'flex';
+  syncChrome();
 }
 
 // ── Render Edit Fields ────────────────────────────────────────────────────────
@@ -645,10 +1076,10 @@ function renderEditFields() {
       <div class="field-group"><div class="field-label">LinkedIn</div><input class="field-input" value="${esc(d.contact?.linkedin)}" oninput="updateField('contact.linkedin',this.value)"></div>
       <div class="field-group"><div class="field-label">Website</div><input class="field-input" value="${esc(d.contact?.website)}" oninput="updateField('contact.website',this.value)"></div>
     </div>
-    <div class="section-label">Summary</div>
-    <div class="field-group"><div class="field-label">Tagline</div><input class="field-input" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
+    <div class="section-label">Introduction</div>
+    <div class="field-group"><div class="field-label">One-line introduction (shown at the top of your resume)</div><input class="field-input${flagClass(d.summary?.tagline)}" value="${esc(d.summary?.tagline)}" oninput="updateField('summary.tagline',this.value)"></div>
     ${(d.summary?.bullets||[]).map((b,i)=>`
-      <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateArrayItem('summary.bullets',${i},null,this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeArrayItem('summary.bullets',${i});renderEditFields();renderPreview()">✕</button></div>
+      <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateArrayItem('summary.bullets',${i},null,this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeArrayItem('summary.bullets',${i});renderEditFields();renderPreview()">✕</button></div>
     `).join('')}
     <button class="btn-add-item" onclick="addToArray('summary.bullets','');renderEditFields();renderPreview()">+ Add bullet</button>
     <div class="field-group" style="margin-top:8px;"><div class="field-label">Skills (comma separated)</div><input class="field-input" value="${esc((d.summary?.skills||[]).join(', '))}" oninput="updateField('summary.skills',this.value.split(',').map(s=>s.trim()).filter(Boolean))"></div>
@@ -663,31 +1094,67 @@ function renderEditFields() {
           <div class="field-group"><div class="field-label">Start</div><input class="field-input" value="${esc(exp.start)}" oninput="updateArrayItem('experience',${i},'start',this.value)"></div>
           <div class="field-group"><div class="field-label">End</div><input class="field-input" value="${esc(exp.end)}" oninput="updateArrayItem('experience',${i},'end',this.value)"></div>
         </div>
-        <div class="field-group"><div class="field-label">Summary (optional)</div><textarea class="field-input" rows="2" oninput="updateArrayItem('experience',${i},'summary',this.value)">${esc(exp.summary)}</textarea></div>
+        <div class="field-group"><div class="field-label">Location (optional)</div><input class="field-input" value="${esc(exp.location)}" oninput="updateArrayItem('experience',${i},'location',this.value)"></div>
+        <div class="field-group"><div class="field-label">Summary (optional)</div><textarea class="field-input${flagClass(exp.summary)}" rows="2" oninput="updateArrayItem('experience',${i},'summary',this.value)">${esc(exp.summary)}</textarea>${flagNote(exp.summary)}</div>
         <div class="field-label">Bullets</div>
         ${(exp.bullets||[]).map((b,j)=>`
-          <div class="bullet-row"><textarea class="field-input" rows="2" oninput="updateExpBullet(${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeExpBullet(${i},${j});renderEditFields();renderPreview()">✕</button></div>
+          <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateExpBullet(${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeExpBullet(${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
         `).join('')}
         <button class="btn-add-item" onclick="addExpBullet(${i});renderEditFields();renderPreview()">+ Add bullet</button>
       </div>
     `).join('')}
     <button class="btn-add-item" onclick="addArrayItem('experience',{title:'',company:'',location:'',start:'',end:'',summary:'',bullets:['']});renderEditFields();renderPreview()">+ Add Position</button>
 
+    <div class="section-label">Projects</div>
+    ${(d.projects||[]).map((pr,i)=>`
+      <div class="card">
+        <div class="card-header"><span class="card-title">Project ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('projects',${i});renderEditFields();renderPreview()">Remove</button></div>
+        <div class="field-group"><div class="field-label">Project name</div><input class="field-input" placeholder="e.g. School food drive" value="${esc(pr.name)}" oninput="updateArrayItem('projects',${i},'name',this.value)"></div>
+        <div class="field-group"><div class="field-label">What was it about? (optional)</div><textarea class="field-input${flagClass(pr.description)}" rows="2" oninput="updateArrayItem('projects',${i},'description',this.value)">${esc(pr.description)}</textarea>${flagNote(pr.description)}</div>
+        <div class="field-label">Bullets</div>
+        ${(pr.bullets||[]).map((b,j)=>`
+          <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateNested('projects',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('projects',${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
+        `).join('')}
+        <button class="btn-add-item" onclick="addNested('projects',${i});renderEditFields();renderPreview()">+ Add bullet</button>
+      </div>
+    `).join('')}
+    <button class="btn-add-item" onclick="addArrayItem('projects',{name:'',description:'',bullets:['']});renderEditFields();renderPreview()">+ Add Project</button>
+
+    <div class="section-label">Volunteer &amp; Activities</div>
+    ${(d.volunteer||[]).map((v,i)=>`
+      <div class="card">
+        <div class="card-header"><span class="card-title">Role ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('volunteer',${i});renderEditFields();renderPreview()">Remove</button></div>
+        <div class="grid-2">
+          <div class="field-group"><div class="field-label">Role</div><input class="field-input" value="${esc(v.title)}" oninput="updateArrayItem('volunteer',${i},'title',this.value)"></div>
+          <div class="field-group"><div class="field-label">Organization</div><input class="field-input" value="${esc(v.organization)}" oninput="updateArrayItem('volunteer',${i},'organization',this.value)"></div>
+          <div class="field-group"><div class="field-label">Start</div><input class="field-input" value="${esc(v.start)}" oninput="updateArrayItem('volunteer',${i},'start',this.value)"></div>
+          <div class="field-group"><div class="field-label">End</div><input class="field-input" value="${esc(v.end)}" oninput="updateArrayItem('volunteer',${i},'end',this.value)"></div>
+        </div>
+        <div class="field-label">Bullets</div>
+        ${(v.bullets||[]).map((b,j)=>`
+          <div class="bullet-row"><textarea class="field-input${flagClass(b)}" rows="2" oninput="updateNested('volunteer',${i},${j},this.value)">${esc(b)}</textarea><button class="btn-x" onclick="removeNested('volunteer',${i},${j});renderEditFields();renderPreview()">✕</button></div>${flagNote(b)}
+        `).join('')}
+        <button class="btn-add-item" onclick="addNested('volunteer',${i});renderEditFields();renderPreview()">+ Add bullet</button>
+      </div>
+    `).join('')}
+    <button class="btn-add-item" onclick="addArrayItem('volunteer',{title:'',organization:'',location:'',start:'',end:'',bullets:['']});renderEditFields();renderPreview()">+ Add Volunteer / Activity</button>
+
     <div class="section-label">Education</div>
     ${(d.education||[]).map((edu,i)=>`
       <div class="card">
-        <div class="card-header"><span class="card-title">Degree ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('education',${i});renderEditFields();renderPreview()">Remove</button></div>
+        <div class="card-header"><span class="card-title">School ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('education',${i});renderEditFields();renderPreview()">Remove</button></div>
         <div class="grid-2">
-          <div class="field-group"><div class="field-label">Degree</div><input class="field-input" value="${esc(edu.degree)}" oninput="updateArrayItem('education',${i},'degree',this.value)"></div>
-          <div class="field-group"><div class="field-label">School</div><input class="field-input" value="${esc(edu.school)}" oninput="updateArrayItem('education',${i},'school',this.value)"></div>
-          <div class="field-group"><div class="field-label">Date</div><input class="field-input" value="${esc(edu.date)}" oninput="updateArrayItem('education',${i},'date',this.value)"></div>
-          <div class="field-group"><div class="field-label">Honors</div><input class="field-input" value="${esc(edu.honors)}" oninput="updateArrayItem('education',${i},'honors',this.value)"></div>
+          <div class="field-group"><div class="field-label">Qualification and subject</div><input class="field-input" placeholder="e.g. Associate degree in Nursing" value="${esc(edu.degree)}" oninput="updateArrayItem('education',${i},'degree',this.value)"></div>
+          <div class="field-group"><div class="field-label">School or college</div><input class="field-input" value="${esc(edu.school)}" oninput="updateArrayItem('education',${i},'school',this.value)"></div>
+          <div class="field-group"><div class="field-label">Year (or “Expected 2027” if still studying)</div><input class="field-input" value="${esc(edu.date)}" oninput="updateArrayItem('education',${i},'date',this.value)"></div>
+          <div class="field-group"><div class="field-label">Highlights (optional)</div><input class="field-input" value="${esc(edu.honors)}" oninput="updateArrayItem('education',${i},'honors',this.value)"></div>
         </div>
+        <div class="field-group"><div class="field-label">Location (optional)</div><input class="field-input" value="${esc(edu.location)}" oninput="updateArrayItem('education',${i},'location',this.value)"></div>
       </div>
     `).join('')}
-    <button class="btn-add-item" onclick="addArrayItem('education',{degree:'',school:'',location:'',date:'',honors:''});renderEditFields();renderPreview()">+ Add Degree</button>
+    <button class="btn-add-item" onclick="addArrayItem('education',{degree:'',school:'',location:'',date:'',honors:''});renderEditFields();renderPreview()">+ Add School</button>
 
-    <div class="section-label">Certifications</div>
+    <div class="section-label">Certifications &amp; Training</div>
     ${(d.certifications||[]).map((c,i)=>`
       <div class="card">
         <div class="card-header"><span class="card-title">Cert ${i+1}</span><button class="btn-remove" onclick="removeArrayItem('certifications',${i});renderEditFields();renderPreview()">Remove</button></div>
@@ -698,7 +1165,7 @@ function renderEditFields() {
         </div>
       </div>
     `).join('')}
-    <button class="btn-add-item" onclick="addArrayItem('certifications',{name:'',org:'',date:''});renderEditFields();renderPreview()">+ Add Certification</button>
+    <button class="btn-add-item" onclick="addArrayItem('certifications',{name:'',org:'',date:''});renderEditFields();renderPreview()">+ Add Certification / Course</button>
 
     <div class="section-label">Awards</div>
     ${(d.awards||[]).map((a,i)=>`
@@ -707,6 +1174,10 @@ function renderEditFields() {
     <button class="btn-add-item" onclick="addToArray('awards','');renderEditFields();renderPreview()">+ Add Award</button>
   `;
 }
+
+// Lines the AI wrote that mention numbers/credentials/duties not found in the customer's original resume.
+function flagClass(text) { return state.flags && state.flags.has(String(text || '').trim()) ? ' flag-warn' : ''; }
+function flagNote(text) { return flagClass(text) ? '<div class="flag-note">⚠ Added by AI — please make sure this is true, or edit it.</div>' : ''; }
 
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 // Resume text is applicant- or AI-supplied, so it is HTML-escaped before it is placed into the preview markup.
@@ -732,56 +1203,60 @@ function updateArrayItem(arrayPath, index, field, value) {
   if (field) arr[index][field] = value; else arr[index] = value;
   renderPreview();
 }
-function removeArrayItem(arrayPath, index) {
-  const parts = arrayPath.split('.');
-  let arr = state.data;
-  for (const p of parts) arr = arr[p];
-  arr.splice(index, 1);
-}
-function addArrayItem(arrayPath, template) {
-  const parts = arrayPath.split('.');
-  let arr = state.data;
-  for (const p of parts) arr = arr[p];
-  arr.push(template);
-}
-function addToArray(path, val) {
+// Returns the array at a dotted path, creating it when older/AI-produced data does not have it yet.
+function arrayAt(path) {
   const parts = path.split('.');
-  let arr = state.data;
-  for (const p of parts) arr = arr[p];
-  arr.push(val);
+  let o = state.data;
+  for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]];
+  const k = parts[parts.length - 1];
+  if (!Array.isArray(o[k])) o[k] = [];
+  return o[k];
 }
+function removeArrayItem(arrayPath, index) { arrayAt(arrayPath).splice(index, 1); }
+function addArrayItem(arrayPath, template) { arrayAt(arrayPath).push(template); }
+function addToArray(path, val) { arrayAt(path).push(val); }
 function updateExpBullet(i, j, val) { state.data.experience[i].bullets[j] = val; renderPreview(); }
 function removeExpBullet(i, j) { state.data.experience[i].bullets.splice(j, 1); }
 function addExpBullet(i) { state.data.experience[i].bullets.push(''); }
 function updateAward(i, val) { state.data.awards[i] = val; renderPreview(); }
+function updateNested(arr, i, j, val) { state.data[arr][i].bullets[j] = val; renderPreview(); }
+function removeNested(arr, i, j) { state.data[arr][i].bullets.splice(j, 1); }
+function addNested(arr, i) { (state.data[arr][i].bullets = state.data[arr][i].bullets || []).push(''); }
 
 // ── Render Preview ────────────────────────────────────────────────────────────
 function renderPreview() {
   if (!state.data) return;
   const area = document.getElementById('preview-area');
-  area.innerHTML = `<div class="resume-page" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
+  // Without a verified code the preview is a watermarked demo and cannot be printed (see the print rules).
+  area.innerHTML = `<div class="resume-page${state.license.verified ? '' : ' demo'}" id="resume-preview">${buildResumeHTML(state.data, state.selectedTemplate, state.useAltColor)}</div>`;
+  syncChrome();
+  if (typeof renderEditPolish === 'function') renderEditPolish();
+  scheduleSave();
 }
 
 function buildResumeHTML(rawData, t, useAlt) {
-  const d = escapeDeep(rawData);
+  // Content decisions (what shows, in what order) come from ResumeCore so the preview, PDF and Word agree.
+  const d = escapeDeep(ResumeCore.clean(rawData));
   const accent = useAlt && t.accentAlt ? t.accentAlt : t.accent;
   const accentLight = useAlt && t.accentAltLight ? t.accentAltLight : t.accentLight;
   const accent2 = t.accent2 || accent;
   const s = t.style;
 
-  const contact = [d.contact?.phone, d.contact?.email, d.contact?.location, d.contact?.linkedin, d.contact?.website].filter(Boolean).join('  |  ');
+  const contact = ResumeCore.contactLine(d.contact);
+  const dates = (a, b) => ResumeCore.dateRange(a, b);
 
   // Header
   let header = '';
+  const nameHtml = d.name || 'Your Name';
   if (s === 'centered' || s === 'modern-center' || s === 'studio' || s === 'foreman') {
     const corner = `<div style="position:absolute;top:0;right:0;width:30pt;height:30pt;overflow:hidden;"><svg width="30" height="30" viewBox="0 0 30 30"><path d="M30 0 L30 30 L0 0 Z" fill="${accent}" opacity="0.85"/></svg></div>`;
-    header = `<div style="position:relative;text-align:center;margin-bottom:10pt;">${corner}<div style="font-family:${t.font};font-size:26pt;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#111;">${d.name||'Your Name'}</div><div style="font-size:8pt;color:#555;margin-top:4pt;letter-spacing:0.04em;">${contact}</div></div>`;
-  } else if (s === 'left-rule' || s === 'educator' || s === 'researcher') {
-    header = `<div style="margin-bottom:10pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.04em;color:#111;">${d.name||'Your Name'}</div><div style="height:1.5px;background:${accent};margin:4pt 0;"></div><div style="font-size:8pt;color:#555;">${contact}</div></div>`;
+    header = `<div style="position:relative;text-align:center;margin-bottom:10pt;">${corner}<div style="font-family:${t.font};font-size:26pt;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;color:#111;">${nameHtml}</div><div style="font-size:8pt;color:#555;margin-top:4pt;letter-spacing:0.04em;">${contact}</div></div>`;
+  } else if (s === 'left-rule') {
+    header = `<div style="margin-bottom:10pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.04em;color:#111;">${nameHtml}</div><div style="height:1.5px;background:${accent};margin:4pt 0;"></div><div style="font-size:8pt;color:#555;">${contact}</div></div>`;
   } else if (s === 'modern-left' || s === 'operator') {
-    header = `<div style="margin-bottom:8pt;border-bottom:3px solid ${accent2};padding-bottom:6pt;"><div style="font-family:${t.font};font-size:22pt;font-weight:900;letter-spacing:0.02em;color:#111;text-transform:uppercase;">${d.name||'Your Name'}</div><div style="font-size:8pt;color:#555;margin-top:3pt;">${contact}</div></div>`;
+    header = `<div style="margin-bottom:8pt;border-bottom:3px solid ${accent2};padding-bottom:6pt;"><div style="font-family:${t.font};font-size:22pt;font-weight:900;letter-spacing:0.02em;color:#111;text-transform:uppercase;">${nameHtml}</div><div style="font-size:8pt;color:#555;margin-top:3pt;">${contact}</div></div>`;
   } else if (s === 'editorial') {
-    header = `<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid ${accent};padding-bottom:6pt;margin-bottom:8pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.05em;">${d.name||'Your Name'}</div><div style="font-size:8pt;color:#555;text-align:right;max-width:45%;line-height:1.6;">${contact}</div></div>`;
+    header = `<div style="display:flex;justify-content:space-between;align-items:baseline;border-bottom:2px solid ${accent};padding-bottom:6pt;margin-bottom:8pt;"><div style="font-family:${t.font};font-size:24pt;font-weight:700;letter-spacing:0.05em;">${nameHtml}</div><div style="font-size:8pt;color:#555;text-align:right;max-width:45%;line-height:1.6;">${contact}</div></div>`;
   }
 
   function secHdr(title) {
@@ -791,8 +1266,6 @@ function buildResumeHTML(rawData, t, useAlt) {
       'studio': `text-align:center;background:${accentLight};color:${accent};`,
       'foreman': `text-align:center;background:${accentLight};color:${accent};`,
       'left-rule': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
-      'educator': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
-      'researcher': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
       'modern-left': `text-align:left;border-bottom:1px solid ${accent};color:${accent};`,
       'operator': `text-align:left;border-bottom:2px solid ${accent2};color:${accent};`,
       'editorial': `text-align:left;font-style:italic;font-variant:small-caps;border-bottom:1px solid ${accent};color:${accent};`,
@@ -805,155 +1278,119 @@ function buildResumeHTML(rawData, t, useAlt) {
     return (arr||[]).filter(Boolean).map(b=>`<div style="margin-bottom:2pt;padding-left:12pt;position:relative;font-size:8.5pt;line-height:1.55;"><span style="position:absolute;left:0;">•</span>${b}</div>`).join('');
   }
 
-  // Summary
-  let summary = '';
-  if (d.summary?.tagline || d.summary?.bullets?.length || d.summary?.skills?.length) {
-    summary = secHdr('Professional Summary') + `<div style="font-family:${t.font};font-size:8.5pt;line-height:1.55;color:#222;">
-      ${d.summary?.tagline ? `<div style="font-style:italic;margin-bottom:3pt;">${d.summary.tagline}</div>` : ''}
-      ${bullets(d.summary?.bullets)}
-      ${d.summary?.skills?.length ? `<div style="margin-top:4pt;font-size:8pt;color:#333;letter-spacing:0.03em;">${d.summary.skills.join(' – ')}</div>` : ''}
-    </div>`;
-  }
-
-  // Experience
-  let exp = '';
-  if (d.experience?.length) {
-    exp = secHdr('Experience') + (d.experience||[]).map(e=>`
+  const render = {
+    summary: () => `<div style="font-family:${t.font};font-size:8.5pt;line-height:1.55;color:#222;">
+      ${d.summary.tagline ? `<div style="font-style:italic;margin-bottom:3pt;">${d.summary.tagline}</div>` : ''}
+      ${bullets(d.summary.bullets)}
+      ${d.summary.skills.length ? `<div style="margin-top:4pt;font-size:8pt;color:#333;letter-spacing:0.03em;">${d.summary.skills.join(' – ')}</div>` : ''}
+    </div>`,
+    skills: () => `<div style="font-family:${t.font};font-size:8.5pt;line-height:1.55;color:#222;">${d.summary.skills.join(' – ')}</div>`,
+    experience: () => d.experience.map(e=>`
       <div style="margin-bottom:9pt;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;">
-          <div style="font-weight:700;font-size:9pt;color:#111;">${e.title||''}</div>
-          <div style="font-size:8pt;color:#555;white-space:nowrap;">${e.start||''}${e.end?' – '+e.end:''}</div>
+          <div style="font-weight:700;font-size:9pt;color:#111;">${e.title}</div>
+          <div style="font-size:8pt;color:#555;white-space:nowrap;">${dates(e.start, e.end)}</div>
         </div>
-        <div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${e.company||''}${e.location?' | '+e.location:''}</div>
+        <div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${e.company}${e.location?' | '+e.location:''}</div>
         ${e.summary?`<div style="font-size:8pt;color:#444;margin-bottom:2pt;font-style:italic;">${e.summary}</div>`:''}
         <div style="font-family:${t.font};">${bullets(e.bullets)}</div>
-      </div>`).join('');
-  }
-
-  // Education
-  let edu = '';
-  if (d.education?.length) {
-    edu = secHdr('Education') + (d.education||[]).map(e=>`
+      </div>`).join(''),
+    projects: () => d.projects.map(p=>`
+      <div style="margin-bottom:7pt;">
+        <div style="font-weight:700;font-size:9pt;color:#111;">${p.name}</div>
+        ${p.description?`<div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${p.description}</div>`:''}
+        <div style="font-family:${t.font};">${bullets(p.bullets)}</div>
+      </div>`).join(''),
+    volunteer: () => d.volunteer.map(v=>`
       <div style="margin-bottom:7pt;">
         <div style="display:flex;justify-content:space-between;align-items:baseline;">
-          <div style="font-weight:700;font-size:9pt;color:#111;">${e.degree||''}</div>
-          <div style="font-size:8pt;color:#555;">${e.date||''}</div>
+          <div style="font-weight:700;font-size:9pt;color:#111;">${v.title}</div>
+          <div style="font-size:8pt;color:#555;white-space:nowrap;">${dates(v.start, v.end)}</div>
         </div>
-        <div style="font-style:italic;font-size:8.5pt;color:#555;">${e.school||''}${e.location?' | '+e.location:''}</div>
+        <div style="font-style:italic;font-size:8.5pt;color:#555;margin-bottom:2pt;">${v.organization}${v.location?' | '+v.location:''}</div>
+        <div style="font-family:${t.font};">${bullets(v.bullets)}</div>
+      </div>`).join(''),
+    education: () => d.education.map(e=>`
+      <div style="margin-bottom:7pt;">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;">
+          <div style="font-weight:700;font-size:9pt;color:#111;">${e.degree}</div>
+          <div style="font-size:8pt;color:#555;">${e.date}</div>
+        </div>
+        <div style="font-style:italic;font-size:8.5pt;color:#555;">${e.school}${e.location?' | '+e.location:''}</div>
         ${e.honors?`<div style="font-size:8pt;color:#444;font-style:italic;">${e.honors}</div>`:''}
-      </div>`).join('');
-  }
-
-  // Certs
-  let certs = '';
-  if (d.certifications?.length) {
-    certs = secHdr('Certifications') + (d.certifications||[]).map(c=>`
+      </div>`).join(''),
+    certifications: () => d.certifications.map(c=>`
       <div style="display:flex;justify-content:space-between;margin-bottom:3pt;font-size:8.5pt;">
-        <div><span style="font-weight:600;">${c.name||''}</span>${c.org?' | '+c.org:''}</div>
-        <div style="color:#555;">${c.date||''}</div>
-      </div>`).join('');
-  }
+        <div><span style="font-weight:600;">${c.name}</span>${c.org?' | '+c.org:''}</div>
+        <div style="color:#555;">${c.date}</div>
+      </div>`).join(''),
+    awards: () => bullets(d.awards)
+  };
 
-  // Awards
-  let awards = '';
-  if (d.awards?.length) {
-    awards = secHdr('Awards & Recognition') + bullets(d.awards);
-  }
-
-  const sectionsOrder = s === 'foreman'
-    ? certs + exp + edu + awards
-    : s === 'scholar' || s === 'researcher'
-    ? summary + edu + exp + certs + awards
-    : summary + exp + edu + certs + awards;
-
-  return `<div style="font-family:${t.font};font-size:9pt;line-height:1.5;color:#222;background:#FDFCF9;">${header}${sectionsOrder}</div>`;
+  const body = ResumeCore.sections(d, t).map(sec => secHdr(sec.title) + render[sec.key]()).join('');
+  return `<div style="font-family:${t.font};font-size:9pt;line-height:1.5;color:#222;background:#FDFCF9;">${header}${body}</div>`;
 }
 
-// ── Export PDF ────────────────────────────────────────────────────────────────
-async function exportPDF() {
-  const el = document.getElementById('resume-preview');
-  if (!el) return;
-  document.getElementById('btn-pdf').disabled = true;
-  document.getElementById('btn-pdf').textContent = 'Exporting…';
-  try {
-   await html2pdf().from(el).set({
-  margin: 0,
-  filename: `${state.data?.name?.replace(/\s+/g,'_')||'resume'}.pdf`,
-  html2canvas: {
-    scale: 2,
-    useCORS: true,
-    scrollX: 0,
-    scrollY: -window.scrollY,
-    windowWidth: el.scrollWidth,
-    windowHeight: el.scrollHeight
-  },
-  jsPDF: { format: 'letter', unit: 'in', orientation: 'portrait' },
-  pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-}).save();
-  } finally {
-    document.getElementById('btn-pdf').disabled = false;
-    document.getElementById('btn-pdf').textContent = '⬇ PDF';
-  }
+// ── Export PDF / Word (licensed, rendered on the server) ──────────────────────
+// Files are produced by the export-resume function after it verifies the access code in the database. This page
+// holds no PDF/Word rendering code, so a download cannot be produced by changing anything in the browser.
+// Downloading is an authorization check only: it never uses one of the code's generations.
+function exportNotice(msg) {
+  const el = document.getElementById('export-notice');
+  el.textContent = msg || '';
+  el.style.display = msg ? 'block' : 'none';
 }
 
-// ── Export Word ───────────────────────────────────────────────────────────────
-async function exportWord() {
-  document.getElementById('btn-word').disabled = true;
-  document.getElementById('btn-word').textContent = 'Exporting…';
+let exporting = false;
+async function runExport(kind) {
+  if (exporting) return;
+  if (!state.data || !ResumeCore.hasContent(state.data)) { exportNotice('Add some details to your resume before downloading.'); return; }
+  if (!state.license.verified) {
+    pendingGeneration = () => runExport(kind);
+    showGate('Enter your access code to download your resume. Downloading never uses one of your generations.');
+    return;
+  }
+  exporting = true;
+  const btn = document.getElementById(kind === 'pdf' ? 'btn-pdf' : 'btn-word');
+  const label = btn.textContent;
+  btn.disabled = true; btn.textContent = 'Preparing…';
+  exportNotice('');
   try {
-    const { Document, Packer, Paragraph, TextRun, AlignmentType, ShadingType } = window.docx;
-    const d = state.data;
-    const accent = state.selectedTemplate.accent.replace('#','');
-    const contact = [d.contact?.phone,d.contact?.email,d.contact?.location,d.contact?.linkedin,d.contact?.website].filter(Boolean).join('  |  ');
-    const sections = [];
-
-    sections.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: (d.name||'').toUpperCase(), bold: true, size: 36, font: 'Georgia' })], spacing: { after: 60 } }));
-    sections.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: contact, size: 18, color: '555555', font: 'Georgia' })], spacing: { after: 200 } }));
-
-    const hdr = (title) => new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: title.toUpperCase(), bold: true, size: 19, color: accent, font: 'Georgia' })], shading: { type: ShadingType.SOLID, color: 'E8E8E8', fill: 'E8E8E8' }, spacing: { before: 200, after: 80 } });
-
-    if (d.summary?.tagline || d.summary?.bullets?.length) {
-      sections.push(hdr('Professional Summary'));
-      if (d.summary.tagline) sections.push(new Paragraph({ children: [new TextRun({ text: d.summary.tagline, italics: true, size: 18, font: 'Georgia' })], spacing: { after: 60 } }));
-      (d.summary.bullets||[]).filter(Boolean).forEach(b => sections.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: b, size: 18, font: 'Georgia' })], spacing: { after: 40 } })));
-      if (d.summary.skills?.length) sections.push(new Paragraph({ children: [new TextRun({ text: d.summary.skills.join(' – '), size: 18, font: 'Georgia' })], spacing: { after: 80 } }));
+    const res = await fetch('/.netlify/functions/export-resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: state.license.code, format: kind === 'pdf' ? 'pdf' : 'docx', template: state.selectedTemplate.id, alt: !!state.useAltColor, resume: state.data })
+    });
+    if (!res.ok) {
+      let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
+      const message = (json && json.error) || 'We couldn’t prepare your download. Please try again.';
+      if (res.status === 401 || res.status === 403) {
+        state.license = { code: null, verified: false, usesRemaining: null, maxUses: null };
+        store.remove(LICENSE_STORAGE_KEY);
+        renderLicenseBadge();
+        showGate(message);
+      } else {
+        exportNotice(message);
+      }
+      return;
     }
-    if (d.experience?.length) {
-      sections.push(hdr('Experience'));
-      d.experience.forEach(e => {
-        sections.push(new Paragraph({ children: [new TextRun({ text: e.title||'', bold: true, size: 18, font: 'Georgia' }), new TextRun({ text: `\t${e.start||''}${e.end?' – '+e.end:''}`, size: 18, font: 'Georgia', color: '555555' })], spacing: { before: 100, after: 40 } }));
-        sections.push(new Paragraph({ children: [new TextRun({ text: `${e.company||''}${e.location?' | '+e.location:''}`, italics: true, size: 18, font: 'Georgia', color: '555555' })], spacing: { after: 40 } }));
-        (e.bullets||[]).filter(Boolean).forEach(b => sections.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: b, size: 18, font: 'Georgia' })], spacing: { after: 40 } })));
-      });
-    }
-    if (d.education?.length) {
-      sections.push(hdr('Education'));
-      d.education.forEach(e => {
-        sections.push(new Paragraph({ children: [new TextRun({ text: e.degree||'', bold: true, size: 18, font: 'Georgia' }), new TextRun({ text: `\t${e.date||''}`, size: 18, font: 'Georgia', color: '555555' })], spacing: { before: 100, after: 40 } }));
-        sections.push(new Paragraph({ children: [new TextRun({ text: `${e.school||''}${e.location?' | '+e.location:''}`, italics: true, size: 18, font: 'Georgia' })], spacing: { after: 40 } }));
-        if (e.honors) sections.push(new Paragraph({ children: [new TextRun({ text: e.honors, italics: true, size: 18, font: 'Georgia', color: '444444' })], spacing: { after: 40 } }));
-      });
-    }
-    if (d.certifications?.length) {
-      sections.push(hdr('Certifications'));
-      d.certifications.forEach(c => sections.push(new Paragraph({ children: [new TextRun({ text: c.name||'', bold: true, size: 18, font: 'Georgia' }), new TextRun({ text: c.org?' | '+c.org:'', size: 18, font: 'Georgia' }), new TextRun({ text: `\t${c.date||''}`, size: 18, font: 'Georgia', color: '555555' })], spacing: { after: 60 } })));
-    }
-    if (d.awards?.length) {
-      sections.push(hdr('Awards & Recognition'));
-      d.awards.filter(Boolean).forEach(a => sections.push(new Paragraph({ bullet: { level: 0 }, children: [new TextRun({ text: a, size: 18, font: 'Georgia' })], spacing: { after: 40 } })));
-    }
-
-    const doc = new Document({ sections: [{ children: sections }] });
-    const blob = await Packer.toBlob(doc);
+    const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `${d?.name?.replace(/\s+/g,'_')||'resume'}.docx`;
-    a.click(); URL.revokeObjectURL(url);
+    a.href = url; a.download = `${ResumeCore.fileBase(state.data.name)}.${kind === 'pdf' ? 'pdf' : 'docx'}`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    exportedSnapshot = JSON.stringify(state.data);                  // downloaded: leaving no longer needs a warning
+    if (res.headers.get('X-Export-Notice') === 'simplified' && kind === 'pdf') exportNotice('Some characters outside standard Latin letters were simplified in the PDF. The Word download keeps them.');
+  } catch (e) {
+    exportNotice('We couldn’t reach the server. Downloading needs an internet connection. Your resume is still here, so please try again.');
   } finally {
-    document.getElementById('btn-word').disabled = false;
-    document.getElementById('btn-word').textContent = '⬇ Word';
+    exporting = false;
+    btn.disabled = false; btn.textContent = label;
   }
 }
+function exportPDF() { return runExport('pdf'); }
+function exportWord() { return runExport('word'); }
 
 // ── Tailor to Job Description ──────────────────────────────────────────────
 // Tailoring runs from the Edit tab, where the Paste tab's error box is hidden, so its messages show in the tailoring box.
@@ -961,6 +1398,15 @@ function showTailorError(msg) {
   const box = document.getElementById('match-summary-box');
   box.style.display = 'block';
   box.innerHTML = `<div style="color:#c0392b;">${esc(msg)}</div>`;
+}
+
+function undoTailor() {
+  if (!state.preTailor || state.aiBusy) return;
+  state.data = state.preTailor; state.preTailor = null; state.flags = new Set();
+  renderEditFields(); renderPreview();
+  const box = document.getElementById('match-summary-box');
+  box.style.display = 'block';
+  box.innerHTML = '<div>Restored your resume from before tailoring.</div>';
 }
 
 async function tailorToJob() {
@@ -975,16 +1421,18 @@ async function tailorToJob() {
     showTailorError('That job description is too long (limit 10,000 characters). Please paste the key sections only.');
     return;
   }
+  if (state.aiBusy) { if (state.aiBusy !== 'tailor') showTailorError(AI_BUSY_TEXT); return; }
+  if (!aiBegin('tailor')) return;
 
   const btn = document.getElementById('tailor-btn');
   btn.disabled = true;
   btn.textContent = 'Tailoring…';
 
   try {
-    const res = await fetch('/.netlify/functions/tailor-resume', {
+    const res = await aiFetch('/.netlify/functions/tailor-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken })
+      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken, clientGuard: ResumeCore.GUARD_VERSION })
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
@@ -995,7 +1443,13 @@ async function tailorToJob() {
     }
 
     const parsed = JSON.parse(json.result);
+    state.preTailor = JSON.parse(JSON.stringify(state.data));      // lets the customer undo this run
     state.data = parsed.resume;
+    // The server puts back to the customer's own wording any line that borrows a detail from another entry, inflates a role, or adds a
+    // beneficiary, result, number or skill that is not in the resume. It reports what it left out (without the AI's text).
+    const withheld = Array.isArray(json.withheld) ? json.withheld : [];
+    const unverified = Array.isArray(json.unverified) ? json.unverified : [];
+    state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
     renderEditFields();
     renderPreview();
 
@@ -1006,10 +1460,16 @@ async function tailorToJob() {
       <div style="margin-bottom:6px;"><strong>Match notes:</strong> ${esc(ms.notes || '')}</div>
       ${ms.matchedKeywords?.length ? `<div style="margin-bottom:4px;"><strong style="color:#2a7;">Matched:</strong> ${ms.matchedKeywords.map(esc).join(', ')}</div>` : ''}
       ${ms.missingKeywords?.length ? `<div><strong style="color:#a52;">Not covered:</strong> ${ms.missingKeywords.map(esc).join(', ')}</div>` : ''}
+      ${withheld.length ? `<div class="notice-box"><strong>${withheld.length} suggested change${withheld.length === 1 ? ' was' : 's were'} left out.</strong> They added details that are not in your resume, so your own wording was kept there.
+        <ul style="margin:6px 0 0 16px;">${withheld.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
+      ${unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'} before you use this resume.</strong> The AI added details that weren’t in your original (marked in yellow in Edit Fields). Keep only what is true.
+        <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
+      <button class="btn-secondary" style="margin-top:8px;" onclick="undoTailor()">Undo this tailoring</button>
     `;
   } catch (e) {
     showTailorError("Couldn't tailor to this job — please try again.");
   } finally {
+    aiEnd('tailor');
     btn.disabled = false;
     btn.textContent = 'Tailor to This Job';
   }

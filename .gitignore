@@ -1,3 +1,8 @@
 node_modules/
 *.csv
 .env
+# database backups contain customer data: never commit
+*.tar.enc
+*.dump
+resume-backup-*
+resume-generator-backups/

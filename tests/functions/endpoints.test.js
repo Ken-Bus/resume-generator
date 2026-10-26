@@ -14,7 +14,7 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
 
   const db = await H.freshDatabase('rg_fn');
   await db.admin(H.SUPABASE_DEFAULT_PRIVS);
-  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2);
+  await H.liveState(db); await H.applyMigration(db, H.MIG1); await H.applyMigration(db, H.MIG2); await H.applyMigration(db, H.MIG3); await H.applyMigration(db, H.MIG4);
   await H.seed(db, [{ code: 'FG-CUST-0001', uses: 3, assigned: true, buyer: 'customer@example.com' }]);
   const pool = db.pool('service_role', 40);
   const hs = loadHandlers(pool);
@@ -55,10 +55,10 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
 
   await t.test('parse: input limits => 413 before reservation or AI', async () => {
     reset(); const c = await seed();
-    assert.equal((await callParse(c, 'x'.repeat(30001))).statusCode, 413);
+    assert.equal((await callParse(c, 'x'.repeat(20001))).statusCode, 413);
     assert.equal((await hs.parse(post({ code: c, resumeText: 'x'.repeat(300000) }))).statusCode, 413);
     assert.equal(ai.calls, 0); assert.equal((await rsv(c)).length, 0); assert.equal(await uses(c), 5);
-    assert.equal((await callParse(c, 'x'.repeat(30000))).statusCode, 200);   // exactly at the limit is fine
+    assert.equal((await callParse(c, 'x'.repeat(20000))).statusCode, 200);   // exactly at the limit is fine
   });
 
   await t.test('parse: success charges exactly one use and returns result, counts and a tailoring token', async () => {
@@ -93,15 +93,18 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
     assert.equal((await db.admin('select failure_counted f from license_reservations where code=$1', [c])).rows[0].f, true);   // a timeout may have been billed
   });
 
-  await t.test('CONCURRENCY: 12 simultaneous valid requests on a 5-use code => exactly 5 succeed, 5 AI calls, never a 6th', async () => {
+  await t.test('CONCURRENCY: 12 simultaneous valid requests on a 5-use code => exactly ONE runs (one paid operation at a time), 11 are turned away uncharged; five in sequence use all five, never a sixth', async () => {
     reset(); const c = await seed(); ai.delayMs = 150;
     const rs = await Promise.all(Array.from({ length: 12 }, () => callParse(c)));
     const codes = rs.map(r => r.statusCode);
-    assert.equal(codes.filter(x => x === 200).length, 5);
-    assert.equal(codes.filter(x => x === 409).length, 7);
-    assert.equal(ai.calls, 5);                                   // blocked requests never reach the AI
-    assert.equal(await uses(c), 0);
-    ai.delayMs = 0; assert.equal((await callParse(c)).statusCode, 403);
+    assert.equal(codes.filter(x => x === 200).length, 1);
+    assert.equal(codes.filter(x => x === 409).length, 11);
+    assert.equal(ai.calls, 1); assert.equal(ai.maxInflight, 1);  // blocked requests never reach the AI
+    assert.equal(await uses(c), 4);
+    ai.delayMs = 0;
+    for (let i = 0; i < 4; i++) assert.equal((await callParse(c)).statusCode, 200);
+    assert.equal(await uses(c), 0); assert.equal(ai.calls, 5);
+    assert.equal((await callParse(c)).statusCode, 403);
     assert.equal(ai.calls, 5);
   });
 
@@ -129,16 +132,16 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
   });
 
   await t.test('commit retries safely: one transient commit failure still charges exactly once', async () => {
-    reset(); const c = await seed(); const realCommit = hs.license.commit; let n = 0;
-    hs.license.commit = async (...a) => { if (n++ === 0) { await realCommit(...a); throw new Error('response lost'); } return realCommit(...a); };
-    const r = await callParse(c); hs.license.commit = realCommit;
+    reset(); const c = await seed(); const realCommit = hs.license.commitWithResult; let n = 0;
+    hs.license.commitWithResult = async (...a) => { if (n++ === 0) { await realCommit(...a); throw new Error('response lost'); } return realCommit(...a); };
+    const r = await callParse(c); hs.license.commitWithResult = realCommit;
     assert.equal(r.statusCode, 200); assert.equal(await uses(c), 4);        // landed once, retried idempotently
   });
 
   await t.test('commit failing twice => 503, released, not charged', async () => {
-    reset(); const c = await seed(); const realCommit = hs.license.commit;
-    hs.license.commit = async () => { throw new Error('db down'); };
-    const r = await callParse(c); hs.license.commit = realCommit;
+    reset(); const c = await seed(); const realCommit = hs.license.commitWithResult;
+    hs.license.commitWithResult = async () => { throw new Error('db down'); };
+    const r = await callParse(c); hs.license.commitWithResult = realCommit;
     assert.equal(r.statusCode, 503); assert.equal(await uses(c), 5); assert.deepEqual((await rsv(c)).map(x => x.status), ['released']);
   });
 
@@ -172,8 +175,8 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
   await t.test('privacy: failure responses and logs never contain the license code, resume text or internal error detail', async () => {
     reset(); const c = await seed(); const logs = captureLogs();
     ai.mode = 'throw'; const r1 = await callParse(c);
-    ai.mode = 'ok'; const realCommit = hs.license.commit; hs.license.commit = async () => { throw new Error('SECRET_INTERNAL_DETAIL'); };
-    const r2 = await callParse(c); hs.license.commit = realCommit; logs.restore();
+    ai.mode = 'ok'; const realCommit = hs.license.commitWithResult; hs.license.commitWithResult = async () => { throw new Error('SECRET_INTERNAL_DETAIL'); };
+    const r2 = await callParse(c); hs.license.commitWithResult = realCommit; logs.restore();
     for (const r of [r1, r2]) for (const needle of [c, 'Jordan', 'Maple', 'SECRET_INTERNAL_DETAIL', 'socket hang up', SECRET]) assert.ok(!r.body.includes(needle), `response leaked ${needle}`);
     for (const l of logs.lines) for (const needle of [c, 'Jordan', 'Maple', SECRET]) assert.ok(!l.includes(needle), `log leaked ${needle}: ${l}`);
   });
@@ -282,12 +285,17 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
   });
 
   await t.test('B2 parse: concurrent failing bursts cannot exceed budget + uses remaining in total AI calls', async () => {
-    reset(); const c = await seed(); ai.mode = 'truncated'; ai.delayMs = 40;
-    for (let burst = 0; burst < 6; burst++) await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
+    // A burst of 20 simultaneous requests usually lets exactly one reach the AI, but not always: in about 1 in 100 bursts every request yields to another
+    // ("busy", nothing charged, no AI call) and in about 1 in 5 two run one after the other. So "6 bursts = 6 failures" is NOT guaranteed (documented
+    // in docs/MIGRATION_04_RELEASE_VERIFICATION.md section 4). Keep bursting until the database budget engages (HTTP 429), then check the real invariants.
+    reset(); const c = await seed(); ai.mode = 'truncated'; ai.delayMs = 40; let throttled = false;
+    for (let burst = 0; burst < 20 && !throttled; burst++) throttled = (await Promise.all(Array.from({ length: 20 }, () => callParse(c)))).some((r) => r.statusCode === 429);
+    assert.ok(throttled, 'the per-code failure budget engaged within 20 bursts');
     assert.ok(ai.calls <= 6 + 5, `AI calls ${ai.calls} must stay within budget (6) + uses remaining (5)`);
-    const before = ai.calls; await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
-    assert.equal(ai.calls, before);                                                // once throttled, no further AI calls at all
-    assert.equal(await uses(c), 5);
+    const before = ai.calls; const after = await Promise.all(Array.from({ length: 20 }, () => callParse(c)));
+    assert.ok(after.every((r) => r.statusCode === 429), 'once throttled every request is refused');
+    assert.equal(ai.calls, before, 'once throttled, no further AI calls at all');
+    assert.equal(await uses(c), 5, 'failed attempts never cost a generation');
   });
 
   await t.test('B2 parse: a throttled code costs a customer nothing and does not block the page flow (counts reported)', async () => {

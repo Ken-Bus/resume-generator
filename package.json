@@ -6,6 +6,8 @@
     "generate-codes": "node scripts/generate-codes.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.45.4"
+    "@supabase/supabase-js": "^2.45.4",
+    "docx": "^9.13.0",
+    "jspdf": "^4.2.1"
   }
 }

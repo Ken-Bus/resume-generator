@@ -12,7 +12,9 @@ All billable work happens server-side. The browser never decides whether a gener
 4. Only after a validated result does it **commit** the reservation (`commit_license_use`), which decrements `licenses.uses_remaining` exactly once. Commit is idempotent.
 5. If the function crashes or is killed mid-call, nobody releases the reservation, but it has a short **lease** (45 s by default) and simply lapses. A failure can never permanently cost a use.
 6. A successful parse returns a **signed tailoring token** (HMAC, 2-hour life) tied to that paid generation. **`tailor-resume`** requires it, costs no extra generation, and allows at most 5 runs per paid generation (counted atomically in the database).
-7. "Try Sample" loads a static sample in the browser. It makes no AI call.
+7. "Try Sample" loads a static sample in the browser. It makes no AI call. Its preview is watermarked and not printable, and it cannot be downloaded (see 9).
+8. **`polish-resume`** ("Polish My Resume with AI", after the guided questions) is charged **exactly like Analyze**: one reservation, one AI call, one commit only after a validated result, release on any failure. **The owner-approved collective rule decides whether the result is worth a generation** (`_lib/scoring.js`, deterministic, no AI judgement): the integrity guard first puts every unsupported line back to the customer's own wording (so rejected material earns nothing), then the ACCEPTED changes are scored: a substantial, factually supported rewrite is **3 points**; each genuine spelling, grammar or tense correction, each removed repetition and each vague word made specific is **1 point** (the same underlying fix is counted once); capitals, punctuation, spacing, re-ordering, synonym swaps, single added words and anything unsupported are **0**. **3 points or more: the improvements are applied and exactly ONE generation is charged. Fewer than 3 (owner clarification 2026-10-23): the accepted improvements are STILL APPLIED, free: the reservation is released and nothing is charged, no tailoring token is issued (nothing was paid) and the customer's earlier token stays valid. If nothing real was accepted (nothing changed, only capitals/punctuation, or every change was withheld) nothing is applied.** Unsupported changes are rejected in every case. Free results of both kinds are capped together per code (`_lib/nochange.js`: 3 per 15 minutes, 10 per day). A charged result returns the signed tailoring token, so Tailor stays free, token-gated and capped at 5 runs. **One paid operation at a time per code applies to Analyze and Polish alike** (`_lib/inflight.js`): a double-click, a second tab or a retry while one runs is rejected uncharged. An optional `requestId` makes a retry of a finished Analyze or Polish return the same result without a second charge (best-effort, in memory on the instance that served it, 5 minutes: `_lib/replay.js`; a retry that lands on another instance is a normal request protected by the one-at-a-time check and the balance).
+9. **`export-resume`** (PDF and Word downloads) is an **authorization check, not a generation**. The files are rendered **on the server**, and only after the access code is found in the `licenses` table (checked on every request; no bearer token to replay, a deleted code stops working at once). The browser holds no PDF/Word rendering code. It never reserves, commits or releases anything and never calls the AI. A code with all five generations used can still download (the code is the purchase). Bad codes are limited per client and good codes per code (best-effort, in memory: `_lib/rate.js`). The function sends no CORS headers (same-origin only) and never logs codes or resume text. **Resume text now passes through this function to be rendered; it is not stored or logged.**
 
 ### Bounded failure protection
 
@@ -32,6 +34,7 @@ Failures are free to the customer, so they must not be free to abuse. Both limit
 2. For a **new** project: run `supabase/schema.sql` in the SQL editor. It is idempotent and creates the `licenses` table, the reservation table and functions, and applies the lock-down below.
 3. For the **existing production** project: do **not** re-run all of `schema.sql`. Apply only the migrations you have approved, **in this order relative to the deploy**:
    - `supabase/migrations/20261020_01_license_reservations.sql` — additive (new table and functions). **Before** the code deploys.
+   - `supabase/migrations/20261023_03_request_idempotency.sql` — additive (review package: `docs/MIGRATION_03_REVIEW_PACKAGE.md`; rollback: `supabase/rollback/20261023_03_rollback.sql`); durable duplicate-charge protection (a lost reply that is retried on another server instance is never charged twice). **Before** the code that sends request keys deploys; the currently deployed code keeps working with it. Full order, compatibility, backup and rollback: `docs/MIGRATION_03_DEPLOYMENT.md`. **Needs the owner's approval; not applied anywhere yet.**
    - `supabase/migrations/20261020_02_revoke_public_execute_consume_license_use.sql` — one `revoke` statement that stops the public `anon`/`authenticated` roles from calling `consume_license_use`. **After** the deploy has been smoke-tested. The new code never calls that function, so applying it last cannot break anything, and applying it earlier would only add risk to the still-running old code for no benefit.
 4. In Project Settings → API, copy the **Project URL** and the **service_role** key (not the `anon` key). Nothing in this app uses the `anon` key.
 5. **A merged change to `schema.sql` is not live until it is applied in Supabase.** After applying anything, re-run the read-only checks in §5.
@@ -40,7 +43,11 @@ The lock-down: `licenses` and `license_reservations` have RLS enabled with **no 
 
 ## 2. Netlify environment variables
 
+_No new variables are needed for downloads or AI Polish._ They use the existing `SUPABASE_*`, `ANTHROPIC_API_KEY`, `AI_TIMEOUT_MS` and `TAILOR_TOKEN_SECRET`. The new functions bundle `jspdf` and `docx` (about 19 MB zipped, well inside Netlify's 50 MB function limit; packaging verified with `@netlify/zip-it-and-ship-it`).
+
 Set in Site configuration → Environment variables. `SUPABASE_*` and `ANTHROPIC_API_KEY` must be set in **all four deploy contexts** (Production, Deploy Previews, Branch deploys, Local development), or some code paths will keep running on a stale or missing value. Netlify applies a variable **at deploy time**, so redeploy after changing any of them.
+
+_AI model, thinking setting, caps and the privacy-safe `ai-usage` log: see `docs/AI_MODEL_AND_USAGE.md`. The model is `claude-sonnet-5-5`; no new environment variable is needed._
 
 | Variable | Required | Purpose |
 |---|---|---|
@@ -50,6 +57,8 @@ Set in Site configuration → Environment variables. `SUPABASE_*` and `ANTHROPIC
 | `AI_TIMEOUT_MS` | **set to `50000`** (§2.3) | Abort an AI call after this long. Must sit below the Netlify function timeout (documented as 60 s) |
 | `TAILOR_TOKEN_SECRET` | yes, for tailoring | Random secret, at least 32 characters (§2.1). If missing or short, analysis still works but tailoring is disabled and a warning is logged |
 | `TAILOR_TOKEN_SECRET_PREVIOUS` | only during a rotation | The old secret, still **accepted** (never used to sign) so customers are not logged out (§2.1) |
+| `RESULT_ENCRYPTION_KEY` | yes, once migration 04 is live | Dedicated random secret, at least 32 characters, **different from** `TAILOR_TOKEN_SECRET`. Without it Analyze and AI Polish are refused (503) before any AI call and nothing is charged. Set it BEFORE deploying this version. See `docs/MIGRATION_04_RECOVERY_PACKAGE.md` |
+| `RESULT_ENCRYPTION_KEY_PREVIOUS` | only during a rotation | The old key, accepted for opening existing copies (they expire within 24 h) |
 | `CODE_SUPPLY_THRESHOLD` | optional (default 20) | Replenish when fewer unassigned codes remain |
 | `CODE_SUPPLY_BATCH_SIZE` | optional (default 100) | Codes generated per replenishment |
 | `ALERT_WEBHOOK_URL` | optional | Any HTTP webhook receiver for the zero-supply alert. Unset = only written to the function log |
@@ -174,7 +183,8 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 2. Click "Try a free sample". The browser's Network tab must show **no** request to `/.netlify/functions/*`, and the sample resume appears.
 3. Enter a malformed code (`abc`): the "doesn't look right" message appears.
 4. Enter a well-formed but made-up code (`FG-ZZZZ-9999`): "We couldn't find that code."
-5. **Do not** enter any real code (customer or personal) on a preview, and do not press Analyze with one.
+5. With the sample loaded, click PDF or Word: the access-code gate appears and the Network tab shows **no** request to `/.netlify/functions/*`. The preview shows a "SAMPLE PREVIEW" watermark.
+6. **Do not** enter any real code (customer or personal) on a preview, and do not press Analyze, Polish or a download with one.
 
 ### Production smoke test (minimal, personal code only)
 
@@ -203,6 +213,7 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
   4. **No customer record changed:** the customers-only fingerprint equals the one you captured. The one legitimate exception is a **real order delivered by the Apps Script during your test** (it assigns a code and sets a buyer email). Check it with `select count(*) from licenses where assigned_at >= '<test_start_utc>';`: **0** means nothing happened, so any fingerprint change is a failure; **1** means a real order was delivered, which is expected and not a failure (re-capture the baseline and continue). Any other change is a failure.
   5. **No permission or schema change:** the privilege query gives the same answer as after migration 01 (migration 02 has **not** been applied yet).
   6. **Other customers are fine to appear:** a real customer using the site during the test adds reservation rows **for their own codes**. Those are expected and are never part of this check.
+- **Downloads (no writes, no AI):** with the same personal code, download one PDF and one Word file from the Edit Fields tab; `uses_remaining` and the reservation rows must not change. (Do **not** press Polish in the smoke test: it would spend a second generation.)
 - **Also check (zero AI calls, no writes):** a made-up code and a missing code are refused with friendly messages; the Netlify function log shows no `TAILOR_TOKEN_SECRET` warning; the AI provider's usage page shows **2** new calls from your test (any extra calls are real customers).
 - **Abort and roll back if:** Analyze with your valid code fails or runs longer than the timeout you recorded; the counter drops without a result, or by more than 1; any of checks 1–5 fails; the function log shows `reserve_license_use is missing` (migration 01 was not applied) or repeated 5xx.
 
@@ -218,9 +229,80 @@ Netlify builds a Deploy Preview for every pull request, and **previews use produ
 | **After the old AI key has been revoked** | Do **not** "Publish deploy" an older deploy expecting AI to work: it holds the revoked key. Fix forward, or set the new key and redeploy from Git. | This is why the old key is revoked last. |
 | **Data** | There is no data migration. Balances are only written by `commit_license_use` (new) and `consume_license_use` (old) on the same column, and reservations are disposable. If a customer reports a lost use, confirm it in `license_reservations`, then: `update licenses set uses_remaining = least(uses_remaining + 1, max_uses) where code = '<CODE>';` | |
 
+## 5b. Branch-deploy acceptance test (before merging a feature branch)
+
+A **branch deploy** builds a pushed branch at its own URL (`<branch>--<site-name>.netlify.app`) without publishing it to production. It uses the **"Branch deploys"** environment-variable context and, here, the **production database**, so treat it as production data with a non-production URL.
+
+**Before the first build** (variables apply at deploy time):
+
+| Variable (Branch deploys context) | Value |
+|---|---|
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Same as production (server-only; mark as secrets). Without them every function fails. |
+| `ANTHROPIC_API_KEY` | Same as production, or a separate key with its own spend limit that you revoke afterwards. Without it Analyze, Polish and Tailor return "Server error". |
+| `AI_TIMEOUT_MS` | `50000` |
+| `TAILOR_TOKEN_SECRET` | A **new** random value (32+ characters), **not** the production one. Both environments share one database, so a shared secret would let a token from the branch be honored on production. Without it Polish still charges but issues no Tailor token. |
+
+**Safety:**
+- Enable branch deploys for **individual branches only** (the one under test), not "All".
+- Use only your personal code; never a customer's. Polish spends 1 of its 5 generations, so confirm it has at least 3 left first.
+- Keep production auto-publishing locked.
+- Scheduled functions (`check-code-supply`) run only on the published production deploy.
+
+**If Netlify offers no Retry/Redeploy for a branch deploy,** push a documentation-only commit to the branch: any push builds it again, with the environment variables as they are at that moment.
+
+**Variables are read when the deploy is BUILT.** Adding or fixing one afterwards changes nothing until you redeploy that branch ("Trigger deploy", "Clear cache and deploy site"). A missing `ANTHROPIC_API_KEY` is the commonest cause of "Server error, please try again. (ref P101)" on a branch deploy: the function stops before it reserves anything, so nothing is charged.
+
+**Free configuration check from the browser console on the branch site** (spends nothing, reads no data, shows no secrets):
+```js
+fetch('/.netlify/functions/polish-resume',{method:'POST',body:'{}'}).then(r=>r.status)   // 500 = AI key missing for this deploy; 401 = present
+fetch('/.netlify/functions/tailor-resume',{method:'POST',body:'{}'}).then(r=>r.status)  // 500 = AI key missing; 503 = TAILOR_TOKEN_SECRET missing/short; 401 = both present
+```
+
+**Publication and security-header checks (free; do these on the branch deploy BEFORE anything else):** the repository root is published, so these paths must answer 404 and the page must still load. In a terminal (replace the host):
+```
+for p in /SETUP.md /package.json /netlify.toml /supabase/schema.sql /scripts/generate-codes.js /lib/codes.js /docs/AI_POLISH.md /tests/package.json /netlify/functions/polish-resume.js /netlify/functions/_lib/integrity.js /templates/delivery-instructions.html; do printf '%s ' $p; curl -s -o /dev/null -w '%{http_code}\n' https://<branch>--<site>.netlify.app$p; done   # every line must end in 404
+for p in / /index.html /wizard.js /resume-core.js /templates.js; do printf '%s ' $p; curl -s -o /dev/null -w '%{http_code}\n' https://<branch>--<site>.netlify.app$p; done                                           # every line must end in 200
+curl -sI https://<branch>--<site>.netlify.app/ | grep -iE 'content-security-policy|x-frame-options|referrer-policy|permissions-policy|x-content-type-options'                                              # all five present
+```
+Then open the page with the browser console open and click through the gate, the guided builder and Try Sample: there must be **no** "Refused to ..." / Content-Security-Policy messages. If the page breaks, remove the `Content-Security-Policy` line from `netlify.toml` and redeploy; the other protections do not depend on it. Also open `https://<site>/.netlify/functions/check-code-supply` once (production after release is side-effect free when 20 or more codes remain; on a branch deploy it uses the production database): it should not return a code count to an anonymous visitor (see `docs/CODE_SUPPLY_EXPOSURE.md`).
+
+**Which build is serving? (free; do this before every paid test, no Console needed).** Open `https://<branch-site>/.netlify/functions/polish-resume` in a browser tab. It shows `{"error":"Method Not Allowed","guard":{"version":"entry-scope-withhold-6",...}}` (a plain visit is a GET: it never reaches a licence, a reservation or the AI). That is the SERVER's version. The page's version: Console `ResumeCore.GUARD_VERSION` (or open `/resume-core.js` and search for `GUARD_VERSION`). Both must show the current value. A plain `Method Not Allowed` with no `guard` means an older deploy is serving. Also confirm in Netlify > Deploys that the branch's published deploy is the latest commit. A `401` in the Network tab from a POST with no code is normal and means "no access code".
+
+**Zero-cost checks right after the build (no generation spent):**
+1. Enter `FG-ZZZZ-9999` at the gate: "We couldn't find that code." (proves the Supabase variables work).
+2. Open `/.netlify/functions/export-resume` and `/.netlify/functions/polish-resume` in the browser: each answers "Method Not Allowed" (proves the functions deployed).
+3. Click Try Sample, then PDF: the access-code gate appears and nothing downloads.
+
+**Then, with your personal code:** download a PDF and a Word file (counter unchanged); run one Polish (if it improves the wording the counter drops by exactly 1 and AI-added lines are yellow; if the page says "No meaningful improvements were found" or "The AI's suggestions were not used" the counter must not move, and the Netlify log shows ref P201 or P202; any "left out" list must name where and why without showing AI text); run one Tailor (works, counter unchanged); repeat a build and a download on a phone.
+
+**Cleanup:** remove the branch from the branch-deploy list, delete the branch-only `TAILOR_TOKEN_SECRET`, and revoke any test API key.
+
+### Reading a "Server error ... (ref XXXX)" message
+
+Customers see a friendly message with a short reference. The same reference is written to the Netlify function log next to the reason (never a code, a secret or resume text), so you can tell what happened without guessing. In every case below **nothing is charged and no reservation is left held**.
+
+| Ref | Function | Meaning | Usual fix |
+|---|---|---|---|
+| P101 | polish-resume | `ANTHROPIC_API_KEY` is not set for this deploy's context | Add it for that context, then redeploy |
+| P102 | polish-resume | Database settings (`SUPABASE_URL` / key) missing | Add them for that context, then redeploy |
+| P103 | polish-resume | The reservation call to the database failed | Check Supabase status; confirm migrations 01 and 03 are applied (a request carrying a request id needs 03) |
+| P104 | polish-resume | The database returned an unexpected reservation answer | Check the function log; report it |
+| P105 | polish-resume | The duplicate-request check failed (the reservation is released) | Check Supabase status / table access for `service_role` |
+| P106 | polish-resume | The AI finished but the charge could not be recorded (released, uncharged) | Check the counter, then try again |
+| P107 | polish-resume | Our own integrity check failed on the AI's answer (released uncounted, nothing charged, no AI text shown) | Report it: the function log has the reason code |
+| P201 | polish-resume | Not an error: the AI found nothing meaningful to improve (unchanged, capitals only, or only one-word touch-ups); the reservation was released and nothing was charged | None. Counts only are logged (reworded / minor / cosmetic / unchanged / dropped) |
+| P202 | polish-resume | Not an error: every change the AI suggested was withheld by the integrity checks (borrowed detail, inflated role, added beneficiary or result, blank filled in); released, nothing charged | None. Counts only are logged. A pattern may mean the prompt needs another look |
+| A107 | parse-resume | Our own check failed on the parsed resume (released uncounted, nothing charged) | Report it |
+| A201 | parse-resume | Not an error: contact details or dates the AI produced were not in the pasted text and were removed | None |
+| T107 | tailor-resume | Our own integrity check failed (the run is given back, nothing charged) | Report it |
+| E101 | export-resume | The license lookup failed | Check Supabase status and the database settings |
+| E102 | export-resume | The file could not be rendered | Check the function log; report it |
+
+Where to look: Netlify, Logs & metrics, Functions, the function name, the latest invocation. Lines start with `polish-resume:` or `export-resume:`.
+
 ## 6. Tests
 
-`tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`. Run them before every release.
+Run `npm install` at the repo root first (the export function's `jspdf` and `docx` are real dependencies, installed by Netlify at build time) and again in `tests/`. `tests/` is a separate package, so Netlify builds never install its dependencies. It runs the real handlers against a **disposable local Postgres** (never Supabase) with the AI provider mocked, plus browser tests of the customer page. See `tests/README.md`. Run them before every release.
 
 ## 7. After a security release: older deployments
 
