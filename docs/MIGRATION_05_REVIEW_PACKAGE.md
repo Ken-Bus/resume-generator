@@ -104,7 +104,8 @@ Residual, accepted: a customer could Analyze a very short text and spend the inc
 - **Operational consequences of that finding:**
   1. After 05 is applied, use `docs/MIGRATION_05_POSTCHECK.sql`. The older `docs/MIGRATION_04_POSTCHECK.sql` will report FAIL ("a migration 03 object is missing") because it looks for the 7-argument reserve. That FAIL is expected after 05.
   2. Do not re-run migration 04 after 05. It would stop safely with "cannot change return type of existing function" and the transaction rolls back; nothing is damaged. 05 itself is rerunnable.
-  3. `supabase/schema.sql` (the fresh-install snapshot) does not include 05. A fresh install would apply the migrations in order, not that file. Updating it is deferred (it has its own test that compares it with the migrations).
+  3. **Roll back in reverse order only: 05, then 04, then 03.** The 03 and 04 rollback files assume 05 is not there. Run after 05 they would leave two `reserve_license_use` versions (5 and 8 arguments) and the 03 rollback test matrix ("state R3") then shows keyed steps refused with 503 (nothing charged). This was seen when 05 was layered under the compatibility suite and is expected; it is a rollback-order rule, not a defect in 05.
+  4. `supabase/schema.sql` (the fresh-install snapshot) does not include 05. A fresh install would apply the migrations in order, not that file. Updating it is deferred (it has its own test that compares it with the migrations).
 
 ## 9. Approval points before any production step
 
