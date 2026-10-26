@@ -474,6 +474,46 @@ function assessChange(before, after) {
   return res;
 }
 
+// ── lines that only repeat what the resume already says ─────────────────────────────────────────────────────────────
+// A brand-new line (it shares no words with any old line of its group and is not a split of one) whose content words are ALL already somewhere in the
+// customer's own resume says nothing new: it only repeats existing skills or facts ("Communication, teamwork and organization skills." beside a skills
+// list that already has them). Such a line is never worth a generation and is not applied (repetition makes a resume worse). A genuine split of one line,
+// and any line with at least one content word the resume did not have, are untouched, so real rewrites keep scoring as approved. Pure.
+const allStems = (r) => new Set(textLines(r).flatMap((l) => contentStems(l.text)));
+// What the test needs besides the line itself: every content word of the customer's resume, and the groups in which an old line was modified or dropped
+// (only there can a new line be a real SPLIT of an old one; beside old lines that are all still present as written, it is just a copy of them).
+const restatementContext = (before, items) => ({ have: allStems(before), touched: new Set(items.filter((it) => ['rewrite', 'minor', 'dropped'].includes(it.kind)).map((it) => it.group)) });
+const isRestatement = (item, ctx) => item.kind === 'added' && (item.split ? !ctx.touched.has(item.group) : contentStems(item.b).every((st) => known(ctx.have, st)));
+// -> { resume, pruned: [group...] }: `after` without its restating additions (list lines only: bullets and skills).
+function pruneRestatedAdditions(before, after) {
+  const items = changeItems(before, after); const ctx = restatementContext(before, items); const drop = new Map();
+  items.forEach((it) => { if (isRestatement(it, ctx)) { const k = `${it.group}|${it.b}`; drop.set(k, (drop.get(k) || 0) + 1); } });
+  const out = JSON.parse(JSON.stringify(after)); const pruned = [];
+  if (!drop.size) return { resume: out, pruned };
+  const take = (list, group) => arr(list).filter((x) => { const k = `${group}|${s(x).trim()}`; if ((drop.get(k) || 0) > 0) { drop.set(k, drop.get(k) - 1); pruned.push(group); return false; } return true; });
+  if (isObj(out.summary)) {
+    if (Array.isArray(out.summary.bullets)) out.summary.bullets = take(out.summary.bullets, 'summary.bullets');
+    if (Array.isArray(out.summary.skills)) out.summary.skills = take(out.summary.skills, 'summary.skills');
+  }
+  SECTIONS_.forEach((k) => arr(out[k]).forEach((e, i) => { if (isObj(e) && Array.isArray(e.bullets)) e.bullets = take(e.bullets, `${k}.${i}.bullets`); }));
+  return { resume: out, pruned };
+}
+
+// ── a level of experience the customer never stated ─────────────────────────────────────────────────────────────────
+// "Entry-level" is honest for someone who chose the first-resume path and listed no work (guardResume options.entryLevel === true). For anyone else, or
+// when the customer did not say it, a line that GAINS such a phrase describes the person in a way they did not choose, so it is put back.
+const LEVEL_RE = /\b(entry[- ]level|beginner|first[- ]time|no (?:prior |previous |work )?experience)\b/gi;
+const levelNorm = (t) => s(t).toLowerCase().replace(/-/g, ' ');
+function levelClaims(original, resume) {
+  const said = levelNorm(textLines(original).map((l) => l.text).join(' '));
+  const out = [];
+  textLines(resume).forEach((l) => {
+    const fresh = (l.text.match(LEVEL_RE) || []).filter((m) => !said.includes(levelNorm(m)));
+    if (fresh.length) out.push({ where: l.where, kind: 'claim', text: l.text, reasons: [`a level of experience you did not state: “${fresh[0]}”`] });
+  });
+  return out;
+}
+
 // ── the accepted result: guard, withhold, sanitise ──────────────────────────────────────────────────────────────────
 // reconcile() FLAGS unsupported lines. guardResume() goes one step further and returns only what is accepted: every flagged line is put
 // back to the customer's own wording (it is "withheld"), the result is re-checked until nothing is flagged, and only known resume fields
@@ -652,6 +692,10 @@ function guardResume(original, output, options = {}) {
     withheld.push(...w.withheld); current = w.resume;
     if (pass === 3) current = JSON.parse(JSON.stringify(orig));          // cannot settle: fall back to the customer's own wording
   }
+  if (options.mode === 'polish' && options.entryLevel !== true) {
+    const lv = levelClaims(orig, current);
+    if (lv.length) { const w = withholdFlagged(orig, current, lv, {}); withheld.push(...w.withheld); current = w.resume; }
+  }
   if (options.mode === 'polish') {
     restoreDropped(orig, current);
     // The guard's own tidy: a list is cleaned of repeats only where the customer's list had none to begin with (repeats the customer wrote are the AI's to remove, and are scored as such).
@@ -703,4 +747,4 @@ function groundAnalyzed(sourceText, parsed) {
   return { resume, unverified, removed };
 }
 
-module.exports = { changeItems, classifyEdit, wordDiff, diffHunks, lineKey, STOP, stem, nearSpelling, known, covered, contentStems, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };
+module.exports = { changeItems, classifyEdit, wordDiff, diffHunks, lineKey, STOP, stem, nearSpelling, known, covered, contentStems, reconcile, reasonsFor, analyse, newContentWords, stemSet, numbersIn, assessChange, allStems, restatementContext, isRestatement, pruneRestatedAdditions, levelClaims, scopedReasons, guardResume, withholdFlagged, groundAnalyzed };

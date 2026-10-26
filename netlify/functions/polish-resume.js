@@ -95,7 +95,15 @@ const AUDIENCE = {
 const AVOID_WORDS = 'motivated, passionate, dynamic, results-driven, proven track record, hard-working, detail-oriented, self-starter, team player, go-getter, ' +
   'dedicated, committed, exceptional, excellent, outstanding, highly skilled, extensive experience, successfully, spearheaded, leveraged, utilized, synergy, fast-paced environment';
 
-function buildPrompt(source, target, profile) {
+// Entry-level wording is offered ONLY when the customer chose the first-resume path AND listed no work history (see isEntryLevel). Everyone else is told not to
+// describe their level at all, and the integrity guard puts back any line that gains such a phrase (integrity.levelClaims).
+const ENTRY_LEVEL_RULE = '19. ENTRY-LEVEL WORDING (this person chose the first-resume path and listed no work history). You MAY put the plain word "entry-level" before the position they said they want ("Seeking an entry-level Customer Service Associate position"), and you MAY add the strengths THEY listed to that one headline sentence ("..., with communication and teamwork skills"). Use no other description of the person: not "first-time", "recent graduate", "student", "beginner" or "eager to learn". If the headline is already clear, change only what is wrong.';
+const NO_LEVEL_RULE = '19. Do not describe the person as entry-level, a beginner or first-time, and do not mention their level of experience, unless they wrote it themselves.';
+function isEntryLevel(requested, source) {
+  return requested === 'first' && !(Array.isArray(source.experience) && source.experience.length > 0);
+}
+
+function buildPrompt(source, target, profile, entryLevel = false) {
   return `You are a careful resume editor. You will receive a person's OWN answers as structured JSON. Rewrite them so an employer can read them quickly and understand what the person did, in natural, professional, plain English.
 
 ${AUDIENCE[profile]}
@@ -121,7 +129,8 @@ Improve what is actually said, not how impressive it sounds. Turn the person's o
 15. Keep the person's own distinctive words (names of tools, equipment, places, subjects) and their exact meaning. Keep their meaning exactly; a reworded line must say the same thing as the original, only more clearly. Reuse the person's own words for what they did and what they worked with: change a word only to correct it (spelling, word form, tense) or to replace a vague word, never to swap it for a synonym or a more impressive verb ("swept" stays "swept", "watched the kids" does not become "supervised the children").
 16. Use natural, modest, professional language that is also plain, the way a calm, careful person would say it to an interviewer. No corporate jargon and no inflated verbs. Do not add praise or personality words. Avoid these generic phrases unless the person wrote them themselves: ${AVOID_WORDS}. Do not add quality adjectives such as "excellent", "strong" or "effective".
 17. ${target ? `The person is looking for: "${target}". Where it is truthful, put the most relevant facts first and choose wording that fits that kind of work, using only the facts above.` : 'No target job was given, so keep the wording general.'}
-18. The one-line introduction (summary.tagline) may only restate the goal and strengths the person gave, with spelling and grammar fixed; if they gave neither, leave it as it is. Do not write a summary paragraph. Skills: fix spelling and capitals and remove exact repeats; never add a skill.
+18. HEADLINE AND SKILLS (summary.tagline, summary.bullets, summary.skills). The one-line introduction may restate the goal and strengths the person gave, with spelling and grammar fixed; if they gave neither, leave it as it is. Do not write a summary paragraph. A self-rating such as "Good at communication" may be restated as a plain skill ("Communication skills"). Keep three things apart and never blur them: (a) a skill the person says they HAVE stays a skill statement, never an action, a result or a level ("Communication skills", never "Resolved customer issues using communication"); (b) something they WANT TO LEARN or are interested in stays an interest ("Interested in learning Excel", never "Skilled in Excel"); (c) what they actually DID is only what their job, project or volunteer lines say. Never add a trait ("reliable", "eager", "motivated"), a goal the person did not state ("opportunities to learn or grow"), a number, or a skill that is not listed. Do not add a new line that only repeats skills or facts already shown elsewhere: improve the existing line in place. Skills: fix spelling and capitals and remove exact repeats; never add a skill.
+${entryLevel ? ENTRY_LEVEL_RULE : NO_LEVEL_RULE}
 
 EXAMPLES of the difference (fictional)
 - Answer: "I load trucks and unloaded them and also i count the stock every week then I reported damaged boxs to the supervisor"
@@ -155,7 +164,16 @@ EXAMPLES of the difference (fictional)
   Bad: "Led a school-wide drive that fed 200 families." (adds leadership, scale and a metric)
 - Answer: "Operated the register and counted the cash drawer at closing."
   Good: leave this line exactly as written (already specific, active and clear)
-
+- Answer: skills "Communication, Teamwork" and a summary bullet "Good at communication and teamwork."
+  Good: improve the bullet in place: "Communication and teamwork skills."
+  Bad: "Resolved customer questions using communication and teamwork." (a skill is not something the person did), or a NEW bullet that only repeats the skills already listed
+- Answer: headline "Interested in learning Excel."
+  Good: leave it as written
+  Bad: "Skilled in Excel." or "Proficient in Excel." (an interest in learning is not a skill)
+${entryLevel ? `- Answer: headline "Seeking a Customer Service Associate position." (first resume, no work history)
+  Good: "Seeking an entry-level Customer Service Associate position." (adds only the level the person is at)
+  Bad: "Seeking a Customer Service Associate position with opportunities to develop professional skills." (a goal the person never stated), or "Reliable, eager high school graduate seeking ..." (traits and a status they did not give)
+` : ''}
 Keep exactly the same JSON schema and keys as the input. Return ONLY valid JSON, no markdown fences, no commentary.
 
 Resume JSON:
@@ -201,6 +219,8 @@ exports.handler = async function(event) {
   if (!limits.fitsOutput(JSON.stringify(source).length, cfg.TAILOR_MAX_TOKENS)) return json(413, { error: MSG.tooLongInput });
   const target = typeof rawTarget === 'string' ? rawTarget.replace(/["\\`]/g, "'").replace(/\s+/g, ' ').trim().slice(0, 120) : '';
   const profile = chooseProfile(typeof rawProfile === 'string' ? rawProfile : '', source);
+  const entryLevel = isEntryLevel(typeof rawProfile === 'string' ? rawProfile : '', source);          // explicit first-resume choice AND no work history
+  const inputKey = inputOf(source, target, entryLevel ? 'first+entry' : profile);
   const rid = replay.validId(requestId);
 
   let supabase;
@@ -211,7 +231,7 @@ exports.handler = async function(event) {
 
   // A repeat of a polish that already finished returns the same result, uncharged.
   if (rid) {
-    const hit = cacheGet(cacheKey(code, rid, inputOf(source, target, profile)));
+    const hit = cacheGet(cacheKey(code, rid, inputKey));
     if (hit) {
       // only a PAID result needs explaining; a free one is simply the same answer again
       try { if (await license.readLicense(supabase, code)) return json(200, hit.charged === true ? { ...hit, recovered: 'exact', message: recovery.RECOVERED.exact } : hit); } catch (e) { /* fall through to the normal path */ }
@@ -236,7 +256,7 @@ exports.handler = async function(event) {
       console.error('polish-resume: migration 04 (result recovery) is not applied; paid steps are refused so that no generation is charged without a recovery copy. Apply supabase/migrations/20261024_04_result_recovery.sql BEFORE deploying this code.', { ref: 'P112' });
       return json(503, { error: refMsg('P112'), ref: 'P112' });
     }
-    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, inputOf(source, target, profile)));
+    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, inputKey));
   } catch (err) {
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
     console.error(missing
@@ -296,12 +316,14 @@ exports.handler = async function(event) {
   let changes;
   let score;
   try {
-    const text = await callClaude({ prompt: buildPrompt(source, target, profile), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'polish', ref: reservation.reservationId });
+    const text = await callClaude({ prompt: buildPrompt(source, target, profile, entryLevel), maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'polish', ref: reservation.reservationId });
     const shaped = assertResumeShape(extractJson(text));
     // Only what passes the integrity checks is accepted: facts come back from the customer's answers, and every line that borrows,
     // inflates or invents is put back to the customer's own wording. If this step itself fails we refuse to ship unguarded AI text.
-    const guarded = integrity.guardResume(source, shaped, { mode: 'polish', vocabulary: target });
-    polished = guarded.resume; withheld = guarded.withheld;
+    const guarded = integrity.guardResume(source, shaped, { mode: 'polish', vocabulary: target, entryLevel });
+    // A new line that only repeats skills or facts the customer already has is dropped, never applied and never worth a generation (integrity.pruneRestatedAdditions).
+    const kept = integrity.pruneRestatedAdditions(source, guarded.resume);
+    polished = kept.resume; withheld = guarded.withheld;
     changes = integrity.assessChange(source, polished);
     score = scoring.score(source, polished, Core.clean(shaped));                              // what the ACCEPTED edits are worth (never the withheld ones)
   } catch (err) {
@@ -329,7 +351,7 @@ exports.handler = async function(event) {
       console.warn('polish-resume: accepted changes are below the charging threshold; applied free, not charged', { ref: 'P203', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
       usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: 'free', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
       const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: false, appliedFree: true, message: MSG.appliedFree, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
-      if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
+      if (rid) cachePut(cacheKey(code, rid, inputKey), body);
       return json(200, body);
     }
     const flaggedOnly = withheld.length > 0;                               // some suggestions were left out, and nothing was left to apply
@@ -337,7 +359,7 @@ exports.handler = async function(event) {
       { ref: flaggedOnly ? 'P202' : 'P201', reservation: reservation.reservationId, ...changes, points: score.points, withheld: withheld.length });
     usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: flaggedOnly ? 'flagged' : 'nochange', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
     const body = { guard: stamp(), noChange: true, charged: false, reason: flaggedOnly ? 'flagged' : 'unchanged', message: flaggedOnly ? MSG.flaggedOnly : MSG.noChange, withheld, changes, points: score.points, threshold: score.threshold, usesRemaining: reservation.remaining, maxUses: reservation.maximum };
-    if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
+    if (rid) cachePut(cacheKey(code, rid, inputKey), body);
     return json(200, body);
   }
 
@@ -376,7 +398,7 @@ exports.handler = async function(event) {
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
   const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken, saved: committed.saved === true, savedUntil: committed.expiresAt || null, supportRef: recovery.reference(reservation.reservationId) };
   if (redelivery) return json(200, { ...body, recovered: 'regenerated', message: recovery.RECOVERED.regenerated, supportRef: recovery.reference(reservation.reservationId) });   // fresh wording: said so, and not cached as "the original"
-  if (rid) cachePut(cacheKey(code, rid, inputOf(source, target, profile)), body);
+  if (rid) cachePut(cacheKey(code, rid, inputKey), body);
   return json(200, body);
 };
 
@@ -384,5 +406,6 @@ exports._recent = replay.recent;     // for tests
 exports._nochange = nochange;
 exports._buildPrompt = buildPrompt;
 exports._chooseProfile = chooseProfile;
+exports._isEntryLevel = isEntryLevel;
 exports._MIN_WORDS = MIN_WORDS;
 exports._failedCodes = failedCodes;

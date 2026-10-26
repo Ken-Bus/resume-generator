@@ -207,12 +207,13 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     ai.polishPayload = (src) => { const o = clone(src); o.summary.tagline = 'Applicant with teamwork skills'; return o; };
     let b = parseBody(await polish(c, base, { target: 'customer service' }));
     assert.deepEqual(b.unverified, []); assert.deepEqual(b.withheld, []); assert.equal(JSON.parse(b.result).summary.tagline, 'Applicant with teamwork skills');
-    assert.equal(await uses(c), 4);                                                                // an accepted introduction is a meaningful improvement: one charge
+    // Owner decision 2026-10-26: a line that only repeats words the resume already has (here the customer's own skill) is applied but is not, by itself, worth a generation.
+    assert.equal(b.appliedFree, true); assert.equal(b.charged, false); assert.equal(await uses(c), 5);
     ai.polishPayload = (src) => { const o = clone(src); o.summary.tagline = 'Friendly and reliable newcomer'; return o; };
     b = parseBody(await polish(c, base));
     assert.equal(b.noChange, true); assert.equal(b.reason, 'flagged'); assert.equal(b.withheld[0].label, 'Headline'); assert.match(b.withheld[0].reasons.join(), /praise or personality/);
     assert.equal(JSON.stringify(b).includes('Friendly and reliable newcomer'), false);             // the rejected text is not handed out
-    assert.equal(await uses(c), 4);                                                                // …and a polish whose only change is rejected is free
+    assert.equal(await uses(c), 5);                                                                // …and a polish whose only change is rejected is free
   });
 
   await t.test('the customer’s audience choice reaches the AI; it cannot be forged into the prompt; the charge is still exactly one generation', async () => {
