@@ -10,6 +10,8 @@
 //   removal of genuine repetition (a line whose words are all still there)         1   each
 //   a vague word made specific ("did the register" -> "operated the register")     1   each
 //   a restructured line that adds no new word, or one piece of a split line        1   each
+//   a NEW line made only of words already elsewhere in the resume (it just
+//   repeats existing skills or facts; the polish handler also drops it)            0
 //   capitals, punctuation, spacing, a re-ordered list, a synonym swap,
 //   one added word, filler, anything unsupported                                   0
 //
@@ -61,11 +63,12 @@ function scorePair(a, b, seen) {
 // (restoring or de-duplicating lines around a withheld suggestion) can never earn a charge for work the AI did not do.
 function score(before, after, aiAnswer) {
   const aiKeys = aiAnswer ? new Set(I.changeItems(aiAnswer, aiAnswer).map((it) => I.lineKey(it.b || it.a))) : null;
-  const seen = new Set(); const by = { rewrite: 0, restructure: 0, correction: 0, specific: 0, repeat: 0, split: 0, added: 0 };
+  const seen = new Set(); const by = { rewrite: 0, restructure: 0, correction: 0, specific: 0, repeat: 0, split: 0, added: 0, restated: 0 };
   let points = 0;
   const add = (kind, n) => { by[kind] += 1; points += n; };
-  I.changeItems(before, after).forEach((it) => {
-    if (it.kind === 'added') { if (it.split) add('split', 1); else add('added', 3); return; }
+  const items = I.changeItems(before, after); const ctx = I.restatementContext(before, items);
+  items.forEach((it) => {
+    if (it.kind === 'added') { if (it.split && !I.isRestatement(it, ctx)) add('split', 1); else if (I.isRestatement(it, ctx)) add('restated', 0); else add('added', 3); return; }
     if (it.kind === 'dropped') { if (it.repeat && !(aiKeys && aiKeys.has(I.lineKey(it.a)))) add('repeat', 1); return; }                  // each repeated line taken out is one repetition removed
     if (it.kind === 'unchanged' || it.kind === 'cosmetic') return;
     scorePair(it.a, it.b, seen).forEach(([kind, n]) => add(kind, n));
