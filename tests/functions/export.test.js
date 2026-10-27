@@ -70,11 +70,17 @@ test('export-resume: server-enforced authorization (real SQL, no AI)', async (t)
     assert.equal(await uses(c), 5); assert.equal(await reservations(), before); assert.equal(ai.calls, 0);
   });
 
-  await t.test('a code that has used all five generations can still download (the code is the purchase); the AI stays closed to it', async () => {
-    reset(); const c = await seed(0);
+  await t.test('a code that has used all five generations can still download during its four-day completion period (the AI stays closed to it); after it, downloads stop', async () => {
+    reset(); const c = await seed(1);
+    // the last generation is used by a paid Analyze; its included Polish is then used too, which starts the four days
+    assert.equal((await hs.parse(post({ code: c, resumeText: 'Jordan Ellis, retail associate' }))).statusCode, 200);
+    assert.equal((await hs.polish(post({ code: c, resume: RESUME, requestId: 'export-incl-0001', expectIncluded: true }))).statusCode, 200); assert.equal(await uses(c), 0);
+    const callsBefore = ai.calls;
     assert.equal((await call(req(c))).statusCode, 200); assert.equal(await uses(c), 0);
-    assert.equal(parseBody(await hs.polish(post({ code: c, resume: RESUME }))).usesRemaining, 0);
-    assert.equal(ai.calls, 0);
+    assert.equal((await hs.polish(post({ code: c, resume: RESUME }))).statusCode, 403); assert.equal(ai.calls, callsBefore, 'the AI stays closed');
+    await db.admin(`update license_reservations set committed_at = now() - interval '97 hours' where code=$1`, [c]);
+    const ended = await call(req(c)); assert.equal(ended.statusCode, 403); assert.match(parseBody(ended).error, /four-day finishing period/);
+    const never = await seed(0); assert.equal((await call(req(never))).statusCode, 403, 'a code that never used a benefit has no completion period');
   });
 
   await t.test('the code is normalised (case, spaces) but never trusted from the client: a deleted code stops working immediately', async () => {

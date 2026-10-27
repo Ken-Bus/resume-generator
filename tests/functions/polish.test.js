@@ -156,10 +156,11 @@ test('polish-resume against real SQL (AI provider mocked)', async (t) => {
     assert.equal((await first).statusCode, 200); assert.equal(await uses(c), 4);                              // only the Analyze was charged
   });
 
-  await t.test('Analyze still costs exactly 1 and Tailor 0 alongside polish: polish + analyze = 2 used', async () => {
+  await t.test('Analyze still costs exactly 1 and Tailor 0 alongside polish: included polish free, a second polish + two analyzes = 3 used', async () => {
     reset(); const c = await seed();
     assert.equal((await parse(c)).statusCode, 200); assert.equal(await uses(c), 4);
-    assert.equal((await polish(c)).statusCode, 200); assert.equal(await uses(c), 3);
+    assert.equal((await polish(c)).statusCode, 200); assert.equal(await uses(c), 4, 'the first Polish after a paid Analyze is the included one: no generation');
+    assert.equal((await polish(c)).statusCode, 200); assert.equal(await uses(c), 3, 'the next meaningful Polish uses one');
     const tok = parseBody(await parse(c)).tailorToken; assert.equal(await uses(c), 2);
     assert.equal((await hs.tailor(post({ resumeData: ANSWERS, jobDescription: 'job', tailorToken: tok }))).statusCode, 200);
     assert.equal(await uses(c), 2);

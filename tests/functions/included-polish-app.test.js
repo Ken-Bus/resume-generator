@@ -143,8 +143,10 @@ test('included polish and four-day access: application against real SQL with mig
   });
 
   await t.test('OLD AND NEW TOGETHER: this build against a database WITHOUT migration 05 keeps sign-in and downloads as they were and refuses paid steps safely (nothing charged)', async () => {
+    const keep = process.env.WITH_MIG5; process.env.WITH_MIG5 = '0';                                    // build the database as it is BEFORE migration 05
     const old = await H.freshDatabase('rg_app04'); await old.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(old);
     for (const m of [H.MIG1, H.MIG2, H.MIG3, H.MIG4]) await H.applyMigration(old, m);
+    process.env.WITH_MIG5 = keep;
     const h2 = loadHandlers(old.pool('service_role', 10)); const c = newCode(); await H.seed(old, [{ code: c, uses: 2, assigned: true }]); const zero = newCode(); await H.seed(old, [{ code: zero, uses: 0, assigned: true }]);
     const v = parseBody(await h2.verify(post({ code: c }))); assert.equal(v.valid, true); assert.equal(v.usesRemaining, 2); assert.equal(v.includedAvailable, undefined);
     assert.equal(parseBody(await h2.verify(post({ code: zero }))).valid, false, 'the earlier zero-balance behaviour is unchanged until the migration is applied');

@@ -1,7 +1,7 @@
 // Application x database compatibility matrix (real local PostgreSQL, AI mocked). Answers: which application can safely run against which database state?
 //   Applications:  P1 = the previous application (commit b6884f3: reservation accounting, in-memory repeat protection, never sends a request key)
 //                  N  = this branch (sends a request key with every paid step)
-//   Database:      B = migration 01 | C = 01+02 | D = 01+02+03 | E = 01+02+03+04 | R3 = E after the migration-03 rollback | R4 = E after the migration-04 rollback
+//   Database:      B = migration 01 | C = 01+02 | D = 01+02+03 | E4 = 01..04 | E = 01..05 | R3 = E after the 05 and then the migration-03 rollback | R4 = E after the 05 and then the migration-04 rollback
 // P1 is loaded from git history, unmodified. The migration-03 review package quotes these results.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -11,6 +11,7 @@ const path = require('path');
 const { execSync } = require('child_process');
 const Module = require('module');
 const { H, loadHandlers, post, parseBody, installAi } = require('./harness');
+process.env.WITH_MIG5 = '0';                                  // this suite applies every migration itself, state by state
 
 const ROOT = path.join(__dirname, '..', '..');
 const SECRET = 'test-secret-test-secret-test-secret-0123456789';
@@ -38,14 +39,15 @@ test('application x database compatibility matrix (real SQL, AI mocked)', async 
   if (!(await H.available())) { t.skip('no local Postgres reachable (see tests/README.md)'); return; }
   const rollback = fs.readFileSync(path.join(ROOT, 'supabase', 'rollback', '20261023_03_rollback.sql'), 'utf8');
   const rollback4 = fs.readFileSync(path.join(ROOT, 'supabase', 'rollback', '20261024_04_rollback.sql'), 'utf8');
+  const rollback5 = fs.readFileSync(path.join(ROOT, 'supabase', 'rollback', '20261027_05_rollback.sql'), 'utf8');
   const prevDir = previousApplication();
   const ai = installAi({}); ai.polishPayload = fixAll;
   Object.assign(process.env, { SUPABASE_URL: 'http://mock.invalid', SUPABASE_SERVICE_ROLE_KEY: 'mock', ANTHROPIC_API_KEY: 'mock', TAILOR_TOKEN_SECRET: SECRET, AI_TIMEOUT_MS: '1000' });
 
   const states = {};
-  for (const [name, steps] of [['B', [H.MIG1]], ['C', [H.MIG1, H.MIG2]], ['D', [H.MIG1, H.MIG2, H.MIG3]], ['E', [H.MIG1, H.MIG2, H.MIG3, H.MIG4]], ['R3', [H.MIG1, H.MIG2, H.MIG3, H.MIG4, 'ROLLBACK']], ['R4', [H.MIG1, H.MIG2, H.MIG3, H.MIG4, 'ROLLBACK4']]]) {
+  for (const [name, steps] of [['B', [H.MIG1]], ['C', [H.MIG1, H.MIG2]], ['D', [H.MIG1, H.MIG2, H.MIG3]], ['E4', [H.MIG1, H.MIG2, H.MIG3, H.MIG4]], ['E', [H.MIG1, H.MIG2, H.MIG3, H.MIG4, H.MIG5]], ['R3', [H.MIG1, H.MIG2, H.MIG3, H.MIG4, H.MIG5, 'ROLLBACK5', 'ROLLBACK']], ['R4', [H.MIG1, H.MIG2, H.MIG3, H.MIG4, H.MIG5, 'ROLLBACK5', 'ROLLBACK4']]]) {
     const db = await H.freshDatabase(`rg_cm_${name.toLowerCase()}`); await db.admin(H.SUPABASE_DEFAULT_PRIVS); await H.liveState(db);
-    for (const m of steps) { if (m === 'ROLLBACK') await db.admin(rollback); else if (m === 'ROLLBACK4') await db.admin(rollback4); else await H.applyMigration(db, m); }
+    for (const m of steps) { if (m === 'ROLLBACK') await db.admin(rollback); else if (m === 'ROLLBACK5') await db.admin(rollback5); else if (m === 'ROLLBACK4') await db.admin(rollback4); else await H.applyMigration(db, m); }
     states[name] = db;
   }
   let n = 0;
@@ -66,8 +68,8 @@ test('application x database compatibility matrix (real SQL, AI mocked)', async 
   }
 
   await t.test('P1 (previous application) works unchanged on every state; its own cold-retry limitation is the same everywhere', async () => {
-    const r = {}; for (const s of ['B', 'C', 'D', 'E', 'R3', 'R4']) r[s] = await lifecycle('P1', s);
-    for (const s of ['C', 'D', 'E', 'R3', 'R4']) assert.deepEqual(r[s], r.B, `state ${s} differs from B`);
+    const r = {}; for (const s of ['B', 'C', 'D', 'E4', 'E', 'R3', 'R4']) r[s] = await lifecycle('P1', s);
+    for (const s of ['C', 'D', 'E4', 'E', 'R3', 'R4']) assert.deepEqual(r[s], r.B, `state ${s} differs from B`);
     assert.deepEqual(r.B.analyze, [200, 4]); assert.deepEqual(r.B.polish, [200, true, 3]);
     // The previous application protects a retry only in memory on one instance. A cold instance charges again. This is the behaviour that exists
     // BEFORE migrations 03 and 04 and AFTER a rollback; durable protection and exact recovery need the migrations AND the new application together.
@@ -75,10 +77,17 @@ test('application x database compatibility matrix (real SQL, AI mocked)', async 
     assert.deepEqual(r.B.noId, [200, 1]);
   });
 
-  await t.test('N (this branch) on E (all four migrations): durable. A retry on a cold instance is not charged again and gets the EXACT stored result', async () => {
+  await t.test('N (this branch) on E (all five migrations): durable. A retry on a cold instance is not charged again and gets the EXACT stored result; the Polish after an Analyze is the included one', async () => {
     const r = await lifecycle('N', 'E');
-    assert.deepEqual(r.analyze, [200, 4]); assert.deepEqual(r.polish, [200, true, 3]);
-    assert.deepEqual(r.retryAnalyze, [200, 3], 'recovered, not charged'); assert.deepEqual(r.noId, [200, 2], 'a request without an id is an ordinary new request');
+    assert.deepEqual(r.analyze, [200, 4]); assert.deepEqual(r.polish, [200, false, 4], 'the included Polish takes no generation');
+    assert.deepEqual(r.retryAnalyze, [200, 4], 'recovered, not charged'); assert.deepEqual(r.noId, [200, 3], 'a request without an id is an ordinary new request');
+  });
+
+  await t.test('N (this branch) on E4 (04 but NOT 05): Analyze works exactly as before; every Polish is refused before the AI call (try again), nothing is charged: deploy after the migration', async () => {
+    const db = states.E4; const c = await seed(db); const inst = coldInstance(db, 'N'); ai.calls = 0;
+    const a = await inst.parse(post({ code: c, resumeText: TEXT, requestId: 'matrix-e4-1' })); assert.equal(a.statusCode, 200); assert.equal(await uses(db, c), 4);
+    const calls = ai.calls; const p = await inst.polish(post({ code: c, resume: RESUME, requestId: 'matrix-e4-2' }));
+    assert.equal(p.statusCode, 503); assert.equal(ai.calls, calls, 'no AI call'); assert.equal(await uses(db, c), 4, 'nothing charged');
   });
 
   await t.test('N (this branch) on B, C, D, R3 and R4 (a migration missing or rolled back): every KEYED paid step (what the page always sends) is refused before the AI call ("try again"), nothing is charged, no Anthropic cost', async () => {
