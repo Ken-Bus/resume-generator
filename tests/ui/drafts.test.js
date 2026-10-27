@@ -69,7 +69,7 @@ test('automatic local drafts (Chromium, mocked endpoints, fictional data)', asyn
     assert.equal(d.data.experience[0].title, 'Shift Lead'); assert.ok(d.rev >= 1 && d.savedAt && d.tab);
     for (const secret of ['FG-TEST-AAAA', 'secret-tailor-token-123', 'req-id-secret-1', 'tailorToken', 'pending']) assert.equal(raw.includes(secret), false, `the draft must not contain ${secret}`);
     const all = await s.page.evaluate(() => JSON.stringify({ l: { ...localStorage } })); assert.equal(all.includes('FG-TEST-AAAA') || all.includes('secret-tailor-token-123'), false, 'nothing credential-like is in persistent storage');
-    assert.match(await s.page.innerText('#save-status'), /Saved on this device at/); assert.equal(s.calls.filter((c) => c.name !== 'verify-license').length, 0, 'saving made no server call and used no generation');
+    assert.match(await s.page.innerText('#save-status'), /Progress saved on this device\./); assert.equal(s.calls.filter((c) => c.name !== 'verify-license').length, 0, 'saving made no server call and used no generation');
     await s.close();
   });
 
@@ -120,7 +120,7 @@ test('automatic local drafts (Chromium, mocked endpoints, fictional data)', asyn
     const s2 = await open({ 'verify-license': verifyOk }, { storageState: st }); await unlock(s2.page);
     await s2.page.evaluate(() => { state.data = { name: 'Brand New Person', contact: {}, summary: { tagline: '', bullets: [], skills: [] }, experience: [{ title: 'New Job', company: 'New Co', start: '', end: '', bullets: ['did a thing'] }], education: [], certifications: [], projects: [], volunteer: [], awards: [] }; renderEditFields(); renderPreview(); }); await waitSaved(s2.page);
     assert.equal((await draftOf(s2.page)).data.experience[0].title, 'OLD SAVED DRAFT', 'the older draft is untouched'); assert.match(await s2.page.innerText('#save-status'), /Not saved/);
-    await s2.page.click('#save-status button'); await s2.page.waitForTimeout(200); assert.equal((await draftOf(s2.page)).data.name, 'Brand New Person', 'only after the explicit choice'); assert.match(await s2.page.innerText('#save-status'), /Saved on this device/);
+    await s2.page.click('#save-status button'); await s2.page.waitForTimeout(200); assert.equal((await draftOf(s2.page)).data.name, 'Brand New Person', 'only after the explicit choice'); assert.match(await s2.page.innerText('#save-status'), /Progress saved on this device/);
     await s2.close();
   });
 
@@ -137,7 +137,7 @@ test('automatic local drafts (Chromium, mocked endpoints, fictional data)', asyn
   await t.test('STORAGE FAILURES: full or blocked storage never crashes the page and never claims a save that did not happen (tab-only fallback is labelled; total failure says "download your resume")', async () => {
     const quota = () => { const orig = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { if (this === window.localStorage && k === 'fg_draft_v2') throw new DOMException('full', 'QuotaExceededError'); return orig.call(this, k, v); }; };
     const s = await open({ 'verify-license': verifyOk }, { initScript: quota }); await unlock(s.page); await putResume(s.page); await typeTitle(s.page, 'No room'); await waitSaved(s.page);
-    assert.equal(await s.page.evaluate((k) => localStorage.getItem(k), DRAFT), null); assert.match(await s.page.innerText('#save-status'), /Saved in this tab only/); assert.doesNotMatch(await s.page.innerText('#save-status'), /Saved on this device/);
+    assert.equal(await s.page.evaluate((k) => localStorage.getItem(k), DRAFT), null); assert.match(await s.page.innerText('#save-status'), /Saved in this tab only/); assert.doesNotMatch(await s.page.innerText('#save-status'), /Progress saved on this device/);
     assert.equal(s.errors.length, 0, s.errors.join('|')); await s.close();
     const both = () => { const orig = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { if (k === 'fg_draft_v2') throw new DOMException('full', 'QuotaExceededError'); return orig.call(this, k, v); }; };
     const s2 = await open({ 'verify-license': verifyOk }, { initScript: both }); await unlock(s2.page); await putResume(s2.page); await typeTitle(s2.page, 'Nowhere to save'); await waitSaved(s2.page);
@@ -169,6 +169,22 @@ test('automatic local drafts (Chromium, mocked endpoints, fictional data)', asyn
     await s.page.reload(); await s.page.waitForTimeout(400); assert.equal(await s.page.isVisible('#draft-banner'), false); assert.match(await s.page.innerText('#resume-preview'), /Refresh me/); assert.match(await s.page.innerText('#restore-notice'), /Welcome back/);
     s.page.removeAllListeners('dialog'); s.page.once('dialog', (d) => d.accept()); await Promise.all([s.page.waitForNavigation(), s.page.click('#restore-notice button')]); await s.page.waitForTimeout(300);
     const left = await s.page.evaluate(() => JSON.stringify({ l: { ...localStorage }, s: { ...sessionStorage } })); assert.equal(/fg_draft_v2|fg_license|FG-TEST/.test(left), false, left); await s.close();
+  });
+
+  await t.test('UNEXPECTED CLOSE: typing and the chosen template are saved by the time the tab is killed (no close event runs); a new tab offers the draft and restores every field and the template; "Progress saved" is shown only after the write succeeded', async () => {
+    const s = await open({ 'verify-license': verifyOk }); await unlock(s.page); await putResume(s.page);
+    assert.equal(await s.page.innerText('#save-status'), '', 'nothing is claimed before anything was saved');
+    await s.page.evaluate(() => { selectCategory('Trades'); selectTemplate('operator'); });
+    await typeTitle(s.page, 'Shift Lead'); await s.page.fill('input[oninput*="experience\',0,\'company\'"]', 'Maple Market Two'); await waitSaved(s.page);
+    assert.match(await s.page.innerText('#save-status'), /^Progress saved on this device\./);
+    await s.page.close({ runBeforeUnload: false });                                                        // the browser or the tab dies: nothing gets to run
+    const page2 = await s.context.newPage(); await page2.route('**/*', (route) => (route.request().url().includes('/.netlify/functions/') ? route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ valid: true, usesRemaining: 5, maxUses: 5 }) }) : route.request().url().startsWith(base) ? route.continue() : route.abort()));
+    await page2.goto(base + '/index.html'); await unlock(page2); await page2.waitForSelector('#draft-banner', { state: 'visible' });
+    assert.equal(await page2.evaluate(() => !!(state.data && state.data.name)), false, 'not applied silently');
+    await page2.click('#draft-continue'); await page2.waitForTimeout(250);
+    const got = await page2.evaluate(() => ({ title: state.data.experience[0].title, company: state.data.experience[0].company, name: state.data.name, tpl: state.selectedTemplate.id, cat: state.selectedCategory, tab: document.querySelector('.category-tab.active').textContent.trim(), skills: state.data.summary.skills }));
+    assert.deepEqual(got, { title: 'Shift Lead', company: 'Maple Market Two', name: 'Jordan Ellis', tpl: 'operator', cat: 'Trades', tab: 'Everyday & Trades', skills: ['Customer service'] });
+    await s.close();
   });
 
   t.after(async () => { await browser.close(); server.close(); });

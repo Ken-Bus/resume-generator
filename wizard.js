@@ -217,7 +217,7 @@ const Wiz = {
     try {
       const res = await aiFetch('/.netlify/functions/polish-resume', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId, clientGuard: ResumeCore.GUARD_VERSION })
+        body: JSON.stringify({ code: state.license.code, resume: state.data, target: w.target || '', profile: w.profile || undefined, requestId: p.requestId, expectIncluded: hasIncluded(), clientGuard: ResumeCore.GUARD_VERSION })
       });
       let json = null; try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
       definite = json !== null && (res.status !== 409 || json.newRequest === true) && res.status < 500;  // a cut-off body, 409 (busy) or a server error may mean the answer was lost: keep the id. A refusal asking for a NEW request ends this id
@@ -236,15 +236,18 @@ const Wiz = {
         state.data = parsed;
         state.polishResult = JSON.parse(JSON.stringify(ResumeCore.clean(parsed)));   // what the polish returned, to tell later whether the customer edited it
         if (json.charged !== false) state.tailorToken = json.tailorToken || null;     // a free (small-fix) result has no paid generation behind it: an earlier paid token stays valid
+        else if (json.included && json.tailorToken) state.tailorToken = json.tailorToken;   // an included Polish re-signs its PARENT Analyze: same Tailor runs, a fresh 2-hour window
         if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining;
         if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
         const unverified = Array.isArray(json.unverified) ? json.unverified : [];
         state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
         state.preTailor = null;
         p.requestId = null;
-        if (json.charged !== false) rememberReceived(json.supportRef);          // this device has the result: the "restore" offer will not show it again
-        Wiz.setOutcome('improved', { recovered: json.recovered || null, recoveredMessage: json.message || '', supportRef: json.supportRef || '', free: json.charged === false, unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
+        if (json.charged !== false || json.included) rememberReceived(json.supportRef);          // this device has the result: the "restore" offer will not show it again
+        if (json.included) state.license.includedAvailable = Math.max(0, (state.license.includedAvailable || 0) - 1);
+        Wiz.setOutcome('improved', { recovered: json.recovered || null, recoveredMessage: json.message || '', supportRef: json.supportRef || '', included: json.included === true, free: json.charged === false && json.included !== true, unverified, withheld: Array.isArray(json.withheld) ? json.withheld : [], changes: json.changes && typeof json.changes === 'object' ? json.changes : null });
         renderLicenseBadge(); renderEditFields(); renderPreview();
+        refreshLicenseCounter({ accessOnly: true });                        // the included Polish count and access state after this step
       } else {
         await Wiz.polishFailed(res.status, json);
       }
@@ -364,41 +367,53 @@ const Wiz = {
     const left = state.license.usesRemaining, max = state.license.maxUses;
     const writable = ResumeCore.hasWritableText(ResumeCore.clean(state.data));
     const plural = (n) => `${n} generation${n === 1 ? '' : 's'}`;
+    const credit = hasIncluded();                                                // an unused included Polish: this Polish uses no generation, even at zero left
+    const lastStep = credit && left === 0 && (Number(state.license.includedAvailable) || 0) === 1;      // using it is the customer's last AI step: the four-day finishing period follows
+    const keepNote = 'If you restore your own wording afterwards, it stays used. A second meaningful polish uses another generation.';
     let body;
     if (p.busy) {
       body = '<div class="loading-indicator"><div class="spinner"></div>Polishing your resume… this can take up to a minute. Please keep this page open.</div>';
     } else if (state.aiBusy) {
       body = '<div class="wiz-example">Another AI step is running. You can polish when it has finished.</div>';
-    } else if (left === 0) {
+    } else if (left === 0 && !credit) {
       body = `<div class="wiz-err">You’ve used all ${max || 5} generations on this code.${etsyLinkHTML()} Your resume is still fully editable and downloadable.</div>`;
     } else if (!writable) {
       body = '<div class="wiz-example">Add a few answers first (what you did in a job, a project, or your skills), then come back.</div>';
+    } else if (p.confirm && credit) {
+      body = `<div class="wiz-confirm"><strong>The AI will review your resume and fix what it can, using only what you wrote. Your included polish is used only if it rewrites some of your wording or corrects three or more mistakes.</strong>
+          If it does, no generation is used. If it finds fewer than that, it still applies the small fixes it found, and nothing is used. Anything that adds details not in your answers is left out, and if anything goes wrong nothing is used and your wording stays exactly as you wrote it. ${keepNote}${lastStep ? ' This is your last AI step: you will then have four days to finish editing and download your resume.' : ''}
+          <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="${prefix}polish-confirm">Yes, polish my resume (included, uses no generation)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
     } else if (p.confirm) {
       body = `<div class="wiz-confirm"><strong>The AI will review your resume and fix what it can, using only what you wrote. A generation is used only if it rewrites some of your wording or corrects three or more mistakes.</strong>
-          If it does, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds fewer than that, it still applies the small fixes it found, and no generation is used. Anything that adds details not in your answers is left out, and if anything goes wrong nothing is used and your wording stays exactly as you wrote it.
+          If it does, that uses 1 of your ${typeof left === 'number' ? plural(left) + ' remaining' : 'generations'}. If it finds fewer than that, it still applies the small fixes it found, and no generation is used. Anything that adds details not in your answers is left out, and if anything goes wrong nothing is used and your wording stays exactly as you wrote it. If you restore your own wording afterwards, that generation stays used, and a second meaningful polish uses another generation.
           <div><button class="wiz-polish-btn" style="width:auto" onclick="Wiz.doPolish()" id="${prefix}polish-confirm">Yes, polish my resume (uses 1)</button><button class="wiz-back" onclick="Wiz.cancelPolish()">Cancel</button></div></div>`;
+    } else if (credit) {
+      body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="${prefix}polish-btn">✨ Polish My Resume with AI (included)</button>
+        <div class="wiz-example">Included with your analysis, so it uses no generation. It is used up only if the AI rewrites some of your wording or corrects three or more mistakes (smaller fixes are applied and nothing is used). Changes that add details not in your answers are always left out. ${keepNote}${lastStep ? ' Using it is your last AI step: you will then have four days to finish editing and download your resume.' : ''} Typing, previewing, editing and downloading never use one.</div>`;
     } else {
       body = `<button class="wiz-polish-btn" onclick="Wiz.askPolish()" id="${prefix}polish-btn">✨ Polish My Resume with AI</button>
-        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI rewrites some of your wording or corrects three or more mistakes (smaller fixes are applied free). Changes that add details not in your answers are always left out. Typing, previewing, editing and downloading never use one.</div>`;
+        <div class="wiz-example">Uses 1 of your ${typeof left === 'number' ? left : 'remaining'} generation${left === 1 ? '' : 's'}${typeof left === 'number' && max ? ` (of ${max})` : ''} only if the AI rewrites some of your wording or corrects three or more mistakes (smaller fixes are applied free). Changes that add details not in your answers are always left out. If you restore your own wording afterwards, that generation stays used, and a second meaningful polish uses another generation. Typing, previewing, editing and downloading never use one.</div>`;
     }
     let result = '';
     if (p.done && state.polishOriginal) {
       const parts = Wiz.changedParts(); const unv = p.done.unverified || []; const wh = p.done.withheld || [];
       const recNote = p.done.recovered ? `<div class="notice-box" id="${prefix}polish-recovered" role="status"><strong>${p.done.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(p.done.recoveredMessage || '')}${p.done.supportRef ? ` <span class="support-ref">Reference: ${esc(p.done.supportRef)}</span>` : ''}</div>` : '';
-      const used = p.done.recovered ? `No additional generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.` : p.done.free ? `No generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}: these were small fixes, so they are free.` : `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
+      const used = p.done.recovered ? `No additional generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.` : p.done.included ? `That used your included polish, so no generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.` : p.done.free ? `No generation was used${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}: these were small fixes, so they are free.` : `That used 1 generation${typeof left === 'number' ? ` (${left} of ${max || 5} left)` : ''}.`;
       if (!parts.length) {                                                // never call it "Polished" when nothing was reworded
         result = `${recNote}<div class="notice-box" id="${prefix}polish-unchanged" role="status"><strong>No wording changes were made.</strong> The AI kept your answers as they were, so your resume is the same as before. ${used} You can still edit anything yourself.</div>`;
       } else {
       const c = p.done.changes || {}; const n = (k) => Number(c[k]) || 0; const lines = (k) => `${n(k)} line${n(k) === 1 ? '' : 's'}`;
       const did = [n('reworded') ? `rewrote ${lines('reworded')}` : '', n('minor') ? `fixed spelling or a word in ${lines('minor')}` : '', n('cosmetic') ? `tidied capitals or punctuation in ${lines('cosmetic')}` : '', n('dropped') ? `combined or removed ${lines('dropped')} that repeated another` : ''].filter(Boolean);
       result = `${recNote}<div class="wiz-ok"><strong>✓ Polished.</strong> ${used} Read it over: it’s your resume, so edit anything.
+        <div id="${prefix}polish-save-note" style="margin-top:6px;">Your resume has been updated. Download a copy to keep your work safe.</div>
         ${did.length ? `<div id="${prefix}polish-summary" style="margin-top:6px;"><strong>What changed:</strong> ${esc(did.join('; '))}.</div>` : ''}
         ${parts.length ? `<div style="margin-top:6px;"><strong>AI reworded:</strong>${parts.map(c => `<div class="wiz-review-row"><div>${esc(c.label)}</div><button class="wiz-link" onclick="Wiz.restorePart('${c.kind}', ${c.i})">Restore my wording</button></div>`).join('')}</div>` : ''}
         ${wh.length ? `<div class="notice-box" id="${prefix}polish-withheld"><strong>${wh.length} suggested change${wh.length === 1 ? ' was' : 's were'} left out.</strong> They added details that are not in your answers, so your own wording was kept there.
           <ul style="margin:6px 0 0 16px;">${wh.slice(0, 8).map(w => `<li>${esc(w.label || 'Resume')} <em>(${esc((w.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
         ${unv.length ? `<div class="notice-box"><strong>Please check ${unv.length} line${unv.length === 1 ? '' : 's'}.</strong> The AI added something that wasn’t in your answers (marked yellow in Edit Fields). Keep only what is true.
           <ul style="margin:6px 0 0 16px;">${unv.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : ''}
-        <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button></div>`;
+        <button class="wiz-link" onclick="Wiz.restoreAll()">Restore all my original wording</button>
+        ${p.done.free ? '' : `<div class="wiz-example" id="${prefix}polish-restore-note">Restoring your own wording does not give back ${p.done.included ? 'your included polish' : 'the generation'}.</div>`}</div>`;
       }
     }
     if (p.noChange) {

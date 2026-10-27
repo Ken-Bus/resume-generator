@@ -5,11 +5,17 @@ const path = require('path');
 
 const FUNCS = path.join(__dirname, '..', '..', 'netlify', 'functions');
 let valid = new Set();
+let accessStates = new Map();      // code -> access state ('active' | 'completion' | 'ended'); a code not listed behaves like a database WITHOUT migration 05
 const origLoad = Module._load;
 Module._load = function (request, ...rest) {
   if (request === '@supabase/supabase-js') {
-    return { createClient: () => ({ from: () => ({ select: () => ({ eq: (col, code) => ({
-      maybeSingle: async () => ({ data: valid.has(code) ? { uses_remaining: 5, max_uses: 5 } : null, error: null }) }) }) }) }) };
+    return { createClient: () => ({
+      from: () => ({ select: () => ({ eq: (col, code) => ({
+        maybeSingle: async () => ({ data: valid.has(code) ? { uses_remaining: 5, max_uses: 5 } : null, error: null }) }) }) }),
+      rpc: (fn, args) => ({ maybeSingle: async () => (fn === 'license_access_status' && accessStates.has(args.p_code)
+        ? { data: { access_state: accessStates.get(args.p_code), uses_remaining: 0, max_uses: 5, included_available: 0 }, error: null }
+        : { data: null, error: { code: '42883', message: 'function does not exist' } }) })
+    }) };
   }
   return origLoad.call(this, request, ...rest);
 };
@@ -27,4 +33,6 @@ function exportApi(codes = ['FG-TEST-AAAA']) {
   };
 }
 
-module.exports = { exportApi, handler };
+function setAccessStates(map) { accessStates = new Map(Object.entries(map || {})); }
+
+module.exports = { exportApi, handler, setAccessStates };

@@ -79,7 +79,7 @@ test('live replay in the browser: the invented "families in the community" never
       const fields = await page.locator('#edit-fields textarea, #edit-fields input').evaluateAll((els) => els.map((e) => e.value).join('\n'));
       assert.doesNotMatch(fields, /for families in the community|collect donated food/i, 'nor in any editor field');
       assert.equal(await page.locator('#edit-fields textarea.flag-warn').count(), 0, 'no yellow "kept with a warning" lines: they are withheld, not kept');
-      assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), 'entry-scope-withhold-6', 'the page carries the same guard version as the functions');
+      assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), 'included-polish-1', 'the page carries the same guard version as the functions');
       assert.deepEqual(errors, []);
       await ctx.close();
     });
@@ -121,7 +121,7 @@ test('the owner\'s browser checks: the guard label is readable by the Console, t
   assert.equal(await page.evaluate(() => ResumeCore.GUARD_VERSION), get[1].guard.version, 'page and function agree');
   // Opened like the owner would open it, the address shows the label on screen.
   await page.goto(base + '/.netlify/functions/polish-resume');
-  assert.match(await page.innerText('body'), /"version":"entry-scope-withhold-6"/);
+  assert.match(await page.innerText('body'), /"version":"included-polish-1"/);
 
   await page.goto(base + '/index.html');
   await page.fill('#gate-code-input', 'FG-TEST-AAAA'); await page.click('#gate-unlock-btn'); await page.waitForSelector('#license-gate', { state: 'hidden' });
