@@ -79,6 +79,13 @@ test('included polish (migration 05): atomic, one-time, zero-balance safe, non-e
     assert.equal((await Q('select count(*)::int n from result_recovery where reservation_id=$1', [r2.reservation_id]))[0].n, 0, 'and writes nothing');
   });
 
+  await t.test('THE FAILURE BUDGET STILL APPLIES: an included polish cannot be used to hammer the AI after repeated costly failures', async () => {
+    const c = await seed(); const a = await analyze(c);
+    for (let i = 0; i < 6; i++) { const r = await reserve(c, true); assert.equal(r.outcome, 'reserved'); await Q('select release_license_use($1,true)', [r.reservation_id]); }   // six costly (counted) failures
+    const blocked = await reserve(c, true); assert.equal(blocked.outcome, 'throttled'); assert.ok(blocked.retry_after_seconds > 0);
+    assert.equal((await row(a)).included_polish_by, null, 'and the credit is still there when the throttle lifts'); assert.equal(await remaining(c), 4);
+  });
+
   await t.test('SIMULTANEOUS: two live steps never hold the same credit, and two commits that both try produce exactly one winner', async () => {
     const c = await seed(); const a = await analyze(c);
     const first = await reserve(c, true); assert.equal(first.included_from, a);
