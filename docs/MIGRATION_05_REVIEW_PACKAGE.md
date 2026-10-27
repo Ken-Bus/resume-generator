@@ -171,3 +171,10 @@ Each cause was confirmed by reading the failing assertion, not assumed. The beha
 4. The owner takes a fresh backup, runs the pre-check, applies 05, runs the post-check.
 5. A fresh isolated test license is created by the owner (not created yet).
 6. The application stage, as a separate assignment.
+
+## 10. Stage 2 integration note (application built on this migration)
+- **The approved database contract did not change.** No edit to the migration, rollback, pre-check or post-check was needed.
+- The application uses exactly: `reserve_license_use(..., p_allow_included)` and its `included_from` column; `commit_license_use_with_result` and its `included` / `included_from` columns (and the `included_gone` outcome); `license_access_status`. Nothing else was added.
+- Verified against the real migration (local PostgreSQL): one Analyze earns one credit; the included Polish takes no generation and signs the parent Analyze's Tailor token; failed, unchanged and insignificant results leave the credit; zero-balance use; repeats and simultaneous requests; recovery; the four-day period and download enforcement; the previous application (`b6884f3`) runs unchanged on a database with 05; this build against a database **without** 05 keeps sign-in and downloads as before and refuses every Polish before the AI call, charging nothing (so it must be deployed after the migration).
+- Older application tests that assumed the earlier policy were updated (a Polish after an Analyze is now free; a code with no benefits and no recent step is refused downloads; sign-in reports the new fields). The compatibility matrix now has states E4 (01-04) and E (01-05), and rolls 05 back first.
+- Test environment only: the disposable test database needed a higher connection limit to run all function suites in parallel.
