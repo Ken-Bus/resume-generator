@@ -526,9 +526,10 @@ test('guided builder, section model and exports (Chromium, mocked endpoints)', a
     await s.page.click('text=Undo this tailoring');
     assert.deepEqual(await s.page.evaluate(() => state.data.experience[0].bullets), WORKER.experience[0].bullets);
     assert.deepEqual([...new Set(s.calls.map((c) => c.name))].sort(), ['parse-resume', 'tailor-resume', 'verify-license']);
-    assert.equal(s.calls.filter((c) => c.name === 'parse-resume').length, 1);                // exactly one paid call; tailoring sent the token, not the code
+    assert.equal(s.calls.filter((c) => c.name === 'parse-resume').length, 1);                // exactly one paid call
+    // Since migration 06 tailoring is authorised by the access code (like Analyze, Polish and downloads); the token is still sent for servers from before it.
     assert.equal(s.calls.find((c) => c.name === 'tailor-resume').body.tailorToken, 'tok-123');
-    assert.equal(JSON.stringify(s.calls.find((c) => c.name === 'tailor-resume').body).includes('FG-TEST'), false);
+    assert.equal(s.calls.find((c) => c.name === 'tailor-resume').body.code, 'FG-TEST-AAAA');
     await s.close();
   });
 

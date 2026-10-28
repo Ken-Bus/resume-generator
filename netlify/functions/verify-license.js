@@ -1,6 +1,7 @@
 const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
 const { makeLimiter, clientIp } = require('./_lib/rate');
 const license = require('./_lib/license');
+const { get } = require('./_lib/config');
 
 // Guessing codes: unknown or malformed codes are limited per client (best effort, in memory; see _lib/rate.js). A real customer who
 // mistypes a code a few times is never affected.
@@ -39,7 +40,10 @@ exports.handler = async function(event) {
       if (access.state === 'ended') {
         return json(200, { valid: false, accessState: 'ended', error: 'The four-day finishing period for this code has ended, and it has no AI generations left.', usesRemaining: access.usesRemaining, maxUses: access.maxUses });
       }
-      return json(200, { valid: true, usesRemaining: access.usesRemaining, maxUses: access.maxUses, includedAvailable: access.includedAvailable, accessState: access.state, accessUntil: access.accessUntil });
+      // Tailor runs the code has left (migration 06). Best effort: signing in never fails because of it, and the field is simply absent without it.
+      let tailorRunsAvailable;
+      try { const n = await license.tailorRunsAvailable(supabase, code, get().TAILOR_MAX_PER_PAID_OP); if (n !== null) tailorRunsAvailable = n; } catch (e) { /* not needed to sign in */ }
+      return json(200, { valid: true, usesRemaining: access.usesRemaining, maxUses: access.maxUses, includedAvailable: access.includedAvailable, accessState: access.state, accessUntil: access.accessUntil, ...(tailorRunsAvailable !== undefined ? { tailorRunsAvailable } : {}) });
     }
 
     const { data, error } = await supabase

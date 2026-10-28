@@ -294,6 +294,7 @@
         <div style="font-size:11px;font-weight:700;letter-spacing:0.05em;color:#555;margin-bottom:6px;">TAILOR TO A JOB (OPTIONAL)</div>
         <textarea id="job-desc-input" class="resume-textarea" oninput="scheduleSave()" placeholder="Paste the job description here to tailor your resume's wording to it..." rows="4" style="width:100%;"></textarea>
         <button class="btn-secondary" onclick="tailorToJob()" id="tailor-btn" style="margin-top:8px;">Tailor to This Job</button>
+        <div id="tailor-runs-note" style="margin-top:6px;font-size:11px;color:#777;"></div>
         <div id="match-summary-box" style="display:none;margin-top:10px;font-size:12px;line-height:1.5;"></div>
       </div>
       <button class="wiz-link" style="margin-bottom:14px;" onclick="startGuided('first')">Start a new resume with the guided builder</button>
@@ -901,6 +902,14 @@ function applyAccess(json) {
   L.includedAvailable = Math.max(0, Number(json && json.includedAvailable) || 0);
   L.accessState = json && typeof json.accessState === 'string' ? json.accessState : null;
   L.accessUntil = json && json.accessUntil ? json.accessUntil : null;
+  L.tailorRunsAvailable = json && typeof json.tailorRunsAvailable === 'number' ? json.tailorRunsAvailable : null;
+  renderTailorNote();
+}
+// "N tailoring runs left", shown under the Tailor button once the server has said how many the code has. Unknown = nothing shown.
+function renderTailorNote() {
+  const el = document.getElementById('tailor-runs-note'); if (!el) return;
+  const n = state.license && state.license.tailorRunsAvailable;
+  el.textContent = typeof n === 'number' ? (n === 0 ? 'You have used all your tailoring runs.' : `${n} tailoring run${n === 1 ? '' : 's'} left`) : '';
 }
 function hasIncluded() { return !!state.license.verified && (Number(state.license.includedAvailable) || 0) > 0; }
 
@@ -1515,8 +1524,12 @@ async function tailorToJob() {
   const jobDesc = document.getElementById('job-desc-input').value.trim();
   if (!jobDesc) { showTailorError('Please paste a job description first.'); return; }
   if (!state.data) { showTailorError('Please analyze a resume first.'); return; }
-  if (!state.tailorToken) {
+  if (!state.license.code || !state.license.verified) {
     showTailorError('Tailoring is included with each analyzed resume. Analyze your resume with your access code first.');
+    return;
+  }
+  if (state.license.tailorRunsAvailable === 0) {
+    showTailorError('You’ve used all your tailoring runs. Each analyzed resume, and each AI Polish that uses a generation, includes up to 5.');
     return;
   }
   if (jobDesc.length > 10000) {
@@ -1534,16 +1547,19 @@ async function tailorToJob() {
     const res = await aiFetch('/.netlify/functions/tailor-resume', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, tailorToken: state.tailorToken, clientGuard: ResumeCore.GUARD_VERSION })
+      body: JSON.stringify({ resumeData: state.data, jobDescription: jobDesc, code: state.license.code, tailorToken: state.tailorToken, clientGuard: ResumeCore.GUARD_VERSION })
     });
     let json = null;
     try { json = await res.json(); } catch (e) { /* non-JSON gateway error */ }
     if (!res.ok || !json || !json.result) {
       if (res.status === 401) state.tailorToken = null;
+      if (json && typeof json.tailorRunsAvailable === 'number') { state.license.tailorRunsAvailable = json.tailorRunsAvailable; renderTailorNote(); }
+      if (res.status === 403 && res.headers && res.headers.get('X-Access-State') === 'ended') { refreshLicenseCounter(); }
       showTailorError((json && json.error) || "Couldn't tailor to this job — please try again.");
       return;
     }
 
+    if (typeof json.tailorRunsAvailable === 'number') { state.license.tailorRunsAvailable = json.tailorRunsAvailable; renderTailorNote(); }
     const parsed = JSON.parse(json.result);
     state.preTailor = JSON.parse(JSON.stringify(state.data));      // lets the customer undo this run
     state.data = parsed.resume;

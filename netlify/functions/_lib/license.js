@@ -97,6 +97,28 @@ async function tailorAuthorize(supabase, reservationId, max) {
   return { outcome: d.outcome, used: d.used };
 }
 
+// Tailoring by access code (migration 06): uses one run on the oldest qualifying paid step of THIS code that still has one.
+// -> { outcome: 'ok' | 'limit' | 'invalid' | 'not_found', reservationId, used }, or null when migration 06 is not applied yet (callers then keep the token path).
+async function tailorAuthorizeForCode(supabase, code, max) {
+  const { data, error } = await supabase.rpc('consume_tailor_for_code', { p_code: code, p_max: max }).maybeSingle();
+  if (error) {
+    if (error.code === '42883' || error.code === 'PGRST202') return null;
+    throw error;
+  }
+  if (!data) throw new Error('consume_tailor_for_code returned no row');
+  return { outcome: data.outcome, reservationId: data.reservation_id, used: data.used };
+}
+
+// Read-only: how many Tailor runs the code has left (5 minus the runs used, over its qualifying paid steps). null = migration 06 not applied.
+async function tailorRunsAvailable(supabase, code, max) {
+  const { data, error } = await supabase.rpc('tailor_runs_available', { p_code: code, p_max: max }).maybeSingle();
+  if (error) {
+    if (error.code === '42883' || error.code === 'PGRST202') return null;
+    throw error;
+  }
+  return data ? Number(data.runs_available) || 0 : 0;
+}
+
 // A provider outage is always given back; other failures only up to forgiveMax per paid generation.
 async function safeTailorRefund(supabase, reservationId, providerFault, forgiveMax) {
   try {
@@ -127,4 +149,4 @@ async function readLicense(supabase, code) {
   return data;
 }
 
-module.exports = { accessStatus, reserve, finishRedelivery, commitWithResult, listRecoverable, fetchRecoverable, purgeRecoverable, recoveryReady, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };
+module.exports = { accessStatus, reserve, finishRedelivery, commitWithResult, listRecoverable, fetchRecoverable, purgeRecoverable, recoveryReady, commit, safeRelease, tailorAuthorize, tailorAuthorizeForCode, tailorRunsAvailable, safeTailorRefund, readLicense };

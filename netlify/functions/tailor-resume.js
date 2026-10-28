@@ -1,5 +1,6 @@
 const release = require('./_lib/release');
-const { getSupabaseClient, json } = require('./_lib/supabase');
+const { getSupabaseClient, CODE_RE, normalizeCode, json } = require('./_lib/supabase');
+const { makeLimiter, clientIp } = require('./_lib/rate');
 const { get } = require('./_lib/config');
 const { readJsonBody } = require('./_lib/http');
 const { callClaude, extractJson, assertTailorShape, isObject, isProviderFault, isBusy } = require('./_lib/ai');
@@ -13,7 +14,11 @@ const Core = require('../../resume-core.js');
 const MSG = {
   needAnalyze: 'Tailoring is included with each analyzed resume. Analyze your resume with your access code first.',
   expired: 'Your tailoring session has expired. Analyze your resume again to continue.',
-  limit: 'You’ve reached the tailoring limit for this resume.',
+  limit: 'You’ve used all your tailoring runs. Each analyzed resume, and each AI Polish that uses a generation, includes up to 5.',
+  ended: 'The four-day finishing period for this code has ended, so tailoring is no longer available. Additional access codes are available in the Flex & Grace Etsy shop.',
+  notFound: 'We couldn’t find that code.',
+  badFormat: 'That code doesn’t look right. Check the format: FG-XXXX-XXXX.',
+  slow: 'Too many attempts in a short time. Please wait a moment and try again.',
   unavailable: 'Tailoring is temporarily unavailable. Please try again later.',
   aiBusy: 'The AI service is very busy right now. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t tailor your resume right now. Please try again.',
@@ -22,8 +27,15 @@ const MSG = {
   server: 'Server error, please try again.'
 };
 
-// Tailoring is authorised by a signed token issued with a paid generation (see parse-resume.js).
-// It consumes no generation, but each paid generation allows a limited number of runs.
+// Guessing codes: unknown or malformed codes are limited per client, like verify-license (best effort, in memory; see _lib/rate.js).
+const failedChecks = makeLimiter({ windowMs: 10 * 60 * 1000, max: 30 });
+
+// Tailoring consumes no generation, but each qualifying paid step (an Analyze, or a Polish that used a generation) allows a limited number of runs.
+// It is authorised in one of two ways:
+//   * by the customer's ACCESS CODE (migration 06): the database finds the oldest paid step of THAT code with a run left, so unused runs survive a
+//     closed browser, a break and a new day. Allowed while the code is active and in its four-day completion period, refused once access has ended.
+//   * by a signed, two-hour token issued with a paid generation (pages and servers from before migration 06; also the fallback while migration 06
+//     is not applied). Unchanged.
 exports.handler = async function(event) {
   if (event.httpMethod !== 'POST') {
     return release.notAllowed();
@@ -35,21 +47,38 @@ exports.handler = async function(event) {
     return json(500, { error: MSG.server });
   }
   const secret = process.env.TAILOR_TOKEN_SECRET;
-  if (!tokens.isUsable(secret)) {
-    console.error('tailor-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters');
-    return json(503, { error: MSG.unavailable });
-  }
 
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
-  const { resumeData, jobDescription, tailorToken, clientGuard } = parsed.body;
+  const { resumeData, jobDescription, tailorToken, clientGuard, code: rawCode } = parsed.body;
   if (release.staleClient(clientGuard)) return json(409, { error: release.STALE_MESSAGE, stale: true, guard: release.stamp() });
 
-  // Authorisation and input checks all run BEFORE any billable AI call.
-  // During a secret rotation, TAILOR_TOKEN_SECRET_PREVIOUS is still accepted (never used to sign).
-  const auth = tokens.verify([secret, process.env.TAILOR_TOKEN_SECRET_PREVIOUS], tailorToken);
-  if (!auth.ok) {
-    return json(401, { error: auth.reason === 'missing' ? MSG.needAnalyze : MSG.expired });
+  const ip = clientIp(event);
+  const byCode = typeof rawCode === 'string' && rawCode.trim() !== '';
+  const code = byCode ? normalizeCode(rawCode) : null;
+  if (byCode) {
+    const waitFor = failedChecks.wait(ip);
+    if (waitFor) return json(429, { error: MSG.slow }, { 'Retry-After': String(waitFor) });
+    if (!CODE_RE.test(code)) { failedChecks.hit(ip); return json(400, { error: MSG.badFormat }); }
+  }
+
+  // Token authorisation. During a secret rotation, TAILOR_TOKEN_SECRET_PREVIOUS is still accepted (never used to sign).
+  const verifyToken = () => {
+    if (!tokens.isUsable(secret)) {
+      console.error('tailor-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters');
+      return { response: json(503, { error: MSG.unavailable }) };
+    }
+    const auth = tokens.verify([secret, process.env.TAILOR_TOKEN_SECRET_PREVIOUS], tailorToken);
+    if (!auth.ok) return { response: json(401, { error: auth.reason === 'missing' ? MSG.needAnalyze : MSG.expired }) };
+    return { auth };
+  };
+
+  // Authorisation and input checks all run BEFORE any billable AI call. A token-only request is authorised first, as it always was.
+  let tokenAuth = null;
+  if (!byCode) {
+    const v = verifyToken();
+    if (v.response) return v.response;
+    tokenAuth = v.auth;
   }
   if (typeof jobDescription !== 'string' || !jobDescription.trim()) {
     return json(400, { error: 'No job description provided' });
@@ -68,18 +97,38 @@ exports.handler = async function(event) {
   // The reply is about as long as the resume; if it cannot fit in the output cap the call is certain to be cut off. Refuse BEFORE a run is used.
   if (!limits.fitsOutput(resumeJson.length + 350, cfg.TAILOR_MAX_TOKENS)) return json(413, { error: MSG.tooLong });
 
-  // The database decides whether this paid generation still has tailoring runs left (atomic, replay-proof).
+  // The database decides whether a paid generation still has tailoring runs left (atomic, replay-proof).
   let supabase;
-  let grant;
+  let grant = null;                 // { reservationId, used }
   try {
     supabase = getSupabaseClient();
-    grant = await license.tailorAuthorize(supabase, auth.reservationId, cfg.TAILOR_MAX_PER_PAID_OP);
+    if (byCode) {
+      // Access first (as export-resume does): once the four-day period is over nothing is used. null = migration 05 is not applied.
+      const access = await license.accessStatus(supabase, code);
+      if (access && access.state === 'not_found') { failedChecks.hit(ip); return json(401, { error: MSG.notFound }); }
+      if (access && access.state === 'ended') return json(403, { error: MSG.ended }, { 'X-Access-State': 'ended' });
+      const g = await license.tailorAuthorizeForCode(supabase, code, cfg.TAILOR_MAX_PER_PAID_OP);
+      if (g === null) {             // migration 06 is not applied: keep the earlier, token-based behaviour (and use nothing without a valid token)
+        const v = verifyToken();
+        if (v.response) return v.response;
+        tokenAuth = v.auth;
+      } else {
+        if (g.outcome === 'limit') return json(429, { error: MSG.limit, tailorRunsAvailable: 0 });
+        if (g.outcome !== 'ok') return json(401, { error: MSG.needAnalyze, tailorRunsAvailable: 0 });
+        grant = { reservationId: g.reservationId, used: g.used };
+      }
+    }
+    if (!grant) {
+      const g = await license.tailorAuthorize(supabase, tokenAuth.reservationId, cfg.TAILOR_MAX_PER_PAID_OP);
+      if (g.outcome === 'limit') return json(429, { error: MSG.limit });
+      if (g.outcome !== 'ok') return json(401, { error: MSG.needAnalyze });
+      grant = { reservationId: tokenAuth.reservationId, used: g.used };
+    }
   } catch (err) {
     console.error('tailor-resume: authorisation failed', { reason: String((err && (err.code || err.name)) || 'error').slice(0, 40) });
     return json(503, { error: MSG.server });
   }
-  if (grant.outcome === 'limit') return json(429, { error: MSG.limit });
-  if (grant.outcome !== 'ok') return json(401, { error: MSG.needAnalyze });
+  const reservationId = grant.reservationId;
 
   const prompt = `You are a resume tailoring assistant. You will be given a candidate's resume as structured JSON, and a target job description. Your job:
 
@@ -101,7 +150,7 @@ ${jobDescription}`;
   let resultText;
   let withheld = [];
   try {
-    const text = await callClaude({ prompt, maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'tailor', ref: auth.reservationId });
+    const text = await callClaude({ prompt, maxTokens: cfg.TAILOR_MAX_TOKENS, timeoutMs: cfg.AI_TIMEOUT_MS, fn: 'tailor', ref: reservationId });
     const shaped = assertTailorShape(extractJson(text));
     // The same protections as AI Polish: facts come back from the customer's resume, and every line that borrows a detail from another
     // entry, inflates a role, adds a beneficiary or result, or fills something left blank is put back to the customer's own wording.
@@ -114,16 +163,19 @@ ${jobDescription}`;
     // per paid generation, so repeated failures cannot create unlimited AI calls.
     const guardFault = !(err && err.name === 'AiError');
     const providerFault = guardFault || isProviderFault(err);
-    await license.safeTailorRefund(supabase, auth.reservationId, providerFault, cfg.TAILOR_FORGIVEN_FAILURES);
-    console.error('tailor-resume: generation failed', { ref: guardFault ? 'T107' : undefined, reservation: auth.reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', providerFault });
-    usage.outcome({ fn: 'tailor', ref: auth.reservationId, outcome: 'failed' });
+    await license.safeTailorRefund(supabase, reservationId, providerFault, cfg.TAILOR_FORGIVEN_FAILURES);
+    console.error('tailor-resume: generation failed', { ref: guardFault ? 'T107' : undefined, reservation: reservationId, reason: guardFault ? String((err && (err.code || err.name)) || 'error').slice(0, 40) : (err && err.reason) || 'unexpected', providerFault });
+    usage.outcome({ fn: 'tailor', ref: reservationId, outcome: 'failed' });
     const reason = err && err.name === 'AiError' ? err.reason : '';
     return json(502, { error: reason === 'truncated' ? MSG.tooLong : reason === 'timeout' ? MSG.slow : isBusy(err) ? MSG.aiBusy : MSG.aiFailed });
   }
 
-  usage.outcome({ fn: 'tailor', ref: auth.reservationId, outcome: 'ok', withheld: withheld.length });
+  usage.outcome({ fn: 'tailor', ref: reservationId, outcome: 'ok', withheld: withheld.length });
   // `unverified` stays (always empty) for pages loaded before this release; `withheld` lists what was left out and why.
-  return json(200, { result: resultText, unverified: [], withheld, tailorRunsRemaining: Math.max(cfg.TAILOR_MAX_PER_PAID_OP - grant.used, 0) });
+  // Runs left for the whole code (by-code requests only; best effort, it never fails a finished run).
+  let tailorRunsAvailable;
+  if (byCode) { try { const n = await license.tailorRunsAvailable(supabase, code, cfg.TAILOR_MAX_PER_PAID_OP); if (n !== null) tailorRunsAvailable = n; } catch (e) { /* the run already succeeded */ } }
+  return json(200, { result: resultText, unverified: [], withheld, tailorRunsRemaining: Math.max(cfg.TAILOR_MAX_PER_PAID_OP - grant.used, 0), ...(tailorRunsAvailable !== undefined ? { tailorRunsAvailable } : {}) });
 };
 
 // "Matched keywords" must be reflected in the accepted resume. Anything the AI listed as matched that is not actually there moves to
@@ -136,3 +188,5 @@ function groundMatchSummary(resume, ms) {
   ms.matchedKeywords.forEach((k) => (present(k) ? matched : missing).push(k));
   return { ...ms, matchedKeywords: matched, missingKeywords: [...new Set(missing)] };
 }
+
+exports._failedChecks = failedChecks;     // for tests
