@@ -183,7 +183,7 @@ test('automatic local drafts (Chromium, mocked endpoints, fictional data)', asyn
     assert.equal(await page2.evaluate(() => !!(state.data && state.data.name)), false, 'not applied silently');
     await page2.click('#draft-continue'); await page2.waitForTimeout(250);
     const got = await page2.evaluate(() => ({ title: state.data.experience[0].title, company: state.data.experience[0].company, name: state.data.name, tpl: state.selectedTemplate.id, cat: state.selectedCategory, tab: document.querySelector('.category-tab.active').textContent.trim(), skills: state.data.summary.skills }));
-    assert.deepEqual(got, { title: 'Shift Lead', company: 'Maple Market Two', name: 'Jordan Ellis', tpl: 'operator', cat: 'Trades', tab: 'Everyday & Trades', skills: ['Customer service'] });
+    assert.deepEqual(got, { title: 'Shift Lead', company: 'Maple Market Two', name: 'Jordan Ellis', tpl: 'operator', cat: 'Trades', tab: 'Labor & Trades', skills: ['Customer service'] });
     await s.close();
   });
 

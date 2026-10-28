@@ -10,14 +10,14 @@ Prepared on branch `feature/everyday-jobs-templates` (separate from Migration 05
 
 ## What changed
 1. Each template now has a one-line "good for" note, shown under the template buttons.
-2. Tab names on screen: Corporate -> **Office & Business**, Healthcare -> **Care & Service**, Trades -> **Everyday & Trades** (ids stored in drafts and exports are unchanged).
+2. Tab names on screen: Corporate -> **Office & Business**, Healthcare -> **Care & Service**, Trades -> **Labor & Trades** (ids stored in drafts and exports are unchanged).
 3. "Try Sample" now loads an everyday resume (a warehouse associate who used to be a cashier; fictional, no invented numbers). The old executive resume is kept as **Office Sample**. Neither calls the AI.
 
 ## Existing templates for everyday jobs
 | Template (tab) | Good for |
 |---|---|
-| The Operator (Everyday & Trades) | Retail, warehouse, food service, delivery and first jobs |
-| The Foreman (Everyday & Trades) | Construction, maintenance, manufacturing and housekeeping; certifications and training come first |
+| The Operator (Labor & Trades) | Retail, warehouse, food service, delivery and first jobs |
+| The Foreman (Labor & Trades) | Construction, maintenance, manufacturing and housekeeping; certifications and training come first |
 | The Partner (Office & Business) | Office work, customer service and first jobs |
 | The Boardroom (Office & Business) | Office, administration and business jobs |
 | The Practitioner (Care & Service) | Customer service, caregiving, housekeeping and health support |
