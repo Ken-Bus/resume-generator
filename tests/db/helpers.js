@@ -52,13 +52,18 @@ async function liveState(db) {            // production as of 2026-10-20
 async function applyMigration(db, file) {
   await db.admin(sqlFile('supabase', 'migrations', file));
   // Regression mode: WITH_MIG5=1 applies migration 05 right after 04 in every existing suite, to prove the older behaviour is unchanged on top of it.
-  if (file === '20261024_04_result_recovery.sql' && process.env.WITH_MIG5 === '1') await db.admin(sqlFile('supabase', 'migrations', '20261027_05_included_polish.sql'));
+  if (file === '20261024_04_result_recovery.sql' && process.env.WITH_MIG5 === '1') {
+    await db.admin(sqlFile('supabase', 'migrations', '20261027_05_included_polish.sql'));
+    // Migration 06 (tailoring by access code) rides on 05. WITH_MIG6=0 keeps a suite on 05 only; compat-matrix applies every migration itself.
+    if (process.env.WITH_MIG6 !== '0') await db.admin(sqlFile('supabase', 'migrations', '20261028_06_tailor_by_code.sql'));
+  }
 }
 const MIG1 = '20261020_01_license_reservations.sql';
 const MIG2 = '20261020_02_revoke_public_execute_consume_license_use.sql';
 const MIG3 = '20261023_03_request_idempotency.sql';
 const MIG4 = '20261024_04_result_recovery.sql';
 const MIG5 = '20261027_05_included_polish.sql';
+const MIG6 = '20261028_06_tailor_by_code.sql';
 
 async function seed(db, rows) {            // rows: [{code, uses, max, assigned, buyer}]
   for (const r of rows) {
@@ -76,4 +81,4 @@ async function canExecute(db, role, fnSignature) {
   return r.rows[0].ok;
 }
 
-module.exports = { available, freshDatabase, liveState, applyMigration, seed, fingerprint, canExecute, sqlFile, SUPABASE_DEFAULT_PRIVS, MIG1, MIG2, MIG3, MIG4, MIG5, ADMIN };
+module.exports = { available, freshDatabase, liveState, applyMigration, seed, fingerprint, canExecute, sqlFile, SUPABASE_DEFAULT_PRIVS, MIG1, MIG2, MIG3, MIG4, MIG5, MIG6, ADMIN };
