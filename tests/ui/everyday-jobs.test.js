@@ -27,7 +27,7 @@ test('everyday jobs: template labels, recommendations and sections (no work hist
       assert.doesNotMatch(tpl.bestFor, /ATS|guarantee|interview|hired|best|#1/i, `${tpl.id}: no promises or superlatives`);
     }
     for (const c of Templates.CATEGORIES) assert.ok(Templates.CATEGORY_LABELS[c], `label for ${c}`);
-    assert.match(Templates.CATEGORY_LABELS.Trades, /Everyday/);
+    assert.equal(Templates.CATEGORY_LABELS.Trades, 'Labor & Trades');
     const everyday = ['retail', 'warehouse', 'food service', 'delivery', 'construction', 'maintenance', 'manufacturing', 'housekeeping', 'customer service', 'office', 'first jobs'];
     const text = Templates.TEMPLATES.map((x) => x.bestFor.toLowerCase()).join(' ');
     for (const w of everyday) assert.ok(text.includes(w), `an existing template is recommended for: ${w}`);
@@ -58,8 +58,8 @@ test('everyday jobs: template labels, recommendations and sections (no work hist
   await t.test('the tabs use everyday names, and choosing a template explains what it is good for', async () => {
     const s = await open(); await s.page.click('.gate-sample-link'); await s.page.waitForSelector('#resume-preview');
     const tabs = (await s.page.locator('.category-tab').allInnerTexts()).map((x) => x.trim().toLowerCase());
-    assert.deepEqual(tabs, ['office & business', 'tech', 'creative', 'care & service', 'academic', 'everyday & trades']);
-    await s.page.click('.category-tab:has-text("Everyday & Trades")');
+    assert.deepEqual(tabs, ['office & business', 'tech', 'creative', 'care & service', 'academic', 'labor & trades']);
+    await s.page.click('.category-tab:has-text("Labor & Trades")');
     assert.match(await s.page.innerText('#template-note'), /The Operator is good for: Retail, warehouse, food service, delivery and first jobs/);
     await s.page.click('.variant-btn:has-text("The Foreman")');
     assert.match(await s.page.innerText('#template-note'), /The Foreman is good for: Construction, maintenance, manufacturing and housekeeping/);

@@ -20,7 +20,7 @@
   ];
   const CATEGORIES = ['Corporate','Tech','Creative','Healthcare','Academic','Trades'];
   // What the tabs are called on screen. The ids above are what drafts and exports store, so they stay as they are.
-  const CATEGORY_LABELS = { Corporate:'Office & Business', Tech:'Tech', Creative:'Creative', Healthcare:'Care & Service', Academic:'Academic', Trades:'Everyday & Trades' };
+  const CATEGORY_LABELS = { Corporate:'Office & Business', Tech:'Tech', Creative:'Creative', Healthcare:'Care & Service', Academic:'Academic', Trades:'Labor & Trades' };
   const byId = (id) => TEMPLATES.find((t) => t.id === id) || null;
   return { TEMPLATES, CATEGORIES, CATEGORY_LABELS, byId };
 });
