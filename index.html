@@ -1525,7 +1525,7 @@ async function tailorToJob() {
   if (!jobDesc) { showTailorError('Please paste a job description first.'); return; }
   if (!state.data) { showTailorError('Please analyze a resume first.'); return; }
   if (!state.license.code || !state.license.verified) {
-    showTailorError('Please enter your access code first. Tailoring is included with each analyzed resume.');
+    showTailorError('Tailoring is included with each analyzed resume. Analyze your resume with your access code first.');
     return;
   }
   if (state.license.tailorRunsAvailable === 0) {
