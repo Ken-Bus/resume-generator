@@ -4,6 +4,9 @@
 //   2. global fetch           -> the AI provider, with scripted failure modes. No network, no real key.
 // The dedicated secret that encrypts the temporary recovery copy (migration 04). Test value only.
 process.env.RESULT_ENCRYPTION_KEY = process.env.RESULT_ENCRYPTION_KEY || 'test-result-key-test-result-key-0123456789';
+// The application now asks for migration 05 on every Polish, so the function suites run on a database that has it (applied right after 04 by tests/db/helpers.js).
+// A suite that builds specific database states (compat-matrix) sets this to '0' and applies every migration itself.
+if (process.env.WITH_MIG5 === undefined) process.env.WITH_MIG5 = '1';
 const Module = require('module');
 const path = require('path');
 const H = require('../db/helpers');

@@ -28,6 +28,10 @@ const MIN_WORDS = 8;
 // Same reserve -> AI -> commit / release model, same signed tailoring token (so Tailor stays free,
 // token-gated and capped). Nothing here changes how Analyze or Tailor are charged.
 //
+// INCLUDED POLISH (migration 05): every paid Analyze carries one included Polish. When the code has an unused one, this request is reserved against it
+// (even at zero generations) and, if the result is meaningful, commits WITHOUT taking a generation (response: included: true, charged: false). Every other
+// rule above is unchanged: a failed, unchanged or insignificant result is released and never touches the included Polish.
+//
 // Duplicate-charge protection (on top of the browser's single-flight button):
 //   * one paid operation at a time per code (see _lib/inflight.js): a double-click or a retry while a request is
 //     still running is rejected uncharged;
@@ -56,6 +60,7 @@ const MSG = {
   sparse: 'There isn’t enough detail for the AI to improve yet, and it will not make anything up to fill the gap. Add a few words about what you did (what you worked with, and what you did each day), then try again. Nothing was used.',
   aiBusy: 'The AI service is very busy right now. You haven’t been charged. Please wait a minute or two and try again. Your resume is still here.',
   aiFailed: 'We couldn’t polish your resume right now. You haven’t been charged. Please try again.',
+  includedGone: 'Your included AI Polish is no longer available (it may have been used in another window). Nothing was used. Please check your counter, then choose Polish again to continue.',
   noChange: 'The AI reviewed your resume and found nothing meaningful to improve, so your wording is unchanged and no generation was used.',
   appliedFree: 'The AI found a few small fixes (fewer than it takes to use a generation) and they have been applied. No generation was used.',
   flaggedOnly: 'The AI suggested changes, but they added details that are not in your answers, so they were left out and your wording is unchanged. No generation was used.',
@@ -199,6 +204,9 @@ exports.handler = async function(event) {
   const parsed = readJsonBody(event, cfg.MAX_BODY_BYTES);
   if (!parsed.ok) return json(parsed.status, { error: parsed.error });
   const { code: rawCode, resume, target: rawTarget, requestId, profile: rawProfile, clientGuard } = parsed.body;
+  // The page sets this when the button it showed said the Polish is INCLUDED (no generation). If the included Polish is gone by the time the request
+  // is reserved, the request is refused uncharged: an included Polish is never quietly turned into a paid one.
+  const expectIncluded = parsed.body.expectIncluded === true;
   if (release.staleClient(clientGuard)) return json(409, { error: release.STALE_MESSAGE, stale: true, guard: stamp() });
 
   // 1. Every check that can reject the request runs BEFORE any billable AI call.
@@ -234,7 +242,7 @@ exports.handler = async function(event) {
     const hit = cacheGet(cacheKey(code, rid, inputKey));
     if (hit) {
       // only a PAID result needs explaining; a free one is simply the same answer again
-      try { if (await license.readLicense(supabase, code)) return json(200, hit.charged === true ? { ...hit, recovered: 'exact', message: recovery.RECOVERED.exact } : hit); } catch (e) { /* fall through to the normal path */ }
+      try { if (await license.readLicense(supabase, code)) return json(200, hit.charged === true || hit.included === true ? { ...hit, recovered: 'exact', message: recovery.RECOVERED.exact } : hit); } catch (e) { /* fall through to the normal path */ }
     }
   }
 
@@ -256,7 +264,7 @@ exports.handler = async function(event) {
       console.error('polish-resume: migration 04 (result recovery) is not applied; paid steps are refused so that no generation is charged without a recovery copy. Apply supabase/migrations/20261024_04_result_recovery.sql BEFORE deploying this code.', { ref: 'P112' });
       return json(503, { error: refMsg('P112'), ref: 'P112' });
     }
-    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, inputKey));
+    reservation = await license.reserve(supabase, code, cfg, replay.repeatOf('polish', rid, inputKey), { allowIncluded: true });
   } catch (err) {
     const missing = err && (err.code === '42883' || err.code === 'PGRST202');
     console.error(missing
@@ -289,6 +297,12 @@ exports.handler = async function(event) {
     console.error('polish-resume: unexpected reservation outcome', { ref: 'P104', outcome: reservation.outcome });
     return json(503, { error: refMsg('P104'), ref: 'P104' });
   }
+  // The page promised an included Polish but this step would use a generation: stop here, before the AI runs, and charge nothing.
+  if (!redelivery && expectIncluded && !reservation.includedFrom) {
+    await license.safeRelease(supabase, reservation.reservationId, false);
+    return json(409, { error: MSG.includedGone, code: 'included_unavailable', newRequest: true, usesRemaining: reservation.remaining, maxUses: reservation.maximum });
+  }
+  const included = !!reservation.includedFrom;                                     // this step will use an included Polish, not a generation
 
   // One paid operation at a time per code: only the earliest live reservation proceeds.
   const giveBack = (counted) => (redelivery ? license.finishRedelivery(supabase, reservation.reservationId, false) : license.safeRelease(supabase, reservation.reservationId, counted));
@@ -365,7 +379,7 @@ exports.handler = async function(event) {
 
   // 3. Charge only now, and only together with the encrypted recovery copy (one database transaction). Commit is idempotent, so one retry is safe.
   let sealed;
-  try { sealed = vault.seal(JSON.stringify({ result: JSON.stringify(polished), withheld, changes, points: score.points, threshold: score.threshold }), { recordId: reservation.reservationId, fn: 'polish' }); }
+  try { sealed = vault.seal(JSON.stringify({ result: JSON.stringify(polished), withheld, changes, points: score.points, threshold: score.threshold, ...(included ? { included: true, parent: reservation.includedFrom } : {}) }), { recordId: reservation.reservationId, fn: 'polish' }); }
   catch (err) {
     console.error('polish-resume: the recovery copy could not be prepared; nothing was charged', { ref: 'P111', reservation: reservation.reservationId });
     await giveBack(false);
@@ -381,6 +395,10 @@ exports.handler = async function(event) {
     await license.safeRelease(supabase, reservation.reservationId, false);
     return json(503, { error: `${MSG.notCharged} (ref P106)`, ref: 'P106' });
   }
+  if (committed.outcome === 'included_gone') {                                       // another request took the included Polish first: nothing was charged or stored
+    await license.safeRelease(supabase, reservation.reservationId, false);
+    return json(409, { error: MSG.includedGone, code: 'included_unavailable', newRequest: true, usesRemaining: committed.remaining, maxUses: committed.maximum });
+  }
   if (committed.outcome === 'exhausted') return json(403, { error: MSG.exhausted, usesRemaining: 0, maxUses: committed.maximum });
   if (committed.outcome !== 'committed' && committed.outcome !== 'already_committed') {
     console.error('polish-resume: commit refused', { reservation: reservation.reservationId, outcome: committed.outcome });
@@ -390,13 +408,14 @@ exports.handler = async function(event) {
   // 4. Tailoring authorisation bound to this paid generation (identical to Analyze).
   let tailorToken = null;
   const secret = process.env.TAILOR_TOKEN_SECRET;
-  if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
+  // An included Polish adds no Tailor runs: its token names the PARENT Analyze, whose allowance is counted in the database as before.
+  if (tokens.isUsable(secret)) tailorToken = tokens.sign(secret, included ? reservation.includedFrom : reservation.reservationId, cfg.TAILOR_TOKEN_TTL_SECONDS);
   else console.error('polish-resume: TAILOR_TOKEN_SECRET is missing or shorter than 32 characters; tailoring is disabled');
 
   if (redelivery) await license.finishRedelivery(supabase, reservation.reservationId, true);
-  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: redelivery ? 'redelivered' : 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
+  usage.outcome({ fn: 'polish', ref: reservation.reservationId, outcome: redelivery ? 'redelivered' : included ? 'included' : 'charged', guard: Core.GUARD_VERSION, reworded: changes.reworded, points: score.points, withheld: withheld.length });
   // `unverified` stays in the response (always empty now) for pages loaded before this release; `withheld` lists what was left out.
-  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: true, usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken, saved: committed.saved === true, savedUntil: committed.expiresAt || null, supportRef: recovery.reference(reservation.reservationId) };
+  const body = { guard: stamp(), result: JSON.stringify(polished), unverified: [], withheld, changes, points: score.points, threshold: score.threshold, charged: !included, ...(included ? { included: true } : {}), usesRemaining: committed.remaining, maxUses: committed.maximum, tailorToken, saved: committed.saved === true, savedUntil: committed.expiresAt || null, supportRef: recovery.reference(reservation.reservationId) };
   if (redelivery) return json(200, { ...body, recovered: 'regenerated', message: recovery.RECOVERED.regenerated, supportRef: recovery.reference(reservation.reservationId) });   // fresh wording: said so, and not cached as "the original"
   if (rid) cachePut(cacheKey(code, rid, inputKey), body);
   return json(200, body);

@@ -66,7 +66,7 @@ test('Tailor applies the same entry-scoped guard to the same invention', () => {
 
 test('the build stamp: page and functions share one guard version, and it is bumped with the rules', () => {
   assert.match(Core.GUARD_VERSION, /^[a-z0-9-]{1,40}$/);
-  assert.equal(Core.GUARD_VERSION, 'entry-scope-withhold-6');
+  assert.equal(Core.GUARD_VERSION, 'included-polish-1');
 });
 
 test('polish-resume against real SQL: the live result is now FREE and APPLIED (only a one-word fix survives); a real rewrite beside it is charged once; the invented claim never appears', async (t) => {

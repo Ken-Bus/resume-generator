@@ -25,11 +25,12 @@ const render = require('./_lib/export-render');
 // Error messages from the database can echo query values (such as the license code), so only a code or name is logged.
 const safeReason = (e) => String((e && (e.code || e.name)) || 'error').slice(0, 40);
 
-// References for support (same idea as polish-resume): E101 license lookup failed, E102 file could not be rendered.
+// References for support (same idea as polish-resume): E101 license lookup failed, E102 file could not be rendered, E103 access check failed.
 const MSG = {
   refresh: 'Please refresh the page and enter your access code again.',
   badFormat: 'That code doesn’t look right. Check the format: FG-XXXX-XXXX.',
   notFound: 'We couldn’t find that code.',
+  ended: 'The four-day finishing period for this code has ended, so downloads are no longer available. Additional access codes are available in the Flex & Grace Etsy shop.',
   empty: 'Add some details to your resume before downloading.',
   tooBig: 'That resume is too large to download. Please shorten it and try again.',
   slow: 'Too many attempts in a short time. Please wait a moment and try again.',
@@ -71,6 +72,15 @@ exports.handler = async function(event) {
     return reply(503, `${MSG.server} (ref E101)`);
   }
   if (!row) { failedLookups.hit(ip); return reply(403, MSG.notFound); }
+  // Migration 05: a code with no generations and no unused included Polish may download only during its four-day completion period.
+  // null = migration 05 is not applied, so downloads stay open as they were; a failed check refuses rather than guesses.
+  try {
+    const access = await license.accessStatus(getSupabaseClient(), code);
+    if (access && access.state === 'ended') return reply(403, MSG.ended, { 'X-Access-State': 'ended' });
+  } catch (err) {
+    console.error('export-resume: access check failed', { ref: 'E103', reason: safeReason(err) });
+    return reply(503, `${MSG.server} (ref E103)`);
+  }
   const key = codeKey(code);
   const wait = perCode.wait(key);
   if (wait) return reply(429, MSG.slow, { 'Retry-After': String(wait) });

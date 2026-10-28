@@ -6,11 +6,31 @@
 
 **Q: What counts as one of my 5 generations?**
 
-A: Your access code includes 5 AI generations. A generation is used when the AI successfully analyzes your pasted resume, or when AI Polish makes real improvements to your wording (see the next question). Typing, building your resume step by step, previewing, editing, switching templates, tailoring to a job and downloading never use one. Downloading a PDF or Word file never uses a generation, even after all 5 are used.
+A: Your access code includes 5 AI generations. Analyzing a pasted resume uses 1, and every analysis comes with **one AI Polish included**: your first AI Polish after an analysis uses no generation. After that, each AI Polish uses 1 generation, but only when it makes real improvements (it rewrites some of your wording or corrects three or more mistakes). If you build your resume step by step instead of pasting one, there is no analysis, so your first meaningful Polish uses 1 generation. Typing, building your resume step by step, previewing, editing, switching templates, tailoring to a job and downloading never use one. The page tells you what a step will use before you start it.
+
+**Q: What does "Analyze Resume" do? Will it fix my spelling?**
+
+A: Analyze reads the resume you paste and sorts it into the editor fields (name, jobs, education, skills and so on). It keeps your spelling and wording exactly as you wrote it, so it does not correct typos or grammar. After it finishes you can fix anything yourself for free, or use the AI Polish that came with your analysis to correct spelling and grammar and tidy the wording.
+
+**Q: Do I pay twice to Analyze and then Polish?**
+
+A: No. Your first AI Polish after an Analyze is included. It is used up only when the AI makes real improvements: if it finds nothing, or only one or two small fixes, it applies those and nothing is used. Your included Polish never expires, and you can use it even when you have no generations left. Each later meaningful Polish uses 1 generation.
+
+**Q: What if I don't like what the AI Polish changed?**
+
+A: You can restore your own wording: one part at a time, or all of it. Restoring does not give back the included Polish or the generation, because the AI did the work. A second meaningful Polish uses another generation.
+
+**Q: What happens when I use my last generation?**
+
+A: When you have used all your generations and your included AI Polish, you have **four days** to finish: you can keep editing, switching templates, previewing and downloading your Word and PDF files. After four days the code stops working. If you still have an included AI Polish, the four days start when you use it. Four days of access is not four days of storage: please download both your Word and PDF files and save them on your computer, a USB drive or another safe place.
+
+**Q: Is my resume stored online?**
+
+A: No. Your finished resume is not permanently stored on our servers. Your draft is saved automatically in your own browser on your own device (for up to 14 days), so it may not be there if you change computers or clear your browser data. Only the AI's last Analyze or Polish result is kept, encrypted, for 24 hours so you can recover it if the page closes. Download your Word and PDF files to keep your work.
 
 **Q: If the AI Polish doesn't improve my resume, do I lose a generation?**
 
-A: No. When you choose "Polish My Resume with AI," the AI reviews your resume and corrects spelling, grammar and tense, tidies run-on lines and repeats, and says things more clearly, using only what you wrote. A generation is used when it rewrites some of your wording or corrects three or more mistakes. If it finds fewer than that (for example just one or two small fixes), it still applies those fixes and nothing is used. If it finds nothing to improve, or if everything it suggested added details you didn't give, nothing is changed and nothing is used. You can always undo a polish with "Restore my wording."
+A: No. When you choose "Polish My Resume with AI," the AI reviews your resume and corrects spelling, grammar and tense, tidies run-on lines and repeats, and says things more clearly, using only what you wrote. It uses your included Polish (or 1 generation if you have no included Polish left) when it rewrites some of your wording or corrects three or more mistakes. If it finds fewer than that (for example just one or two small fixes), it still applies those fixes and nothing is used. If it finds nothing to improve, or if everything it suggested added details you didn't give, nothing is changed and nothing is used. You can always undo a polish with "Restore my wording."
 
 **Q: Will the AI add things I didn't say?**
 
@@ -54,13 +74,14 @@ A: Your resume text is sent to the AI service to be processed and to our server 
 
 ## Short version (for the description's "HOW IT WORKS" section, one line)
 
-"AI Polish uses one of your 5 generations only when it rewrites some of your wording or corrects 3 or more mistakes, and only in ways that stay true to what you wrote. Smaller fixes are applied free."
+"Your code includes 5 AI generations. Analyzing a resume uses 1 and includes one free AI Polish; after that, a Polish uses 1 only when it makes real improvements. Editing, previewing and downloading are free, and after your last AI step you have 4 days to finish and download."
 
 ## Claims to avoid (not demonstrated, so not to be made)
 - Do not say the resume is "ATS-friendly", "ATS-optimized" or "will get you interviews/hired". The PDF text is real, selectable text (tested), but nothing here has been tested against any applicant tracking system, and outcomes depend on the applicant and the employer.
 - Do not promise a number of improvements, "guaranteed rewrites", or that the AI "never" makes mistakes.
 - Do not name the underlying AI model (shop listing rule).
-- Do not describe the free sample as an example of what the AI will write for a customer: it is a fictional senior retail resume, not an AI result.
+- Do not describe the free sample as an example of what the AI will write for a customer: it is a fictional warehouse/cashier resume (with an executive "Office Sample"), not an AI result.
+- Do not say your resume is "saved", "stored" or "backed up" online. It is not. Four days is how long the code still signs in and downloads, not how long anything is kept.
 
 ## Notes for the owner
 - This wording does not change the price, the five-generation entitlement, or the Tailor allowance (up to 5 runs per paid generation).

@@ -357,9 +357,9 @@ test('Netlify functions against real SQL (AI provider mocked)', async (t) => {
     assert.equal(parseBody(await hs.consume(post({ code: 'bad' }))).success, false);
   });
 
-  await t.test('verify-license behaves exactly as before', async () => {
+  await t.test('verify-license behaves as before for ordinary codes (plus the access fields); an unused code with no generations is refused', async () => {
     const c = await seed(2), ex = await seed(0);
-    assert.deepEqual(parseBody(await hs.verify(post({ code: c }))), { valid: true, usesRemaining: 2, maxUses: 5 });
+    assert.deepEqual(parseBody(await hs.verify(post({ code: c }))), { valid: true, usesRemaining: 2, maxUses: 5, includedAvailable: 0, accessState: 'active', accessUntil: null });      // plus the migration-05 fields
     assert.equal(parseBody(await hs.verify(post({ code: ex }))).valid, false);
     assert.equal(parseBody(await hs.verify(post({ code: 'FG-ZZZZ-9999' }))).error, 'We couldn’t find that code.');
     assert.equal((await hs.verify(post('{bad'))).statusCode, 400);

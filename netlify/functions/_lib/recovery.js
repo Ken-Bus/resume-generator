@@ -51,12 +51,15 @@ const license = require('./license');
 
 // The response a customer gets when a completed step is restored. A new Tailor authorization is signed for the SAME paid generation: it adds no
 // Tailor runs (the allowance is counted in the database against that generation), it only lets the page use the ones that remain.
+// A restored INCLUDED Polish (payload.included, migration 05) is signed for its PARENT Analyze, so restoring it adds no Tailor runs and does not lose the
+// ones the customer still has; it is not a charged step (charged: false, included: true).
 function restoredBody(fn, payload, row, { secret, ttl, guard }) {
-  const tailorToken = tokens.isUsable(secret) ? tokens.sign(secret, row.id, ttl) : null;
+  const included = fn === 'polish' && payload.included === true && typeof payload.parent === 'string';
+  const tailorToken = tokens.isUsable(secret) ? tokens.sign(secret, included ? payload.parent : row.id, ttl) : null;
   const common = { result: payload.result, unverified: Array.isArray(payload.unverified) ? payload.unverified : [], usesRemaining: row.remaining, maxUses: row.maximum, tailorToken,
     recovered: 'exact', message: RECOVERED.exact, supportRef: reference(row.id), saved: true, kind: fn, savedAt: row.created_at, expiresAt: row.expires_at };
   return fn === 'polish'
-    ? { guard, ...common, withheld: Array.isArray(payload.withheld) ? payload.withheld : [], changes: payload.changes || null, points: payload.points, threshold: payload.threshold, charged: true }
+    ? { guard, ...common, withheld: Array.isArray(payload.withheld) ? payload.withheld : [], changes: payload.changes || null, points: payload.points, threshold: payload.threshold, charged: !included, ...(included ? { included: true } : {}) }
     : common;
 }
 

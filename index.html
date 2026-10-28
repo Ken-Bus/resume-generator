@@ -44,7 +44,7 @@
   .error-box { background: #FFF3F0; border: 1px solid #FFCCBB; border-radius: 4px; padding: 8px 10px; font-size: 11px; color: #c0392b; margin-bottom: 10px; }
   .resume-textarea { width: 100%; height: 240px; border: 1px solid #DDD; border-radius: 4px; padding: 10px; font-size: 11px; font-family: 'DM Sans', sans-serif; resize: vertical; outline: none; line-height: 1.5; }
   .resume-textarea:focus { border-color: #999; }
-  .btn-row { display: flex; gap: 8px; margin-top: 10px; }
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .btn-primary { flex: 2; padding: 10px; background: #111; color: #fff; border: none; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer; text-transform: uppercase; font-family: 'DM Sans', sans-serif; transition: opacity 0.15s; }
   .btn-primary:disabled { background: #CCC; cursor: not-allowed; }
   .btn-secondary { flex: 1; padding: 10px; background: transparent; color: #555; border: 1px solid #DDD; border-radius: 4px; font-size: 10px; cursor: pointer; font-family: 'DM Sans', sans-serif; }
@@ -79,6 +79,8 @@
   .category-tabs { display: flex; border-bottom: 1px solid #F5F5F5; overflow-x: auto; }
   .category-tab { padding: 10px 14px; font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; background: transparent; border: none; cursor: pointer; color: #888; border-bottom: 2px solid transparent; white-space: nowrap; font-family: 'DM Sans', sans-serif; flex-shrink: 0; }
   .category-tab.active { color: #111; border-bottom-color: #111; }
+  .template-note { padding: 8px 14px 0; font-size: 11px; line-height: 1.5; color: #666; }
+  .template-note strong { color: #333; }
   .variant-row { display: flex; gap: 8px; padding: 10px 14px; align-items: center; flex-wrap: wrap; }
   .variant-btn { padding: 5px 14px; font-size: 10px; font-weight: 600; background: transparent; color: #555; border: 1px solid #DDD; border-radius: 3px; cursor: pointer; letter-spacing: 0.04em; font-family: 'DM Sans', sans-serif; transition: all 0.15s; }
   .variant-btn.active { color: #fff; border-color: transparent; }
@@ -97,7 +99,8 @@
   .resume-page { width: 8.5in; min-height: 11in; padding: 0.75in; background: #FDFCF9; box-shadow: 0 4px 32px rgba(0,0,0,0.18); box-sizing: border-box; }
 
   /* EXPORT BAR */
-  .export-bar { position: fixed; bottom: 20px; right: 20px; display: flex; gap: 8px; z-index: 100; }
+  .export-bar { position: fixed; bottom: 20px; right: 20px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 330px; z-index: 100; }
+  .export-reminder { order: -1; flex-basis: 100%; background: #fff; border: 1px solid #ddd; border-radius: 4px; padding: 6px 8px; font-size: 10.5px; line-height: 1.4; color: #444; }
   .btn-export { padding: 10px 18px; border: none; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; cursor: pointer; text-transform: uppercase; font-family: 'DM Sans', sans-serif; transition: opacity 0.15s; }
   .btn-export:disabled { opacity: 0.6; cursor: not-allowed; }
   .btn-pdf { background: #111; color: #fff; }
@@ -197,6 +200,7 @@
   .wiz-err { background: #FFF3F0; border: 1px solid #FFCCBB; border-radius: 4px; padding: 8px 10px; font-size: 12px; color: #c0392b; line-height: 1.5; margin-top: 8px; }
   .flag-warn { border-color: #E0A800 !important; background: #FFFBEA !important; }
   .flag-note { font-size: 10px; color: #8a6d00; margin: -2px 0 4px; }
+  .paste-cost { font-size: 11px; color: #555; margin: 10px 0 0; line-height: 1.5; }
   .save-status { margin: 6px 14px 0; font-size: 11px; color: #4b5563; line-height: 1.4; }
   .save-status.warn { color: #8a4b00; background: #FFF4E5; border: 1px solid #F3C98B; border-radius: 4px; padding: 6px 8px; }
   .draft-note { margin-top: 8px; font-size: 11px; color: #5b4a00; }
@@ -252,6 +256,7 @@
     <div id="draft-banner" class="notice-box" role="region" aria-label="Saved draft" style="display:none; margin:10px 14px 0;"></div>
     <div id="restore-notice" class="notice-box" role="status" style="display:none; margin:10px 14px 0;"></div>
     <div id="save-status" class="save-status" role="status" aria-live="polite" style="display:none;"></div>
+    <div id="access-notice" class="notice-box" role="status" style="display:none; margin:10px 14px 0;"></div>
     <div class="start-paths" id="start-paths">
       <div class="start-title">How would you like to start?</div>
       <button class="start-card" onclick="startGuided('first')" id="start-first"><strong>Create My First Resume</strong><span>No experience needed. We&rsquo;ll ask simple questions.</span></button>
@@ -265,13 +270,15 @@
     </div>
     <div class="panel-content" id="panel-guide" style="display:none;"></div>
     <div class="panel-content" id="panel-paste">
-      <p class="paste-hint">Paste your resume as plain text. Our AI will analyze it into structured fields automatically.</p>
+      <p class="paste-hint">Paste your resume as plain text. The AI sorts it into the fields on the next screen and keeps your spelling and wording exactly as you wrote it, so it will not fix typos or grammar.</p>
       <div id="error-box" class="error-box" style="display:none;"></div>
       <textarea class="resume-textarea" id="resume-input" placeholder="Paste your resume text here..." oninput="scheduleSave()"></textarea>
       <div class="btn-row">
         <button class="btn-primary" onclick="parseResume()" id="parse-btn">Analyze Resume</button>
         <button class="btn-secondary" onclick="loadSample()">Try Sample</button>
+        <button class="btn-secondary" onclick="loadSample('office')" id="office-sample-btn">Office Sample</button>
       </div>
+      <p class="paste-cost" id="analyze-cost">Analyze Resume uses 1 of your AI generations and includes one free AI Polish afterwards (your choice). Editing, previewing and downloading never use one.</p>
       <div class="loading-indicator" id="loading" style="display:none;">
         <div class="spinner"></div>
         Analyzing with AI…
@@ -298,6 +305,7 @@
     <div class="template-bar">
       <div class="category-tabs" id="category-tabs"></div>
       <div class="variant-row" id="variant-row"></div>
+      <div class="template-note" id="template-note" role="note"></div>
     </div>
     <div class="preview-area" id="preview-area">
       <div class="empty-state">
@@ -309,14 +317,59 @@
   </div>
 </div>
 
-<div id="export-notice" class="notice-box" style="display:none;position:fixed;bottom:70px;right:20px;max-width:300px;z-index:100;"></div>
+<div id="export-notice" class="notice-box" style="display:none;position:fixed;bottom:150px;right:20px;max-width:300px;z-index:100;"></div>
 <div class="export-bar" id="export-bar" style="display:none;">
+  <div class="export-reminder" id="export-reminder">Your resume is not permanently stored online. Drafts saved in this browser may not be available if you change computers or clear browser data. Download your Word and PDF files to keep them.</div>
   <button class="btn-export btn-pdf" onclick="exportPDF()" id="btn-pdf">⬇ PDF</button>
   <button class="btn-export btn-word" onclick="exportWord()" id="btn-word">⬇ Word</button>
 </div>
 
 <script>
 // ── Sample Resume ─────────────────────────────────────────────────────────────
+const SAMPLE_EVERYDAY = `Maria Delgado
+(614) 555-0136 | maria.delgado@email.com | Columbus, OH
+
+PROFESSIONAL SUMMARY
+Warehouse associate with forklift certification and retail experience
+Following safety rules - Teamwork - Keeping records organized - Cash handling
+
+EXPERIENCE
+Warehouse Associate
+Fictional Freight Co | Columbus, OH | 2021 - Present
+• Loaded and unloaded trucks
+• Counted stock every week
+• Operated a pallet jack and a forklift
+• Reported damaged boxes to the supervisor
+
+Cashier
+Maple Market | Columbus, OH | 2018 - 2021
+• Ran the register and counted the cash drawer at closing
+• Helped customers find products
+• Stocked shelves
+
+EDUCATION
+High School Diploma
+Central High School | Columbus, OH | 2018
+
+CERTIFICATIONS & TRAINING
+Forklift Operator Certification | 2022`;
+
+const SAMPLE_EVERYDAY_DATA = {
+  name: 'Maria Delgado',
+  contact: { phone: '(614) 555-0136', email: 'maria.delgado@email.com', location: 'Columbus, OH', linkedin: '', website: '' },
+  summary: { tagline: 'Warehouse associate with forklift certification and retail experience', bullets: [], skills: ['Following safety rules', 'Teamwork', 'Keeping records organized', 'Cash handling'] },
+  experience: [
+    { title: 'Warehouse Associate', company: 'Fictional Freight Co', location: 'Columbus, OH', start: '2021', end: 'Present', summary: '',
+      bullets: ['Loaded and unloaded trucks', 'Counted stock every week', 'Operated a pallet jack and a forklift', 'Reported damaged boxes to the supervisor'] },
+    { title: 'Cashier', company: 'Maple Market', location: 'Columbus, OH', start: '2018', end: '2021', summary: '',
+      bullets: ['Ran the register and counted the cash drawer at closing', 'Helped customers find products', 'Stocked shelves'] }
+  ],
+  education: [{ degree: 'High School Diploma', school: 'Central High School', location: 'Columbus, OH', date: '2018', honors: '' }],
+  certifications: [{ name: 'Forklift Operator Certification', org: '', date: '2022' }],
+  projects: [], volunteer: [], awards: []
+};
+
+// The office / executive sample (the first one this page shipped with).
 const SAMPLE_RESUME = `Emma Larsen
 (312) 555-0187 | emma.larsen@email.com | Chicago, IL | linkedin.com/in/emmalarsen | emmalarsen.com
 
@@ -422,7 +475,7 @@ const store = {
 };
 
 // ── Templates ─────────────────────────────────────────────────────────────────
-const { TEMPLATES, CATEGORIES } = ResumeTemplates;
+const { TEMPLATES, CATEGORIES, CATEGORY_LABELS } = ResumeTemplates;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let state = {
@@ -431,7 +484,7 @@ let state = {
   selectedCategory: 'Corporate',
   useAltColor: false,
   activePanel: 'paste',
-  license: { code: null, verified: false, usesRemaining: null, maxUses: null },
+  license: { code: null, verified: false, usesRemaining: null, maxUses: null, includedAvailable: 0, accessState: null, accessUntil: null },
   tailorToken: null,   // signed authorisation issued with each paid generation; kept (like the license code) in this tab's session storage only
   wizard: null,        // guided builder session (see wizard.js); null when not in use
   flags: new Set(),    // AI-written lines that need the customer's confirmation (see tailorToJob)
@@ -508,7 +561,7 @@ function setSaveStatus() {
   else if (draftSync.failed) { text = 'Couldn’t save on this device (the browser’s storage is full or blocked). Please download your resume to keep a copy. '; cls = 'warn'; }
   else if (draftSync.savedAt) {
     const t = new Date(draftSync.savedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-    text = draftSync.kind === 'tab' ? `Saved in this tab only at ${t} (this browser won’t keep it after you close the tab). ` : `Saved on this device at ${t}. `;
+    text = draftSync.kind === 'tab' ? `Saved in this tab only at ${t} (this browser won’t keep it after you close the tab). ` : `Progress saved on this device. Last saved at ${t}. `;
   }
   el.className = 'save-status' + (cls ? ' ' + cls : ''); el.style.display = text ? 'block' : 'none';
   el.innerHTML = text ? `${esc(text)}${draftSync.blocked ? '<button class="wiz-link" onclick="saveThisWindowInstead()">Save this window’s version instead</button>' : ''}` : '';
@@ -668,6 +721,7 @@ async function restoreResult(id) {
     state.tailorToken = json.tailorToken || null;
     if (typeof json.usesRemaining === 'number') state.license.usesRemaining = json.usesRemaining; if (typeof json.maxUses === 'number') state.license.maxUses = json.maxUses;
     renderLicenseBadge(); renderEditFields(); renderPreview(); switchPanel('edit'); syncChrome();
+    refreshLicenseCounter({ accessOnly: true });
   } else applyAnalyzeResult(json, parsed);
   rememberReceived(json.supportRef || refOf(id));
   recoverItems = recoverItems.filter((r) => r.id !== id); renderRecoverBanner();
@@ -755,7 +809,7 @@ function startPaste() {
 function renderCategoryTabs() {
   const el = document.getElementById('category-tabs');
   el.innerHTML = CATEGORIES.map(cat => `
-    <button class="category-tab ${cat === state.selectedCategory ? 'active' : ''}" onclick="selectCategory('${cat}')">${cat}</button>
+    <button class="category-tab ${cat === state.selectedCategory ? 'active' : ''}" onclick="selectCategory('${cat}')">${esc(CATEGORY_LABELS[cat] || cat)}</button>
   `).join('');
 }
 
@@ -782,6 +836,8 @@ function renderVariants() {
     </div>`;
   }
   el.innerHTML = html;
+  const note = document.getElementById('template-note');
+  if (note) note.innerHTML = state.selectedTemplate.bestFor ? `<strong>${esc(state.selectedTemplate.name)}</strong> is good for: ${esc(state.selectedTemplate.bestFor)}` : '';
 }
 
 function selectCategory(cat) {
@@ -838,8 +894,42 @@ function hideGate() {
   document.getElementById('license-gate').style.display = 'none';
 }
 
+// What the server says about this code besides its balance (migration 05): how many unused included Polishes it has, and whether it is in its four-day
+// completion period. An older server sends neither, which reads as "none" and "normal".
+function applyAccess(json) {
+  const L = state.license;
+  L.includedAvailable = Math.max(0, Number(json && json.includedAvailable) || 0);
+  L.accessState = json && typeof json.accessState === 'string' ? json.accessState : null;
+  L.accessUntil = json && json.accessUntil ? json.accessUntil : null;
+}
+function hasIncluded() { return !!state.license.verified && (Number(state.license.includedAvailable) || 0) > 0; }
+
+// The two plain-language notices about running out of AI: shown only when they apply, never both, never a pop-up.
+function renderAccessNotice() {
+  const el = document.getElementById('access-notice'); if (!el) return;
+  const L = state.license; let html = '';
+  const keep = 'Save both Word and PDF copies to your computer, USB drive, or another safe location.';
+  if (L.verified && L.accessState === 'completion') {
+    const until = L.accessUntil ? new Date(L.accessUntil) : null;
+    const when = until && !isNaN(until) ? ` Your access ends ${esc(until.toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }))}.` : '';
+    html = `<strong>You have four days to finish editing and download your resume.</strong> ${keep}${when}`;
+  } else if (L.verified && L.usesRemaining === 0 && hasIncluded()) {
+    html = `<strong>You have no generations left, but your included AI Polish is still available.</strong> After you use it, you will have four days to finish editing and download your resume. ${keep}`;
+  }
+  if (el.innerHTML !== html) el.innerHTML = html;
+  el.style.display = html ? 'block' : 'none';
+}
+function renderAnalyzeCost() {
+  const el = document.getElementById('analyze-cost'); if (!el) return;
+  const L = state.license;
+  el.textContent = L.verified && L.usesRemaining === 0
+    ? `You have no generations left, so Analyze is not available. You can still edit and download your resume${hasIncluded() ? ' and use your included AI Polish' : ''}.`
+    : 'Analyze Resume uses 1 of your AI generations and includes one free AI Polish afterwards (your choice). Editing, previewing and downloading never use one.';
+}
+
 function renderLicenseBadge() {
   document.body.classList.toggle('licensed', !!state.license.verified);
+  renderAccessNotice(); renderAnalyzeCost();
   const pv = document.getElementById('resume-preview');                  // keep the demo watermark in step with the license
   if (pv && pv.classList.contains('demo') === !!state.license.verified) renderPreview();
   if (typeof renderEditPolish === 'function') renderEditPolish();
@@ -871,7 +961,8 @@ async function verifyLicense(codeInput, opts = {}) {
     const json = await res.json();
 
     if (json.valid) {
-      state.license = { code, verified: true, usesRemaining: json.usesRemaining, maxUses: json.maxUses };
+      state.license = { code, verified: true, usesRemaining: json.usesRemaining, maxUses: json.maxUses, includedAvailable: 0, accessState: null, accessUntil: null };
+      applyAccess(json);
       store.set(LICENSE_STORAGE_KEY, code);
       hideGate();
       renderLicenseBadge();
@@ -983,7 +1074,9 @@ function applyAnalyzeResult(json, parsed) {
     state.flags = new Set(unverified.map(u => String(u.text || '').trim()).filter(Boolean));
     const note = document.getElementById('analyze-notice');
     const recovered = json.recovered ? `<div class="notice-box" id="recovered-notice" role="status"><strong>${json.recovered === 'exact' ? 'Your earlier result is back.' : 'Your earlier result was recovered.'}</strong> ${esc(json.message || '')}${json.supportRef ? ` <span class="support-ref">Reference: ${esc(json.supportRef)}</span>` : ''}</div>` : '';
-    if (note) note.innerHTML = recovered + (unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
+    const nextSteps = `<div class="notice-box" id="analyze-next" role="status"><strong>Your resume is sorted into the fields below.</strong> We kept your spelling and wording exactly as you wrote it. You can fix anything by typing in the fields, and editing is always free.
+        Want the AI to correct spelling and grammar and tidy the wording? Your first AI Polish is included with this analysis, so it uses no generation. Press the Polish button above whenever you like. After that, a Polish uses 1 generation only when the AI makes real improvements.</div>`;
+    if (note) note.innerHTML = recovered + nextSteps + (unverified.length ? `<div class="notice-box"><strong>Please check ${unverified.length} line${unverified.length === 1 ? '' : 's'}.</strong> They contain details that are not in the text you pasted (marked in yellow below). Keep only what is true.
         <ul style="margin:6px 0 0 16px;">${unverified.slice(0, 8).map(u => `<li>${esc(u.text)} <em>(${esc((u.reasons || []).join('; '))})</em></li>`).join('')}</ul></div>` : '');
     state.tailorToken = json.tailorToken || null;
     document.getElementById('match-summary-box').style.display = 'none';
@@ -995,6 +1088,7 @@ function applyAnalyzeResult(json, parsed) {
     switchPanel('edit');
     syncChrome();
   rememberReceived(json.supportRef);
+  refreshLicenseCounter({ accessOnly: true });               // this paid Analyze earned an included Polish: ask the server for the real count
 }
 
 // Failed analyses are not charged; this only explains what happened and refreshes the counter.
@@ -1027,14 +1121,20 @@ async function handleParseFailure(status, json) {
 }
 
 // Re-reads the real balance from the server after any failure, so the badge never shows a stale number.
-async function refreshLicenseCounter() {
+// accessOnly: after a paid step the step's own answer already carries the balance, so only the included-Polish count and access state are taken from here.
+async function refreshLicenseCounter(opts = {}) {
   if (!state.license.code) return;
   try {
     const res = await fetch('/.netlify/functions/verify-license', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: state.license.code })
     });
     const json = await res.json();
-    if (typeof json.usesRemaining === 'number') { state.license.usesRemaining = json.usesRemaining; renderLicenseBadge(); }
+    if (json.valid === false && json.accessState === 'ended') {          // the four-day finishing period ended while the page was open
+      state.license = { code: null, verified: false, usesRemaining: null, maxUses: null, includedAvailable: 0, accessState: null, accessUntil: null };
+      store.remove(LICENSE_STORAGE_KEY); renderLicenseBadge(); showGate((json.error || 'Your finishing period has ended.') + etsyLinkHTML(), true); return;
+    }
+    if (opts.accessOnly) { if (json.valid) { applyAccess(json); renderLicenseBadge(); } return; }
+    if (typeof json.usesRemaining === 'number') { state.license.usesRemaining = json.usesRemaining; if (json.valid) applyAccess(json); renderLicenseBadge(); }
   } catch (e) { /* the counter will refresh on the next action */ }
 }
 
@@ -1046,11 +1146,13 @@ function showError(msg, isHTML) {
   el.style.display = 'block';
 }
 
-function loadSample() {
-  document.getElementById('resume-input').value = SAMPLE_RESUME;
+// "Try Sample" shows an everyday-job resume (warehouse and retail); "Office sample" shows the executive one. Both are pre-parsed, so neither calls the AI.
+function loadSample(which) {
+  const office = which === 'office';
+  document.getElementById('resume-input').value = office ? SAMPLE_RESUME : SAMPLE_EVERYDAY;
   document.getElementById('error-box').style.display = 'none';
   if (state.aiBusy) return;
-  state.data = JSON.parse(JSON.stringify(SAMPLE_DATA));
+  state.data = JSON.parse(JSON.stringify(office ? SAMPLE_DATA : SAMPLE_EVERYDAY_DATA));
   state.sampleJson = JSON.stringify(state.data);
   state.tailorToken = null;
   state.wizard = null; state.flags = new Set(); state.preTailor = null; state.polishOriginal = null; state.polishResult = null; state.polishBaseline = null; state.polish = null;

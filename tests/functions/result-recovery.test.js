@@ -73,10 +73,10 @@ test('result recovery through the real handlers and real SQL (AI mocked)', async
   const rec = (hs, body, headers = {}) => hs.recover(post(body, { headers }));
   const copies = async (c) => (await db.admin('select * from result_recovery where code=$1', [c])).rows;
 
-  await t.test('CHARGE + COPY: a charged Analyze and a charged Polish each store exactly one encrypted copy, report saved:true with an expiry within 24 hours, and the stored bytes contain none of the resume', async () => {
+  await t.test('CHARGE + COPY: an Analyze and the Polish after it (included) each store exactly one encrypted copy, report saved:true with an expiry within 24 hours, and the stored bytes contain none of the resume', async () => {
     reset(); const c = await seed(); ai.polishPayload = fixAll; const A = await instance();
     const a = parseBody(await analyze(A, c)); const p = parseBody(await polish(A, c));
-    assert.equal(a.saved, true); assert.equal(p.saved, true); assert.equal(await uses(c), 3);
+    assert.equal(a.saved, true); assert.equal(p.saved, true); assert.equal(await uses(c), 4, 'the Analyze cost 1; the Polish after it is the included one and cost none, but still stores its copy');
     const rows = await copies(c); assert.equal(rows.length, 2); assert.deepEqual(rows.map((r) => r.fn).sort(), ['analyze', 'polish']);
     for (const r of rows) { assert.ok(new Date(r.expires_at) - new Date(r.created_at) <= 24 * 3600 * 1000 + 1000); assert.equal(/Jordan|Ellis|Lena|Ortiz|Maple|purchases|customers/i.test(JSON.stringify(r)), false, 'ciphertext only'); }
     for (const b of [a, p]) assert.ok(new Date(b.savedUntil) > new Date());

@@ -58,6 +58,9 @@ test('customer page (Chromium, mocked endpoints)', async (t) => {
   await t.test('"Try Sample" makes NO request to any paid endpoint and still shows the sample', async () => {
     const s = await open({}); await s.page.click('.gate-sample-link');
     await s.page.waitForSelector('#resume-preview');
+    assert.match(await s.page.innerText('#resume-preview'), /MARIA DELGADO/i);          // the default sample is an everyday-job resume
+    assert.match(await s.page.innerText('#resume-preview'), /Forklift Operator Certification/i);
+    await s.page.evaluate(() => loadSample('office'));                                  // the office sample is still there
     assert.match(await s.page.innerText('#resume-preview'), /EMMA LARSEN/i);
     assert.match(await s.page.innerText('#resume-preview'), /P&L Ownership/);        // ampersand survives escaping
     assert.equal(s.calls.length, 0);

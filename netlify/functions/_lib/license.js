@@ -10,9 +10,12 @@ async function one(supabase, fn, args) {
 
 // `repeat` (optional) = { key, inputHash }: identifies one logical step so the DATABASE can recognise a repeat of an already-paid step
 // (migration 03). Without it the call is exactly the one the earlier deployment made.
-async function reserve(supabase, code, cfg, repeat) {
+// `opts.allowIncluded` (AI Polish only; migration 05) lets this step use the code's included Polish. Without it the call is exactly the earlier one.
+// `includedFrom` in the answer is the paid Analyze whose included Polish this step will use, or null for an ordinary (generation) step.
+async function reserve(supabase, code, cfg, repeat, opts) {
   const d = await one(supabase, 'reserve_license_use', {
     ...(repeat && repeat.key ? { p_request_key: repeat.key, p_input_hash: repeat.inputHash || null } : {}),
+    ...(opts && opts.allowIncluded ? { p_allow_included: true } : {}),
     p_code: code,
     p_lease_seconds: cfg.LEASE_SECONDS,
     p_fail_window_seconds: cfg.FAIL_WINDOW_SECONDS,
@@ -20,7 +23,7 @@ async function reserve(supabase, code, cfg, repeat) {
     p_fail_day_max: cfg.FAIL_DAY_MAX
   });
   if (!d) throw new Error('reserve_license_use returned no row');
-  return { outcome: d.outcome, reservationId: d.reservation_id, remaining: d.remaining, maximum: d.maximum, retryAfterSeconds: d.retry_after_seconds };
+  return { outcome: d.outcome, reservationId: d.reservation_id, remaining: d.remaining, maximum: d.maximum, retryAfterSeconds: d.retry_after_seconds, includedFrom: d.included_from || null };
 }
 
 // Gives the re-delivery turn back (ok = false) or just frees the slot (ok = true). Best effort: the turn also lapses by itself after a minute.
@@ -38,7 +41,7 @@ async function commitWithResult(supabase, reservationId, fn, sealed) {
     p_reservation_id: reservationId, p_fn: fn, p_kid: sealed.kid, p_salt: sealed.salt, p_iv: sealed.iv, p_ct: sealed.ct
   });
   if (!d) throw new Error('commit_license_use_with_result returned no row');
-  return { outcome: d.outcome, remaining: d.remaining, maximum: d.maximum, saved: d.result_saved === true, expiresAt: d.expires_at };
+  return { outcome: d.outcome, remaining: d.remaining, maximum: d.maximum, saved: d.result_saved === true, expiresAt: d.expires_at, included: d.included === true, includedFrom: d.included_from || null };
 }
 
 // What this code could restore (no content), and the encrypted copy of one step. Both only ever see this code's own rows and never expired ones.
@@ -106,10 +109,22 @@ async function safeTailorRefund(supabase, reservationId, providerFault, forgiveM
   }
 }
 
+// Access state of a code (migration 05): { state: 'active' | 'completion' | 'ended' | 'not_found', usesRemaining, maxUses, includedAvailable, accessUntil }.
+// -> null when migration 05 is not applied yet (the function does not exist): callers then keep the behaviour they had before it.
+async function accessStatus(supabase, code) {
+  const { data, error } = await supabase.rpc('license_access_status', { p_code: code }).maybeSingle();
+  if (error) {
+    if (error.code === '42883' || error.code === 'PGRST202') return null;
+    throw error;
+  }
+  if (!data) return null;
+  return { state: data.access_state, usesRemaining: data.uses_remaining, maxUses: data.max_uses, includedAvailable: Number(data.included_available) || 0, accessUntil: data.access_until || null };
+}
+
 async function readLicense(supabase, code) {
   const { data, error } = await supabase.from('licenses').select('uses_remaining, max_uses').eq('code', code).maybeSingle();
   if (error) throw error;
   return data;
 }
 
-module.exports = { reserve, finishRedelivery, commitWithResult, listRecoverable, fetchRecoverable, purgeRecoverable, recoveryReady, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };
+module.exports = { accessStatus, reserve, finishRedelivery, commitWithResult, listRecoverable, fetchRecoverable, purgeRecoverable, recoveryReady, commit, safeRelease, tailorAuthorize, safeTailorRefund, readLicense };
